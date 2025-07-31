@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/IncentiveGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -19,7 +20,7 @@ contract ERC20Mock is ERC20 {
 }
 
 contract GaugeHarnessEdge is IncentiveGauge {
-    constructor(address pm, address hook) IncentiveGauge(IPoolManager(pm), IPositionManager(address(1)), hook) {}
+    constructor(address pm, address hook) IncentiveGauge(IPoolManager(pm), IPositionManagerAdapter(address(1)), hook) {}
 
     function setPositionState(bytes32 k, IERC20 tok, uint256 paid, uint256 acc, uint128 liq) external {
         RangePosition.State storage ps = positionRewards[k][tok];

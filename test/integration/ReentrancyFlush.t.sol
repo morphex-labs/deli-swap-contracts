@@ -15,7 +15,7 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
@@ -138,7 +138,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         (address expectedHook, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
         // 4. Deploy gauge & feeProcessor
-        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManager(address(0)), expectedHook, IERC20(address(bmx)), address(0));
+        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), expectedHook, IERC20(address(bmx)), address(0));
         inc = new MockIncentiveGauge();
         fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
 
@@ -208,6 +208,37 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Buffer cleared and gauge bucket credited
         assertEq(fp.pendingWbltForBuyback(), 0, "buffer not cleared");
         assertGt(gauge.collectBucket(pid), 0, "bucket not credited");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    INTERNAL SWAP REENTRANCY TEST
+    //////////////////////////////////////////////////////////////*/
+    function testInternalSwapReentrancyProtected() public {
+        // Step 1: Generate fees on BMX pool to trigger internal swap
+        uint256 input = 1e17;
+        
+        // Determine swap direction based on token ordering
+        bool bmxIsToken0 = address(bmx) < address(wblt);
+        address tokenIn = bmxIsToken0 ? address(bmx) : address(wblt);
+        
+        poolManager.unlock(abi.encode(tokenIn, input));
+        
+        // Step 2: Configure buyback pool
+        fp.setBuybackPoolKey(canonicalKey);
+        
+        // Step 3: Check that we have pending BMX for voter (from the 3% split)
+        assertGt(fp.pendingBmxForVoter(), 0, "no BMX voter buffer");
+        
+        // Step 4: Flush buffers - this will trigger BMX->wBLT internal swap
+        fp.flushBuffers();
+        
+        // Verify reentrancy was attempted and blocked
+        assertTrue(bmx.reentered(), "no reentrancy attempt during internal swap");
+        
+        // Verify flush completed successfully
+        // Note: pendingBmxForVoter will have residual fee from internal swap (3% of 0.3%)
+        assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
+        assertLt(fp.pendingBmxForVoter(), 1e10, "residual should be small");
     }
 
     /*//////////////////////////////////////////////////////////////

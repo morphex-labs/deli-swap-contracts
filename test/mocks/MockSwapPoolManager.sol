@@ -7,16 +7,20 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {BalanceDelta, toBalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {IExttload} from "@uniswap/v4-core/src/interfaces/IExttload.sol";
 
 /// @notice Extended mock implementing the minimal subset of PoolManager behaviour used by FeeProcessor swap tests.
 /// Inherits the extsload implementation from MockPoolManager to avoid duplication.
-contract MockSwapPoolManager is MockPoolManager {
+contract MockSwapPoolManager is MockPoolManager, IExttload {
     // configuration for swap behaviour
     uint16 public outputBps = 10_000; // linear 1:1 output by default
     bool public revertOnSwap;
 
     // slot constant copied from StateLibrary for slot0 access
     bytes32 public constant POOLS_SLOT = bytes32(uint256(6));
+    
+    // Track unlock state for TransientStateLibrary.isUnlocked() checks
+    bool private _isUnlocked;
 
     // ---------------------------------------------------------------------
     // Helper setters
@@ -37,7 +41,10 @@ contract MockSwapPoolManager is MockPoolManager {
 
     function unlock(bytes calldata data) external returns (bytes memory) {
         // mimic PoolManager.unlock by directly invoking the caller's callback
-        return IUnlockCallback(msg.sender).unlockCallback(data);
+        _isUnlocked = true;
+        bytes memory result = IUnlockCallback(msg.sender).unlockCallback(data);
+        _isUnlocked = false;
+        return result;
     }
 
     function settle() external payable returns (uint256) { return 0; }
@@ -52,6 +59,7 @@ contract MockSwapPoolManager is MockPoolManager {
     // swap logic – very simplified pricing
     function swap(PoolKey memory /*key*/, SwapParams memory params, bytes calldata /*hook*/)
         external
+        view
         returns (BalanceDelta delta)
     {
         if (revertOnSwap) revert("swap fail");
@@ -69,14 +77,43 @@ contract MockSwapPoolManager is MockPoolManager {
     }
 
     // unused but required for interface parity with original tests
-    function initialize(PoolKey memory, uint160) external returns (int24) { return 0; }
+    function initialize(PoolKey memory, uint160) external pure returns (int24) { return 0; }
     function modifyLiquidity(PoolKey memory, ModifyLiquidityParams memory, bytes calldata)
         external
+        pure
         returns (BalanceDelta, BalanceDelta)
     {
         return (toBalanceDelta(0, 0), toBalanceDelta(0, 0));
     }
-    function donate(PoolKey memory, uint256, uint256, bytes calldata) external returns (BalanceDelta) {
+    function donate(PoolKey memory, uint256, uint256, bytes calldata) external pure returns (BalanceDelta) {
         return toBalanceDelta(0, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // IExttload implementation for TransientStateLibrary
+    // ---------------------------------------------------------------------
+    
+    // Lock.IS_UNLOCKED_SLOT from v4-core
+    bytes32 constant IS_UNLOCKED_SLOT = bytes32(uint256(keccak256("Lock")) - 1);
+    
+    function exttload(bytes32 slot) external view override returns (bytes32 value) {
+        // Only handle the IS_UNLOCKED_SLOT for now
+        if (slot == IS_UNLOCKED_SLOT) {
+            return _isUnlocked ? bytes32(uint256(1)) : bytes32(0);
+        }
+        // For other slots, return 0
+        return bytes32(0);
+    }
+    
+    function exttload(bytes32[] calldata slots) external view override returns (bytes32[] memory values) {
+        uint256 len = slots.length;
+        values = new bytes32[](len);
+        for (uint256 i; i < len; ++i) {
+            if (slots[i] == IS_UNLOCKED_SLOT) {
+                values[i] = _isUnlocked ? bytes32(uint256(1)) : bytes32(0);
+            } else {
+                values[i] = bytes32(0);
+            }
+        }
     }
 } 

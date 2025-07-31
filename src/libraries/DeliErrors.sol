@@ -32,4 +32,22 @@ library DeliErrors {
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
+    
+    // pool errors
+    error PoolNotInitialized();
+    error InvalidTickSpacing();
+    error InvalidFee();
+    error NoLiquidity();
+    error InsufficientLiquidity();
+    error InsufficientOutput();
+    error InvalidPositionParams();
+    
+    // handler errors
+    error HandlerAlreadyExists();
+    error HandlerNotFound();
+    error PositionNotFound();
+    error NotAuthorized();
+    
+    // arithmetic errors
+    error BalanceOverflow();
 }

@@ -9,7 +9,9 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import "src/DeliHook.sol";
 import "src/DailyEpochGauge.sol";
 import "src/IncentiveGauge.sol";
-import "src/GaugeSubscriber.sol";
+import "src/PositionManagerAdapter.sol";
+import "src/handlers/V4PositionHandler.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -36,7 +38,8 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     MockFeeProcessor fp;
     DailyEpochGauge gauge;
     IncentiveGauge inc;
-    GaugeSubscriber gs;
+    PositionManagerAdapter adapter;
+    V4PositionHandler v4Handler;
 
     /*//////////////////////////////////////////////////////////////
                                TOKENS
@@ -82,7 +85,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
         // 4. Deploy IncentiveGauge first so DailyEpochGauge constructor can reference it
-        inc = new IncentiveGauge(poolManager, IPositionManager(address(positionManager)), predictedHook);
+        inc = new IncentiveGauge(poolManager, IPositionManagerAdapter(address(0)), predictedHook);
 
         fp = new MockFeeProcessor();
 
@@ -93,7 +96,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         gauge = new DailyEpochGauge(
             address(this),
             poolManager,
-            IPositionManager(address(positionManager)),
+            IPositionManagerAdapter(address(0)),
             predictedHook,
             IERC20(address(bmx)),
             address(inc)
@@ -113,10 +116,18 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // just needs to be non-zero & authorised
-        // Deploy GaugeSubscriber and set
-        gs = new GaugeSubscriber(IPositionManager(address(positionManager)), ISubscriber(address(gauge)), ISubscriber(address(inc)));
-        gauge.setGaugeSubscriber(address(gs));
-        inc.setGaugeSubscriber(address(gs));
+        // Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setPositionManager(address(positionManager));
+        
+        // Update gauges to use the adapter
+        gauge.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
 
         // 8. Prepare reward token allowance for incentive creation
         wblt.approve(address(inc), type(uint256).max);
@@ -207,7 +218,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         // 2. Activate daily stream and accrue some rewards
         _activateStream();
@@ -254,7 +265,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         // 2. Activate stream and accrue some rewards
         _activateStream();
@@ -300,7 +311,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         // 2. Activate stream and accrue some rewards
         _activateStream();
@@ -349,7 +360,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         // Mint and subscribe
         uint256 tokenId;
         (tokenId,) = EasyPosm.mint(positionManager, key, -1800, 1800, 1e22, type(uint256).max, type(uint256).max, address(this), block.timestamp + 1 hours, bytes(""));
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         _activateStream();
         vm.prank(address(hook));
@@ -373,7 +384,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     function testIncBurnCleansOwnerIndices() public {
         uint256 tokenId;
         (tokenId,) = EasyPosm.mint(positionManager, key, -2400, 2400, 1e22, type(uint256).max, type(uint256).max, address(this), block.timestamp + 1 hours, bytes(""));
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         _activateStream();
         vm.prank(address(hook));
@@ -391,7 +402,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     function testIncZeroLiquidityCleansOwnerIndices() public {
         uint256 tokenId;
         (tokenId,) = EasyPosm.mint(positionManager, key, -3000, 3000, 1e22, type(uint256).max, type(uint256).max, address(this), block.timestamp + 1 hours, bytes(""));
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         _activateStream();
         vm.prank(address(hook));
@@ -422,7 +433,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         uint256 tokenId;
         (tokenId,) = EasyPosm.mint(positionManager, key, tl, tu, 1e22, type(uint256).max, type(uint256).max, address(this), block.timestamp + 1 hours, bytes(""));
-        positionManager.subscribe(tokenId, address(gs), bytes(""));
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
 
         _activateStream();
         vm.prank(address(hook));

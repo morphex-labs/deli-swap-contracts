@@ -14,7 +14,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
@@ -95,7 +95,7 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         gauge = new DailyEpochGauge(
             address(0xFEE),
             poolManager,
-            IPositionManager(address(0)),
+            IPositionManagerAdapter(address(0)),
             hookAddr,
             IERC20(address(bmx)),
             address(0)
@@ -266,8 +266,10 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         // 3. Flush – should only process BMX→wBLT path
         fp.flushBuffers();
 
-        // 4. Assertions: voter buffer cleared, buyback buffer unchanged (still zero)
-        assertEq(fp.pendingBmxForVoter(), 0, "voter buffer not cleared");
+        // 4. Assertions: voter buffer has residual from internal swap fee
+        // The internal BMX->wBLT swap generates its own fee (3% goes to voter buffer)
+        assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
+        assertLt(fp.pendingBmxForVoter(), voterBuf / 100, "residual should be small");
         assertEq(fp.pendingWbltForBuyback(), 0, "buyback buffer should remain zero");
 
         uint256 postBal = wblt.balanceOf(VOTER_DST);

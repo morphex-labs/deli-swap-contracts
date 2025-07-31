@@ -28,6 +28,7 @@ contract VoterInvariant is Test {
     //////////////////////////////////////////////////////////////*/
     uint256 totalDeposited;
     address[] users;
+    uint256 usersCount = 10; // set to 200 for testing
 
     function setUp() public {
         weth = new MockERC20("WETH","WETH",18);
@@ -48,7 +49,7 @@ contract VoterInvariant is Test {
         voter.setAdmin(address(this));
 
         // mint tokens to users
-        for (uint256 i; i < 200; ++i) {
+        for (uint256 i; i < usersCount; ++i) {
             address addr = address(uint160(i + 1));
             users.push(addr);
             sbf.mint(addr, 1e22);

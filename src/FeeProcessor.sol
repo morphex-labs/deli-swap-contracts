@@ -17,6 +17,7 @@ import {SafeCallback} from "v4-periphery/src/base/SafeCallback.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {TransientStateLibrary} from "@uniswap/v4-core/src/libraries/TransientStateLibrary.sol";
 
 import {IDailyEpochGauge} from "./interfaces/IDailyEpochGauge.sol";
 import {DeliErrors} from "./libraries/DeliErrors.sol";
@@ -44,6 +45,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     using BalanceDeltaLibrary for BalanceDelta;
     using CurrencySettler for Currency;
     using InternalSwapFlag for bytes;
+    using TransientStateLibrary for IPoolManager;
 
     /*//////////////////////////////////////////////////////////////
                                   STORAGE
@@ -165,6 +167,32 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         _tryFlushBuffers();
     }
 
+    /// @notice Called by DeliHook to process fees from internal buyback swaps.
+    /// @dev For internal swaps on BMX pool, fees are always in BMX.
+    ///      97% goes directly to gauge, 3% to voter buffer.
+    /// @param bmxAmount The amount of BMX fee collected from internal swap.
+    function collectInternalFee(uint256 bmxAmount) external onlyHook {
+        if (bmxAmount == 0) revert DeliErrors.ZeroAmount();
+
+        // Split: 97% to gauge, 3% to voter buffer
+        uint256 buybackPortion = (bmxAmount * buybackBps) / 10_000;
+        uint256 voterPortion = bmxAmount - buybackPortion;
+
+        emit FeeReceived(msg.sender, bmxAmount, true);
+        emit FeeSplit(buybackPortion, voterPortion, true);
+
+        // Send 97% directly to gauge (BMX is already the target token)
+        if (buybackPortion > 0 && buybackPoolSet) {
+            PoolId pid = buybackPoolKey.toId();
+            DAILY_GAUGE.addRewards(pid, buybackPortion);
+        }
+
+        // Add 3% to voter buffer (needs conversion to wBLT later)
+        if (voterPortion > 0) {
+            pendingBmxForVoter += voterPortion;
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                                ADMIN
     //////////////////////////////////////////////////////////////*/
@@ -278,13 +306,26 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
             pendingBmxForVoter = 0;
         }
 
-        poolManager.unlock(abi.encode(amount));
+        // Check if we're already inside an unlock context
+        if (poolManager.isUnlocked()) {
+            // We're already unlocked, execute the swap directly
+            _executeSwap();
+        } else {
+            // Need to unlock first
+            poolManager.unlock(abi.encode(amount));
+        }
     }
 
     /// @inheritdoc SafeCallback
     function _unlockCallback(bytes calldata) internal override returns (bytes memory) {
         if (msg.sender != address(poolManager)) revert DeliErrors.NotPoolManager();
+        _executeSwap();
+        return bytes("");
+    }
 
+    /// @notice Executes the pending swap operation
+    /// @dev Can be called either from _unlockCallback or directly if already unlocked
+    function _executeSwap() internal {
         PendingSwapType stype = _pendingSwap;
         uint256 amtIn = _pendingAmount;
         if (stype == PendingSwapType.NONE) revert DeliErrors.NoSwap();
@@ -338,7 +379,9 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         }
 
         BalanceDelta delta;
-        try poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG)) returns (BalanceDelta d) {
+        try poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG)) returns (
+            BalanceDelta d
+        ) {
             delta = d;
         } catch {
             // Swap failed, re-credit the corresponding buffer so fees aren’t lost.
@@ -355,7 +398,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
             }
             _pendingSwap = PendingSwapType.NONE;
             _pendingAmount = 0;
-            return bytes("");
+            return;
         }
 
         // Determine output values & currency helpers
@@ -382,6 +425,5 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
         _pendingSwap = PendingSwapType.NONE;
         _pendingAmount = 0;
-        return bytes("");
     }
 }

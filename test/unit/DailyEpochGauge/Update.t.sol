@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/DailyEpochGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -20,7 +21,7 @@ contract TokenMock is ERC20 {
 // harness to expose internal mappings we need for assertions
 contract GaugeViewHarness is DailyEpochGauge {
     constructor(address fp, address pm, address pos, address hook, IERC20 bmx)
-        DailyEpochGauge(fp, IPoolManager(pm), IPositionManager(pos), hook, bmx, address(0)) {}
+        DailyEpochGauge(fp, IPoolManager(pm), IPositionManagerAdapter(pos), hook, bmx, address(0)) {}
 
     function ownerPosLen(PoolId pid, address owner) external view returns (uint256) {
         return ownerPositions[pid][owner].length;
@@ -205,7 +206,7 @@ contract DailyEpochGauge_UpdateTest is Test {
         DailyEpochGauge g2 = new DailyEpochGauge(
             address(0xFEE),
             IPoolManager(address(pm)),
-            IPositionManager(address(0x1111)),
+            IPositionManagerAdapter(address(0x1111)),
             hookAddr,
             bmxToken,
             address(mig)

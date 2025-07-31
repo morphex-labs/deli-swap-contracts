@@ -59,8 +59,43 @@ contract DeliHook_InternalSwapFlagTest is Test {
         hook.afterSwap(trader, key, params, toBalanceDelta(0,0), data);
     }
 
-    function testInternalSwapFlagSkipsAllSideEffects() public {
-        // Construct arbitrary pool where currency1 is wBLT (required)
+    function testInternalSwapFlagSkipsGaugesButCollectsFees() public {
+        // Setup BMX pool for internal swaps
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(address(bmx)),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: hook
+        });
+
+        // Provide BMX to PoolManager for fee collection
+        bmx.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        bmx.approve(address(hook), type(uint256).max);
+
+        // zeroForOne swap params; sentinel data for internal swap
+        SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
+        bytes memory flagData = abi.encode(bytes4(0xDE1ABEEF));
+
+        _callSwap(address(0xCAFE), key, sp, flagData);
+
+        // 1. Internal fee should be collected (not regular fee)
+        assertEq(fp.calls(), 0, "regular collectFee should not be called");
+        assertEq(fp.internalFeeCalls(), 1, "collectInternalFee should be called once");
+        uint256 expectedFee = 1e18 * 3000 / 1_000_000; // 0.3% of 1e18
+        assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
+        
+        // 2. No epoch roll or pool poke (gauges should be skipped)
+        assertEq(daily.rollCalls(), 0, "daily gauge should not be rolled");
+        assertEq(daily.pokeCalls(), 0, "daily gauge should not be poked");
+        
+        // 3. IncentiveGauge not poked
+        assertEq(inc.pokeCount(), 0, "incentive gauge should not be poked");
+    }
+
+    function testNormalSwapStillUpdatesGauges() public {
+        // Non-BMX pool to ensure normal swaps still work
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
@@ -69,20 +104,16 @@ contract DeliHook_InternalSwapFlagTest is Test {
             hooks: hook
         });
 
-        // zeroForOne swap params; sentinel data
+        // Normal swap without internal flag
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
-        bytes memory flagData = abi.encode(bytes4(0xDE1ABEEF));
+        
+        _callSwap(address(0xCAFE), key, sp, "");
 
-        _callSwap(address(0xCAFE), key, sp, flagData);
-
-        // 1. No fee forwarded
-        assertEq(fp.calls(), 0);
-        // 2. No epoch roll or pool poke
-        assertEq(daily.rollCalls(), 0);
-        assertEq(daily.pokeCalls(), 0);
-        // 3. IncentiveGauge not poked
-        assertEq(inc.pokeCount(), 0);
-        // 4. PoolManager not touched (no settle calls)
-        assertEq(pm.settleCalls(), 0);
+        // Should update gauges and collect regular fees
+        assertEq(fp.calls(), 1, "regular fee should be collected");
+        assertEq(fp.internalFeeCalls(), 0, "internal fee should not be collected");
+        assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
+        assertEq(daily.pokeCalls(), 1, "daily gauge should be poked");
+        assertEq(inc.pokeCount(), 1, "incentive gauge should be poked");
     }
 } 

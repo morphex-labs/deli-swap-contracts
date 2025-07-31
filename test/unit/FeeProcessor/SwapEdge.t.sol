@@ -285,4 +285,29 @@ contract FeeProcessor_SwapEdgeTest is Test {
         // Second collect triggers a successful swap that clears the buffer again
         assertEq(fp.pendingWbltForBuyback(), 0, "buffer should be zero after successful swap");
     }
+
+    function testInternalFeeNoRecursion() public {
+        // Test that collecting internal fees doesn't trigger flushBuffers
+        uint256 bmxFee = 100 ether;
+        
+        // Collect some regular fees first to populate buffers
+        _collectNonBmx(200 ether);
+        _collectBmx(150 ether);
+        
+        uint256 preBuyback = fp.pendingWbltForBuyback();
+        uint256 preBmxVoter = fp.pendingBmxForVoter();
+        uint256 preGauge = gauge.rewards(buybackKey.toId());
+        
+        // Collect internal fee
+        vm.prank(HOOK);
+        fp.collectInternalFee(bmxFee);
+        
+        // Buffers should remain unchanged (no flush triggered)
+        assertEq(fp.pendingWbltForBuyback(), preBuyback, "buyback buffer changed");
+        assertEq(fp.pendingBmxForVoter(), preBmxVoter + (bmxFee * 300 / 10_000), "BMX voter buffer incorrect");
+        
+        // Gauge should increase by 97% of internal fee
+        uint256 expectedGaugeIncrease = (bmxFee * fp.buybackBps()) / 10_000;
+        assertEq(gauge.rewards(buybackKey.toId()), preGauge + expectedGaugeIncrease, "gauge increase incorrect");
+    }
 } 

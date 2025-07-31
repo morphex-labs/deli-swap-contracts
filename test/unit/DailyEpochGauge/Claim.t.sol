@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/DailyEpochGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {RangePool} from "src/libraries/RangePool.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
@@ -16,7 +17,7 @@ contract MockBMX is ERC20 {
 // Harness exposing internal setters (copied from Storage.t.sol)
 contract GaugeHarness2 is DailyEpochGauge {
     constructor(address _fp, address _pm, address _posMgr, address _hook, IERC20 _bmx)
-        DailyEpochGauge(_fp, IPoolManager(_pm), IPositionManager(_posMgr), _hook, _bmx, address(0)) {}
+        DailyEpochGauge(_fp, IPoolManager(_pm), IPositionManagerAdapter(_posMgr), _hook, _bmx, address(0)) {}
 
     function setPositionState(bytes32 key, uint256 paidRpl, uint256 accrued, uint128 liq) external {
         RangePosition.State storage ps = positionRewards[key];

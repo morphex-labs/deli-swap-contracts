@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
+import "forge-std/console.sol";
 import "test/utils/Deployers.sol";
 import {EasyPosm} from "test/utils/libraries/EasyPosm.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
@@ -25,13 +26,15 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {CurrencyDelta} from "@uniswap/v4-core/src/libraries/CurrencyDelta.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
     using CurrencySettler for Currency;
     using BalanceDeltaLibrary for BalanceDelta;
+    using CurrencyDelta for Currency;
 
     FeeProcessor fp;
     DailyEpochGauge gauge;
@@ -93,7 +96,7 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         uint160 hookFlags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
 
-        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManager(address(0)), predictedHook, IERC20(address(bmx)), address(0));
+        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, IERC20(address(bmx)), address(0));
         fp = new FeeProcessor(poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), VOTER_DST);
 
         // Deploy mock incentive gauge so DeliHook.afterSwap can call pokePool without reverting
@@ -113,8 +116,7 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
 
-        // Allow hook to pull wBLT fees from this contract during _pullFromSender path
-        wblt.approve(address(hook), type(uint256).max);
+        // No need to approve hook anymore - fees are taken from swap amount
 
         /***************************************************
          * 4. Pools + bootstrap liquidity                  *
@@ -180,6 +182,14 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
 
         BalanceDelta delta = poolManager.swap(key, sp, bytes(""));
 
+        console.log("=== Test unlockCallback after swap ===");
+        console.log("Swap delta amount0:", delta.amount0());
+        console.log("Swap delta amount1:", delta.amount1());
+        
+        // Check our deltas before taking output
+        console.log("Test delta currency0 before take:", key.currency0.getDelta(address(this)));
+        console.log("Test delta currency1 before take:", key.currency1.getDelta(address(this)));
+
         if (sp.zeroForOne) {
             uint256 outAmt = uint256(int256(delta.amount1()));
             if (outAmt > 0) key.currency1.take(poolManager, address(this), outAmt, false);
@@ -187,6 +197,11 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
             uint256 outAmt = uint256(int256(delta.amount0()));
             if (outAmt > 0) key.currency0.take(poolManager, address(this), outAmt, false);
         }
+        
+        // Check deltas after taking output
+        console.log("Test delta currency0 after take:", key.currency0.getDelta(address(this)));
+        console.log("Test delta currency1 after take:", key.currency1.getDelta(address(this)));
+        
         poolManager.settle();
         return bytes("");
     }
@@ -218,9 +233,9 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         assertEq(fp.pendingWbltForBuyback(), buybackPortion, "buyback buf");
         assertEq(fp.pendingWbltForVoter(),   voterPortion,   "voter buf");
 
-        // Sender paid fee (input + fee)
+        // Sender pays swap amount, fee is borrowed from pool reserves
         uint256 balAfter = wblt.balanceOf(address(this));
-        assertEq(balBefore - balAfter, input + feeAmt, "fee pull mismatch");
+        assertEq(balBefore - balAfter, input, "should only deduct swap amount");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -251,7 +266,8 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
 
         // Buffers cleared
         assertEq(fp.pendingWbltForBuyback(), 0, "buyback not cleared");
-        assertEq(fp.pendingBmxForVoter(),    0, "voter not cleared");
+        // Note: pendingBmxForVoter may have small amount from internal swap fees
+        assertGt(fp.pendingBmxForVoter(), 0, "should have fees from internal swaps");
 
         // Gauge bucket increased (received BMX from buy-back)
         uint256 bucketAfter = gauge.collectBucket(canonicalKey.toId());
@@ -301,9 +317,10 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
 
         fp.flushBuffers();
 
-        // Buy-back buffer cleared, voter buffers untouched (should be zero)
+        // Buy-back buffer cleared
         assertEq(fp.pendingWbltForBuyback(), 0, "buyback not cleared");
-        assertEq(fp.pendingBmxForVoter(),    0, "voter bmx unexpected");
+        // Note: pendingBmxForVoter will have fees from the internal buyback swap
+        assertGt(fp.pendingBmxForVoter(), 0, "should have fees from internal swap");
 
         // Gauge bucket received BMX > 0
         assertGt(gauge.collectBucket(canonicalKey.toId()), 0, "bucket empty");
@@ -374,9 +391,10 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         uint256 buf = fp.pendingWbltForBuyback();
         assertGt(buf, 0, "no pending buffer");
 
-        // Configure buy-back pool and tighten slippage tolerance to 0.5%
+        // Configure buy-back pool and set slippage tolerance
+        // Need to account for 0.3% fee on internal swaps
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(9950); // allow only 0.5% slippage
+        fp.setMinOutBps(9900); // allow 1% slippage (covers 0.3% fee + some price impact)
 
         uint256 bucketBefore = gauge.collectBucket(canonicalKey.toId());
 

@@ -116,7 +116,7 @@ contract DeliHook_EdgeTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // 3. pullFromSender branch on BMX pool should call settle
+    // 3. BMX pool should not use pullFromSender logic (always uses take)
     // ---------------------------------------------------------------------
     function testPullFromSender_BmxPool_SettleCalled() public {
         PoolKey memory key = PoolKey({

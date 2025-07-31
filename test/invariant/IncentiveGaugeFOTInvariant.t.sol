@@ -6,7 +6,7 @@ import "forge-std/Test.sol";
 import {IncentiveGauge} from "src/IncentiveGauge.sol";
 import {MockPoolManager} from "test/mocks/MockPoolManager.sol";
 import {FeeOnTransferERC20} from "test/mocks/FeeOnTransferERC20.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
@@ -37,7 +37,7 @@ contract IncentiveGaugeFOTInvariant is Test {
         fot.mint(address(this), 1e26);
 
         pm = new MockPoolManager();
-        gauge = new IncentiveGauge(IPoolManager(address(pm)), IPositionManager(address(0x1)), address(this));
+        gauge = new IncentiveGauge(IPoolManager(address(pm)), IPositionManagerAdapter(address(0x1)), address(this));
         gauge.setWhitelist(IERC20(address(fot)), true);
 
         key = PoolKey({

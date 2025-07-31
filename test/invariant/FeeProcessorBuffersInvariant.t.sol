@@ -40,6 +40,7 @@ contract FeeProcessorBuffersInvariant is Test {
 
     uint256 internal totalBmxFees;   // fees sent via BMX pool
     uint256 internal totalWbltFees;  // fees sent via OTHER/wBLT pool
+    uint256 internal totalInternalFees; // fees from internal swaps
 
     PoolKey internal bmxPoolKey;
     PoolKey internal otherPoolKey;
@@ -73,6 +74,9 @@ contract FeeProcessorBuffersInvariant is Test {
         });
         bmxPid = bmxPoolKey.toId();
 
+        // Set buyback pool key for internal fee distribution
+        fp.setBuybackPoolKey(bmxPoolKey);
+
         // whitelist this test as authorised hook sender
         vm.prank(address(this));
         // no different requirement – collectFee only has onlyHook modifier inside FeeProcessor which checks sender == deliHook
@@ -85,14 +89,22 @@ contract FeeProcessorBuffersInvariant is Test {
                                 FUZZ ACTION
     //////////////////////////////////////////////////////////////*/
 
-    function fuzz_step(bool useBmxPool, uint256 amount) external {
+    function fuzz_step(uint256 choice, uint256 amount) external {
         uint256 amt = bound(amount, 1, 1e24);
-        if (useBmxPool) {
+        uint256 action = choice % 3;
+        
+        if (action == 0) {
+            // Regular BMX pool fee
             fp.collectFee(bmxPoolKey, amt);
             totalBmxFees += amt;
-        } else {
+        } else if (action == 1) {
+            // Regular non-BMX pool fee
             fp.collectFee(otherPoolKey, amt);
             totalWbltFees += amt;
+        } else {
+            // Internal swap fee (always BMX)
+            fp.collectInternalFee(amt);
+            totalInternalFees += amt;
         }
     }
 
@@ -104,7 +116,8 @@ contract FeeProcessorBuffersInvariant is Test {
         uint256 gaugeRewards = gauge.rewards(bmxPid);
         uint256 pendingBmxVoter = fp.pendingBmxForVoter();
         // buyback buffer never holds BMX (only wBLT)
-        assertEq(gaugeRewards + pendingBmxVoter, totalBmxFees, "BMX fee mismatch");
+        // Internal fees are also BMX and go to gauge + voter
+        assertEq(gaugeRewards + pendingBmxVoter, totalBmxFees + totalInternalFees, "BMX fee mismatch");
     }
 
     function invariant_wbltAccounting() public {

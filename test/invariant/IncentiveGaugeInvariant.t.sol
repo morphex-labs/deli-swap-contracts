@@ -6,7 +6,7 @@ import "forge-std/Test.sol";
 import {IncentiveGauge} from "src/IncentiveGauge.sol";
 import {MockPoolManager} from "test/mocks/MockPoolManager.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
@@ -41,7 +41,7 @@ contract IncentiveGaugeInvariant is Test {
         pm = new MockPoolManager();
 
         // deploy gauge with hook = address(this) so we can call pokePool
-        gauge = new IncentiveGauge(IPoolManager(address(pm)), IPositionManager(address(0x1)), address(this));
+        gauge = new IncentiveGauge(IPoolManager(address(pm)), IPositionManagerAdapter(address(0x1)), address(this));
 
         // whitelist tokens (also implicit pool currency so allowed anyway)
         gauge.setWhitelist(IERC20(address(t0)), true);

@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/DailyEpochGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
@@ -33,7 +34,7 @@ contract DailyEpochGauge_EpochTest is Test {
         gauge = new DailyEpochGauge(
             feeProcessor,
             IPoolManager(poolManager),
-            IPositionManager(posManager),
+            IPositionManagerAdapter(posManager),
             hook,
             IERC20(address(bmx)),
             address(0) // no incentive gauge

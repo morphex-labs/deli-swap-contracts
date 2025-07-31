@@ -20,6 +20,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
+import {IPositionManagerAdapter} from "./interfaces/IPositionManagerAdapter.sol";
 
 import {RangePool} from "./libraries/RangePool.sol";
 import {RangePosition} from "./libraries/RangePosition.sol";
@@ -56,7 +57,7 @@ contract IncentiveGauge is Ownable2Step {
     struct DeltaParams {
         PoolId pid;
         IERC20 token;
-        bytes32 posKey;
+        bytes32 positionKey;
         int24 tickLower;
         int24 tickUpper;
         int24 tickSpacing;
@@ -74,9 +75,7 @@ contract IncentiveGauge is Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     IPoolManager public immutable POOL_MANAGER;
-    IPositionManager public immutable POSITION_MANAGER;
-
-    address public gaugeSubscriber;
+    IPositionManagerAdapter public positionManagerAdapter;
 
     mapping(address => bool) public isHook;
 
@@ -114,16 +113,16 @@ contract IncentiveGauge is Ownable2Step {
     event WhitelistSet(IERC20 indexed token, bool allowed);
     event IncentiveCreated(PoolId indexed pid, IERC20 indexed token, uint256 amount, uint256 rate);
     event Claimed(address indexed user, IERC20 indexed token, uint256 amount);
-    event GaugeSubscriberUpdated(address newGaugeSubscriber);
     event HookAuthorised(address hook, bool enabled);
+    event PositionManagerAdapterUpdated(address newAdapter);
 
     /*//////////////////////////////////////////////////////////////
                             CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(IPoolManager _pm, IPositionManager _posManager, address _hook) Ownable(msg.sender) {
+    constructor(IPoolManager _pm, IPositionManagerAdapter _posManagerAdapter, address _hook) Ownable(msg.sender) {
         POOL_MANAGER = _pm;
-        POSITION_MANAGER = _posManager;
+        positionManagerAdapter = _posManagerAdapter;
         isHook[_hook] = true;
         emit HookAuthorised(_hook, true);
     }
@@ -132,8 +131,8 @@ contract IncentiveGauge is Ownable2Step {
                             MODIFIERS
     //////////////////////////////////////////////////////////////*/
 
-    modifier onlyGaugeSubscriber() {
-        if (msg.sender != gaugeSubscriber) revert DeliErrors.NotSubscriber();
+    modifier onlyPositionManagerAdapter() {
+        if (msg.sender != address(positionManagerAdapter)) revert DeliErrors.NotSubscriber();
         _;
     }
 
@@ -142,26 +141,25 @@ contract IncentiveGauge is Ownable2Step {
         _;
     }
 
-    /// @notice Authorise or de-authorise a hook address.
+    /*//////////////////////////////////////////////////////////////
+                                   ADMIN
+    //////////////////////////////////////////////////////////////*/
+
     function setHook(address hook, bool enabled) external onlyOwner {
         if (hook == address(0)) revert DeliErrors.ZeroAddress();
         isHook[hook] = enabled;
         emit HookAuthorised(hook, enabled);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                                   ADMIN
-    //////////////////////////////////////////////////////////////*/
-
     function setWhitelist(IERC20 token, bool ok) external onlyOwner {
         whitelist[token] = ok;
         emit WhitelistSet(token, ok);
     }
 
-    function setGaugeSubscriber(address _gs) external onlyOwner {
-        if (_gs == address(0)) revert DeliErrors.ZeroAddress();
-        gaugeSubscriber = _gs;
-        emit GaugeSubscriberUpdated(_gs);
+    function setPositionManagerAdapter(address _adapter) external onlyOwner {
+        if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
+        positionManagerAdapter = IPositionManagerAdapter(_adapter);
+        emit PositionManagerAdapterUpdated(_adapter);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -434,7 +432,7 @@ contract IncentiveGauge is Ownable2Step {
         _ensureTickInitialised(pool, d.tickLower, d.tickSpacing);
         _ensureTickInitialised(pool, d.tickUpper, d.tickSpacing);
 
-        RangePosition.State storage ps = positionRewards[d.posKey][d.token];
+        RangePosition.State storage ps = positionRewards[d.positionKey][d.token];
 
         // Accrue rewards before mutating liquidity using range-aware accumulator
         uint256 rangeRpl = pool.rangeRplX128(d.tickLower, d.tickUpper);
@@ -500,171 +498,257 @@ contract IncentiveGauge is Ownable2Step {
         }
     }
 
+    /// @dev Optimized liquidity removal for complete position removal
+    function _removeLiquidityCompletely(DeltaParams memory d) internal {
+        RangePool.State storage pool = poolRewards[d.pid][d.token];
+        RangePosition.State storage ps = positionRewards[d.positionKey][d.token];
+
+        // Accrue rewards before removing liquidity
+        uint256 rangeRpl = pool.rangeRplX128(d.tickLower, d.tickUpper);
+        ps.accrue(d.liquidityBefore, rangeRpl);
+
+        // For complete removal, we can skip the tick initialization checks
+        // since we're removing all liquidity anyway
+        pool.modifyPositionLiquidity(
+            RangePool.ModifyLiquidityParams({
+                tickLower: d.tickLower,
+                tickUpper: d.tickUpper,
+                liquidityDelta: d.liquidityDelta,
+                tickSpacing: d.tickSpacing
+            })
+        );
+    }
+
     /*//////////////////////////////////////////////////////////////
                             SUBSCRIPTIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a new position is created.
-    function notifySubscribe(uint256 tokenId, bytes memory) external onlyGaugeSubscriber {
-        (PoolKey memory key, PositionInfo info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
-        uint128 liquidity = POSITION_MANAGER.getPositionLiquidity(tokenId);
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
+    /// @notice Called by PositionManagerAdapter when a new position is created.
+    function notifySubscribe(uint256 tokenId, bytes memory) external onlyPositionManagerAdapter {
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        uint128 liquidity = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
 
         PoolId pid = key.toId();
-
-        // ensure pool accumulators updated for each token
         IERC20[] storage toks = poolTokens[pid];
-        {
-            (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-            for (uint256 t; t < toks.length; ++t) {
-                _updatePool(key, pid, toks[t], _currTick);
-            }
+
+        // index position key once
+        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+
+        // Early exit if no tokens
+        if (toks.length == 0) {
+            // Still need to track the position even if no tokens
+            RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
+            positionTicks[positionKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
+            return;
         }
 
-        // index posKey once
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
-        RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, posKey, liquidity);
+        // Get current tick once
+        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
 
         // save tick range
-        positionTicks[posKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
+        positionTicks[positionKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
 
-        // snapshot per token
+        // Cache values to avoid repeated calls
+        int24 tickLower = info.tickLower();
+        int24 tickUpper = info.tickUpper();
+        int128 liquidityDelta = SafeCast.toInt128(uint256(liquidity));
+
+        // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
-            positionRewards[posKey][toks[t]].initSnapshot(
-                poolRewards[pid][toks[t]].rangeRplX128(info.tickLower(), info.tickUpper())
-            );
-        }
-        for (uint256 t; t < toks.length; ++t) {
-            poolRewards[pid][toks[t]].modifyPositionLiquidity(
+            IERC20 token = toks[t];
+
+            // Update pool state
+            _updatePool(key, pid, token, _currTick);
+
+            // Snapshot rewards
+            positionRewards[positionKey][token].initSnapshot(poolRewards[pid][token].rangeRplX128(tickLower, tickUpper));
+
+            // Modify position liquidity
+            poolRewards[pid][token].modifyPositionLiquidity(
                 RangePool.ModifyLiquidityParams({
-                    tickLower: info.tickLower(),
-                    tickUpper: info.tickUpper(),
-                    liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
+                    tickLower: tickLower,
+                    tickUpper: tickUpper,
+                    liquidityDelta: liquidityDelta,
                     tickSpacing: key.tickSpacing
                 })
             );
         }
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position is removed.
-    function notifyUnsubscribe(uint256 tokenId) external onlyGaugeSubscriber {
-        (PoolKey memory key, PositionInfo info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
-        uint128 liquidity = POSITION_MANAGER.getPositionLiquidity(tokenId);
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
+    /// @notice Called by PositionManagerAdapter when a position is removed.
+    function notifyUnsubscribe(uint256 tokenId) external onlyPositionManagerAdapter {
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        uint128 liquidity = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
         PoolId pid = key.toId();
 
         IERC20[] storage _tokens = poolTokens[pid];
         uint256 _len = _tokens.length;
-        {
-            (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-            for (uint256 t; t < _len; ++t) {
-                _updatePool(key, pid, _tokens[t], _currTick);
-            }
+
+        // Early exit if no tokens
+        if (_len == 0) {
+            return;
         }
 
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
         int24 _tickLower = info.tickLower();
         int24 _tickUpper = info.tickUpper();
         int24 _spacing = key.tickSpacing;
 
+        // Get current tick once
+        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+
+        // Single loop to handle all tokens
         for (uint256 t; t < _len; ++t) {
-            _applyLiquidityDelta(
+            IERC20 token = _tokens[t];
+
+            // Check if position has liquidity for this token
+            // Skip if position was never initialized for this token
+            RangePosition.State storage posState = positionRewards[positionKey][token];
+            if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
+                continue;
+            }
+
+            // Update pool state
+            _updatePool(key, pid, token, _currTick);
+
+            // Apply liquidity delta using optimized removal
+            _removeLiquidityCompletely(
                 DeltaParams({
                     pid: pid,
-                    token: _tokens[t],
-                    posKey: posKey,
+                    token: token,
+                    positionKey: positionKey,
                     tickLower: _tickLower,
                     tickUpper: _tickUpper,
                     tickSpacing: _spacing,
                     liquidityBefore: liquidity,
-                    liquidityDelta: -SafeCast.toInt128(int256(uint256(liquidity)))
+                    liquidityDelta: -int128(uint128(liquidity))
                 })
             );
+
+            // Delete position rewards inline
+            delete positionRewards[positionKey][token];
         }
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
-        delete positionTicks[posKey];
-        for (uint256 t; t < _len; ++t) {
-            delete positionRewards[posKey][_tokens[t]];
-        }
+
+        // Clean up position tracking
+        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
+        delete positionTicks[positionKey];
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position is burned.
+    /// @notice Called by PositionManagerAdapter when a position is burned.
     function notifyBurn(uint256 tokenId, address ownerAddr, PositionInfo info, uint256 liquidity, BalanceDelta)
         external
-        onlyGaugeSubscriber
+        onlyPositionManagerAdapter
     {
-        PoolKey memory key = IPoolKeys(address(POSITION_MANAGER)).poolKeys(info.poolId());
+        // For burned positions, we can't look up the tokenId normally
+        // Instead, use the PositionInfo to get the PoolKey via IPoolKeys
+        PoolKey memory key = positionManagerAdapter.getPoolKeyFromPositionInfo(info);
         PoolId pid = key.toId();
 
-        IERC20[] storage _tokensB = poolTokens[pid];
-        uint256 _lenB = _tokensB.length;
-        {
-            (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-            for (uint256 t; t < _lenB; ++t) {
-                _updatePool(key, pid, _tokensB[t], _currTick);
-            }
+        IERC20[] storage _tokens = poolTokens[pid];
+
+        // Early exit if no tokens
+        if (_tokens.length == 0) {
+            return;
         }
 
-        bytes32 posKey = keccak256(abi.encode(ownerAddr, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
-        int24 _tickLower = info.tickLower();
-        int24 _tickUpper = info.tickUpper();
-        int24 _spacingB = key.tickSpacing;
+        // Cache tick values to avoid repeated calls
+        int24 tickLower = info.tickLower();
+        int24 tickUpper = info.tickUpper();
 
-        for (uint256 t; t < _lenB; ++t) {
-            _applyLiquidityDelta(
+        bytes32 positionKey = keccak256(abi.encode(ownerAddr, tickLower, tickUpper, bytes32(tokenId), pid));
+
+        // Get current tick once
+        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+
+        // Single loop to handle all tokens
+        for (uint256 t; t < _tokens.length; ++t) {
+            IERC20 token = _tokens[t];
+
+            // Check if position has liquidity for this token
+            // Skip if position was never initialized for this token
+            RangePosition.State storage posState = positionRewards[positionKey][token];
+            if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
+                continue;
+            }
+
+            // Update pool state
+            _updatePool(key, pid, token, _currTick);
+
+            // Apply liquidity delta using optimized removal
+            _removeLiquidityCompletely(
                 DeltaParams({
                     pid: pid,
-                    token: _tokensB[t],
-                    posKey: posKey,
-                    tickLower: _tickLower,
-                    tickUpper: _tickUpper,
-                    tickSpacing: _spacingB,
+                    token: token,
+                    positionKey: positionKey,
+                    tickLower: tickLower,
+                    tickUpper: tickUpper,
+                    tickSpacing: key.tickSpacing,
                     liquidityBefore: uint128(liquidity),
-                    liquidityDelta: -SafeCast.toInt128(int256(uint256(liquidity)))
+                    liquidityDelta: -int128(uint128(liquidity))
                 })
             );
+
+            // Delete position rewards inline
+            delete positionRewards[positionKey][token];
         }
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, posKey);
-        for (uint256 t; t < _lenB; ++t) {
-            delete positionRewards[posKey][_tokensB[t]];
-        }
+
+        // Clean up position tracking
+        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
+        delete positionTicks[positionKey];
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position's liquidity is modified.
+    /// @notice Called by PositionManagerAdapter when a position's liquidity is modified.
     function notifyModifyLiquidity(uint256 tokenId, int256 liquidityChange, BalanceDelta)
         external
-        onlyGaugeSubscriber
+        onlyPositionManagerAdapter
     {
-        (PoolKey memory key, PositionInfo info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
         PoolId pid = key.toId();
 
-        uint128 currentLiq = POSITION_MANAGER.getPositionLiquidity(tokenId);
+        uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
+
         uint128 liquidityBefore = uint128(int128(currentLiq) - int128(liquidityChange));
 
         IERC20[] storage toks = poolTokens[pid];
-        {
-            (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-            for (uint256 t; t < toks.length; ++t) {
-                _updatePool(key, pid, toks[t], _currTick);
+        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+
+        // Early exit if no tokens
+        if (toks.length == 0) {
+            if (currentLiq == 0) {
+                RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
+                delete positionTicks[positionKey];
+            } else {
+                positionLiquidity[positionKey] = currentLiq;
             }
+            return;
         }
 
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        // Get current tick once
+        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
 
-        // Cache
+        // Cache values
         int24 _tickLower = info.tickLower();
         int24 _tickUpper = info.tickUpper();
         int24 _tickSpacing = key.tickSpacing;
-
         int128 _delta = SafeCast.toInt128(liquidityChange);
 
+        // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
+            IERC20 token = toks[t];
+
+            // Update pool state
+            _updatePool(key, pid, token, _currTick);
+
+            // Apply liquidity delta
             _applyLiquidityDelta(
                 DeltaParams({
                     pid: pid,
-                    token: toks[t],
-                    posKey: posKey,
+                    token: token,
+                    positionKey: positionKey,
                     tickLower: _tickLower,
                     tickUpper: _tickUpper,
                     tickSpacing: _tickSpacing,
@@ -672,16 +756,19 @@ contract IncentiveGauge is Ownable2Step {
                     liquidityDelta: _delta
                 })
             );
+
+            // If liquidity is now zero, delete rewards inline
+            if (currentLiq == 0) {
+                delete positionRewards[positionKey][token];
+            }
         }
 
+        // Clean up or update position tracking
         if (currentLiq == 0) {
-            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
-            delete positionTicks[posKey];
-            for (uint256 t; t < toks.length; ++t) {
-                delete positionRewards[posKey][toks[t]];
-            }
+            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
+            delete positionTicks[positionKey];
         } else {
-            positionLiquidity[posKey] = currentLiq;
+            positionLiquidity[positionKey] = currentLiq;
         }
     }
 }

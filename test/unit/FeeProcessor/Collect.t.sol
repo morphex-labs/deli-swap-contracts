@@ -32,6 +32,10 @@ contract FeeProcessor_CollectTest is Test {
     // Dummy pool manager (not used in these unit tests)
     IPoolManager constant PM = IPoolManager(address(0));
 
+    // Pool keys and IDs
+    PoolKey bmxPoolKey;
+    PoolId bmxPid;
+
     function setUp() public {
         gauge = new MockDailyEpochGauge();
         fp = new FeeProcessor(
@@ -42,6 +46,10 @@ contract FeeProcessor_CollectTest is Test {
             IDailyEpochGauge(gauge),
             VOTER
         );
+
+        // Initialize bmxPoolKey
+        bmxPoolKey = _makePoolKey(BMX_TOKEN, WBLT_TOKEN);
+        bmxPid = bmxPoolKey.toId();
     }
 
     // ---------------------------------------------------------------------
@@ -123,5 +131,54 @@ contract FeeProcessor_CollectTest is Test {
         PoolKey memory badKey = _makePoolKey(OTHER_TOKEN, WBLT_TOKEN); // currency0 != BMX
         vm.expectRevert(DeliErrors.InvalidPoolKey.selector);
         fp.setBuybackPoolKey(badKey);
+    }
+
+    function testCollectInternalFeeWithNonHookReverts() public {
+        vm.expectRevert(DeliErrors.NotHook.selector);
+        fp.collectInternalFee(1000);
+    }
+
+    function testCollectInternalFeeZeroAmountReverts() public {
+        vm.prank(HOOK);
+        vm.expectRevert(DeliErrors.ZeroAmount.selector);
+        fp.collectInternalFee(0);
+    }
+
+    function testCollectInternalFeeSplitsCorrectly() public {
+        uint256 amount = 1_000 ether;
+        
+        // Set buyback pool key first
+        fp.setBuybackPoolKey(bmxPoolKey);
+        
+        // Act as hook
+        vm.prank(HOOK);
+        fp.collectInternalFee(amount);
+        
+        uint256 buybackPortion = (amount * fp.buybackBps()) / 10_000; // 97%
+        uint256 voterPortion = amount - buybackPortion; // 3%
+        
+        // Gauge should have received buyback portion
+        assertEq(gauge.rewards(bmxPid), buybackPortion, "Gauge rewards incorrect");
+        
+        // Voter buffer should have BMX
+        assertEq(fp.pendingBmxForVoter(), voterPortion, "pendingBmxForVoter incorrect");
+    }
+
+    function testCollectInternalFeeWithoutBuybackPoolSet() public {
+        uint256 amount = 500 ether;
+        
+        // Don't set buyback pool key
+        
+        vm.prank(HOOK);
+        fp.collectInternalFee(amount);
+        
+        uint256 buybackPortion = (amount * fp.buybackBps()) / 10_000;
+        uint256 voterPortion = amount - buybackPortion;
+        
+        // Gauge should NOT receive anything (no pool set)
+        assertEq(gauge.rewards(bmxPid), 0, "Gauge should not receive without pool set");
+        
+        // Only voter buffer should be populated
+        assertEq(fp.pendingBmxForVoter(), voterPortion, "pendingBmxForVoter incorrect");
     }
 } 

@@ -10,7 +10,9 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import "src/DeliHook.sol";
 import "src/DailyEpochGauge.sol";
 import "src/IncentiveGauge.sol";
-import "src/GaugeSubscriber.sol";
+import "src/PositionManagerAdapter.sol";
+import "src/handlers/V4PositionHandler.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -40,7 +42,8 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     // contracts
     DeliHook hook;
     DailyEpochGauge gauge;
-    GaugeSubscriber gs;
+    PositionManagerAdapter adapter;
+    V4PositionHandler v4Handler;
     IncentiveGauge inc;
 
     // tokens
@@ -82,11 +85,17 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
         // 4. Deploy gauge (no feeProcessor required for this test)
-        inc = new IncentiveGauge(poolManager, IPositionManager(address(positionManager)), predictedHook);
-        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManager(address(positionManager)), predictedHook, bmx, address(inc));
+        inc = new IncentiveGauge(poolManager, IPositionManagerAdapter(address(0)), predictedHook);
+        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, bmx, address(inc));
 
-        // 5. Deploy GaugeSubscriber that fans out to Daily + Incentive
-        gs = new GaugeSubscriber(IPositionManager(address(positionManager)), ISubscriber(address(gauge)), ISubscriber(address(inc)));
+        // 5. Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setPositionManager(address(positionManager));
 
         // 6. Deploy hook
         hook = new DeliHook{salt: salt}(
@@ -102,9 +111,9 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // dummy authorised sender for addRewards
 
-        // Set gaugeSubscriber in both gauges
-        gauge.setGaugeSubscriber(address(gs));
-        inc.setGaugeSubscriber(address(gs));
+        // Update gauges to use the adapter
+        gauge.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
         
         // 7. Initialise pool
         key = PoolKey({
@@ -130,7 +139,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenWide, address(gs), bytes(""));
+        positionManager.subscribe(tokenWide, address(adapter), bytes(""));
 
         // 8. Mint narrow-range position initially in-range (-600 to 600)
         (tokenNarrow,) = EasyPosm.mint(
@@ -145,7 +154,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenNarrow, address(gs), bytes(""));
+        positionManager.subscribe(tokenNarrow, address(adapter), bytes(""));
 
         // 9. Fund gauge bucket and activate streaming
         uint256 bucket = 1000 ether;
@@ -428,4 +437,5 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
 
     // Dummy implementation to satisfy IFeeProcessor and avoid revert
     function collectFee(PoolKey calldata, uint256) external override {}
+    function collectInternalFee(uint256) external override {}
 } 

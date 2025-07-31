@@ -9,7 +9,9 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import "src/DeliHook.sol";
 import "src/DailyEpochGauge.sol";
 import "src/IncentiveGauge.sol";
-import "src/GaugeSubscriber.sol";
+import "src/PositionManagerAdapter.sol";
+import "src/handlers/V4PositionHandler.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -31,7 +33,8 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     DeliHook hook;
     DailyEpochGauge daily;
     IncentiveGauge inc;
-    GaugeSubscriber gs;
+    PositionManagerAdapter adapter;
+    V4PositionHandler v4Handler;
 
     MockFeeProcessor fp;
 
@@ -82,10 +85,10 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         (address hookAddr, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
         // IncentiveGauge needs hook reference (construct before Daily so Daily can reference it)
-        inc = new IncentiveGauge(poolManager, IPositionManager(address(positionManager)), hookAddr);
+        inc = new IncentiveGauge(poolManager, IPositionManagerAdapter(address(0)), hookAddr);
 
         // DailyEpochGauge: set feeProcessor=this so tests can addRewards directly and reference incentive gauge
-        daily = new DailyEpochGauge(address(this), poolManager, IPositionManager(address(positionManager)), hookAddr, bmx, address(inc));
+        daily = new DailyEpochGauge(address(this), poolManager, IPositionManagerAdapter(address(0)), hookAddr, bmx, address(inc));
 
         // Whitelist reward token
         inc.setWhitelist(rewardTok, true);
@@ -125,14 +128,22 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         (tokenDailyId,) = EasyPosm.mint(positionManager, key, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
         (tokenIncId,)   = EasyPosm.mint(positionManager, key, -30000, 30000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
 
-        // Deploy GaugeSubscriber and wire gauges
-        gs = new GaugeSubscriber(IPositionManager(address(positionManager)), ISubscriber(address(daily)), ISubscriber(address(inc)));
-        daily.setGaugeSubscriber(address(gs));
-        inc.setGaugeSubscriber(address(gs));
+        // Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(daily), address(inc));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setPositionManager(address(positionManager));
+        
+        // Update gauges to use the adapter
+        daily.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
 
-        // Subscribe positions via GaugeSubscriber
-        positionManager.subscribe(tokenDailyId, address(gs), bytes(""));
-        positionManager.subscribe(tokenIncId,   address(gs), bytes(""));
+        // Subscribe positions via PositionManagerAdapter
+        positionManager.subscribe(tokenDailyId, address(adapter), bytes(""));
+        positionManager.subscribe(tokenIncId,   address(adapter), bytes(""));
 
         /***************************************************
          * 5. Create incentive stream & daily bucket       *
@@ -421,7 +432,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenDailyId2, address(gs), bytes(""));
+        positionManager.subscribe(tokenDailyId2, address(adapter), bytes(""));
 
         // -------------------------------------------------------------
         // Advance until the daily stream is active for sure.  Because

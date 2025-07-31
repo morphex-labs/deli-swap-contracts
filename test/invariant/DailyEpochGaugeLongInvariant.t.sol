@@ -7,7 +7,7 @@ import {DailyEpochGauge} from "src/DailyEpochGauge.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title DailyEpochGaugeLongInvariant
@@ -28,7 +28,7 @@ contract DailyEpochGaugeLongInvariant is Test {
         gauge = new DailyEpochGauge(
             address(this),
             IPoolManager(address(0x1)),
-            IPositionManager(address(0x1)),
+            IPositionManagerAdapter(address(0x1)),
             address(0x2),
             IERC20(address(0x3)),
             address(0)

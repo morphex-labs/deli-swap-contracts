@@ -8,10 +8,17 @@ contract MockFeeProcessor is IFeeProcessor {
     PoolKey public lastKey;
     uint256 public lastAmount;
     uint256 public calls;
+    uint256 public internalFeeCalls;
+    uint256 public lastInternalFeeAmount;
 
     function collectFee(PoolKey calldata key, uint256 amount) external override {
         lastKey = key;
         lastAmount = amount;
         calls += 1;
+    }
+
+    function collectInternalFee(uint256 bmxAmount) external override {
+        lastInternalFeeAmount = bmxAmount;
+        internalFeeCalls += 1;
     }
 } 

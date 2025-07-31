@@ -50,7 +50,7 @@ contract DeliHook_SwapFeeTest is Test {
         // deploy hook at valid address using HookMiner
         bytes memory ctorArgs = abi.encode(address(pm), address(fp), address(daily), address(inc), address(wblt), address(bmx));
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
-        (address addr, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
         hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(fp)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), address(wblt), address(bmx));
     }
 
@@ -104,23 +104,36 @@ contract DeliHook_SwapFeeTest is Test {
         // no further asserts on key
     }
 
-    function testInternalSwapFlagBypass() public {
+    function testInternalSwapFlagOnBmxPool() public {
+        // BMX pool is required for internal swaps
         PoolKey memory key = PoolKey({
-            currency0: Currency.wrap(OTHER),
+            currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
             fee: 3000,
             tickSpacing: 60,
             hooks: hook
         });
+        
+        // Provide BMX to PoolManager
+        bmx.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        bmx.approve(address(hook), type(uint256).max);
+        
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
         bytes memory flagData = abi.encode(bytes4(0xDE1ABEEF));
         _callSwap(address(0xAAAA), key, sp, flagData);
-        // ensure no fee forwarded
-        assertEq(fp.calls(), 0);
+        
+        // Should call collectInternalFee, not regular collectFee
+        assertEq(fp.calls(), 0, "regular collectFee should not be called");
+        assertEq(fp.internalFeeCalls(), 1, "collectInternalFee should be called");
+        
+        uint256 expectedFee = 1e18 * 3000 / 1_000_000;
+        assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
     }
 
-    function testPullFromSenderBranch() public {
-        // Regular pool but swap direction wBLT -> OTHER so fee pulled from trader
+    function testWbltInputSwapFee() public {
+        // Test that wBLT input swaps correctly forward fees
+        // Fee is borrowed from pool, not pulled from user
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
@@ -128,22 +141,38 @@ contract DeliHook_SwapFeeTest is Test {
             tickSpacing: 60,
             hooks: hook
         });
-
-        // Mint wBLT to TRADER so hook can pull fee using transferFrom
-        wblt.mintExternal(TRADER, 5e18);
-
-        // Grant allowance from TRADER to DeliHook
-        vm.prank(TRADER);
-        IERC20(address(wblt)).approve(address(hook), type(uint256).max);
-
+        
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:-1e18, sqrtPriceLimitX96:0});
 
         _callSwap(TRADER, key, sp, "");
 
-        // PM should have been synced and take called
-        assertEq(Currency.unwrap(pm.lastSyncCurrency()), address(wblt));
+        // Fee should be forwarded to FeeProcessor
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
+        uint256 expected = 1e18 * 3000 / 1_000_000;
+        assertEq(tkAmt, expected);
+    }
+
+    function testExactOutputNoPullFromSender() public {
+        // Test that exact output swaps don't use pullFromSender
+        PoolKey memory key = PoolKey({
+            currency0: Currency.wrap(OTHER),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: hook
+        });
+
+        // Exact output swap: wBLT -> OTHER (positive amount)
+        SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:1e18, sqrtPriceLimitX96:0});
+
+        _callSwap(TRADER, key, sp, "");
+
+        // Fee should still be forwarded, but using normal borrow logic
+        (, address tkTo, uint256 tkAmt) = pm.lastTake();
+        assertEq(tkTo, address(fp));
+        // For exact output, fee is calculated on the unspecified (input) amount
+        // Since this is a mock, we expect the standard fee calculation
         uint256 expected = 1e18 * 3000 / 1_000_000;
         assertEq(tkAmt, expected);
     }

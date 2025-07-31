@@ -4,6 +4,8 @@ pragma solidity ^0.8.26;
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 
 /// @notice Minimal gauge stub that records rewards added per poolId; other functions are no-ops.
 contract MockDailyEpochGauge is IDailyEpochGauge {
@@ -57,4 +59,10 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     function initPool(PoolId pid, int24 initialTick) external override {
         // No-op
     }
+    
+    // Subscription callbacks (from ISubscriber interface)
+    function notifySubscribe(uint256, bytes memory) external override {}
+    function notifyUnsubscribe(uint256) external override {}
+    function notifyBurn(uint256, address, PositionInfo, uint256, BalanceDelta) external override {}
+    function notifyModifyLiquidity(uint256, int256, BalanceDelta) external override {}
 } 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// forge:optimizer yul=false
 pragma solidity ^0.8.21;
 
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";

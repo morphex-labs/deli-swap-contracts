@@ -5,12 +5,10 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
 import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
@@ -18,6 +16,7 @@ import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
+import {IPositionManagerAdapter} from "./interfaces/IPositionManagerAdapter.sol";
 
 import {RangePool} from "./libraries/RangePool.sol";
 import {RangePosition} from "./libraries/RangePosition.sol";
@@ -75,13 +74,12 @@ contract DailyEpochGauge is Ownable2Step {
     mapping(address => bool) public isHook;
     mapping(bytes32 => TickRange) internal positionTicks;
 
-    IPositionManager public immutable POSITION_MANAGER;
+    IPositionManagerAdapter public positionManagerAdapter;
     IPoolManager public immutable POOL_MANAGER;
     IERC20 public immutable BMX;
 
     address public feeProcessor;
     address public incentiveGauge;
-    address public gaugeSubscriber;
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
@@ -91,8 +89,8 @@ contract DailyEpochGauge is Ownable2Step {
     event RewardsAdded(PoolId indexed poolId, uint256 amount);
     event Claimed(address indexed user, uint256 amount);
     event FeeProcessorUpdated(address newFeeProcessor);
-    event GaugeSubscriberUpdated(address newGaugeSubscriber);
     event HookAuthorised(address hook, bool enabled);
+    event PositionManagerAdapterUpdated(address newAdapter);
 
     /*//////////////////////////////////////////////////////////////
                                   CONSTRUCTOR
@@ -101,14 +99,14 @@ contract DailyEpochGauge is Ownable2Step {
     constructor(
         address _feeProcessor,
         IPoolManager _pm,
-        IPositionManager _posManager,
+        IPositionManagerAdapter _posManagerAdapter,
         address _hook,
         IERC20 _bmx,
         address _incentiveGauge
     ) Ownable(msg.sender) {
         feeProcessor = _feeProcessor;
         POOL_MANAGER = _pm;
-        POSITION_MANAGER = _posManager;
+        positionManagerAdapter = _posManagerAdapter;
         BMX = _bmx;
         incentiveGauge = _incentiveGauge;
         isHook[_hook] = true;
@@ -129,15 +127,8 @@ contract DailyEpochGauge is Ownable2Step {
         _;
     }
 
-    /// @notice Authorise or remove a hook address.
-    function setHook(address hook, bool enabled) external onlyOwner {
-        if (hook == address(0)) revert DeliErrors.ZeroAddress();
-        isHook[hook] = enabled;
-        emit HookAuthorised(hook, enabled);
-    }
-
-    modifier onlyGaugeSubscriber() {
-        if (msg.sender != gaugeSubscriber) revert DeliErrors.NotSubscriber();
+    modifier onlyPositionManagerAdapter() {
+        if (msg.sender != address(positionManagerAdapter)) revert DeliErrors.NotSubscriber();
         _;
     }
 
@@ -151,10 +142,16 @@ contract DailyEpochGauge is Ownable2Step {
         emit FeeProcessorUpdated(_fp);
     }
 
-    function setGaugeSubscriber(address _gs) external onlyOwner {
-        if (_gs == address(0)) revert DeliErrors.ZeroAddress();
-        gaugeSubscriber = _gs;
-        emit GaugeSubscriberUpdated(_gs);
+    function setPositionManagerAdapter(address _adapter) external onlyOwner {
+        if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
+        positionManagerAdapter = IPositionManagerAdapter(_adapter);
+        emit PositionManagerAdapterUpdated(_adapter);
+    }
+
+    function setHook(address hook, bool enabled) external onlyOwner {
+        if (hook == address(0)) revert DeliErrors.ZeroAddress();
+        isHook[hook] = enabled;
+        emit HookAuthorised(hook, enabled);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -266,7 +263,7 @@ contract DailyEpochGauge is Ownable2Step {
     {
         currentStreamRate = epochInfo[pid].streamRate;
         rewardsPerLiquidityX128 = poolRewards[pid].cumulativeRplX128();
-        activeLiquidity = StateLibrary.getLiquidity(POOL_MANAGER, pid);
+        activeLiquidity = poolRewards[pid].liquidity;
     }
 
     /// @notice Batched version, returns array aligned to `pids` input.
@@ -286,7 +283,7 @@ contract DailyEpochGauge is Ownable2Step {
         for (uint256 i; i < len; ++i) {
             currentStreamRates[i] = epochInfo[pids[i]].streamRate;
             rewardsPerLiquidityX128s[i] = poolRewards[pids[i]].cumulativeRplX128();
-            activeLiquidities[i] = StateLibrary.getLiquidity(POOL_MANAGER, pids[i]);
+            activeLiquidities[i] = poolRewards[pids[i]].liquidity;
         }
     }
 
@@ -424,11 +421,11 @@ contract DailyEpochGauge is Ownable2Step {
                             SUBSCRIPTIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a new position is created.
-    function notifySubscribe(uint256 tokenId, bytes memory) external onlyGaugeSubscriber {
-        (PoolKey memory key, PositionInfo info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
-        uint128 liquidity = POSITION_MANAGER.getPositionLiquidity(tokenId);
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
+    /// @notice Called by PositionManagerAdapter when a new position is created.
+    function notifySubscribe(uint256 tokenId, bytes memory) external onlyPositionManagerAdapter {
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        uint128 liquidity = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
 
         PoolId pid = key.toId();
 
@@ -455,11 +452,11 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper()));
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position is withdrawn or unsubscribed.
-    function notifyUnsubscribe(uint256 tokenId) external onlyGaugeSubscriber {
-        (PoolKey memory key, PositionInfo info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
-        uint128 liquidity = POSITION_MANAGER.getPositionLiquidity(tokenId);
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
+    /// @notice Called by PositionManagerAdapter when a position is withdrawn or unsubscribed.
+    function notifyUnsubscribe(uint256 tokenId) external onlyPositionManagerAdapter {
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        uint128 liquidity = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
         PoolId pid = key.toId();
 
         _syncPoolState(key, pid);
@@ -488,12 +485,14 @@ contract DailyEpochGauge is Ownable2Step {
         delete positionRewards[posKey];
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position is burned.
+    /// @notice Called by PositionManagerAdapter when a position is burned.
     function notifyBurn(uint256 tokenId, address ownerAddr, PositionInfo info, uint256 liquidity, BalanceDelta)
         external
-        onlyGaugeSubscriber
+        onlyPositionManagerAdapter
     {
-        PoolKey memory key = IPoolKeys(address(POSITION_MANAGER)).poolKeys(info.poolId());
+        // For burned positions, we can't look up the tokenId normally
+        // Instead, use the PositionInfo to get the PoolKey via IPoolKeys
+        PoolKey memory key = positionManagerAdapter.getPoolKeyFromPositionInfo(info);
         PoolId pid = key.toId();
 
         _syncPoolState(key, pid);
@@ -524,19 +523,19 @@ contract DailyEpochGauge is Ownable2Step {
         );
     }
 
-    /// @notice Called by PositionManager through GaugeSubscriber when a position's liquidity is modified.
+    /// @notice Called by PositionManagerAdapter when a position's liquidity is modified.
     function notifyModifyLiquidity(uint256 tokenId, int256 liquidityChange, BalanceDelta)
         external
-        onlyGaugeSubscriber
+        onlyPositionManagerAdapter
     {
-        PoolKey memory key;
-        PositionInfo info;
-        (key, info) = POSITION_MANAGER.getPoolAndPositionInfo(tokenId);
+        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
         PoolId pid = key.toId();
 
         _syncPoolState(key, pid);
 
-        uint128 currentLiq = POSITION_MANAGER.getPositionLiquidity(tokenId);
+        uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
+        address owner = positionManagerAdapter.ownerOf(tokenId);
+
         uint128 liquidityBefore = uint128(int128(currentLiq) - int128(liquidityChange));
 
         // pin ticks so crossing works after liquidity goes to zero
@@ -545,8 +544,6 @@ contract DailyEpochGauge is Ownable2Step {
             _ensureTickInitialised(pool, info.tickLower(), key.tickSpacing);
             _ensureTickInitialised(pool, info.tickUpper(), key.tickSpacing);
         }
-
-        address owner = IERC721(address(POSITION_MANAGER)).ownerOf(tokenId);
         bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
         positionRewards[posKey].accrue(
             liquidityBefore, poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper())

@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/DailyEpochGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
@@ -17,7 +18,7 @@ contract MockToken2 is ERC20 {
 /// @dev Harness exposing internal storage setters
 contract GaugeHarness is DailyEpochGauge {
     constructor(address _fp, address _pm, address _posMgr, address _hook, IERC20 _bmx)
-        DailyEpochGauge(_fp, IPoolManager(_pm), IPositionManager(_posMgr), _hook, _bmx, address(0)) {}
+        DailyEpochGauge(_fp, IPoolManager(_pm), IPositionManagerAdapter(_posMgr), _hook, _bmx, address(0)) {}
 
     // direct mutate helpers --------------------------------------------------
     function setPoolRpl(PoolId pid, uint256 rpl) external {

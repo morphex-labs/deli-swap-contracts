@@ -54,6 +54,7 @@ contract DeliHook is Ownable2Step, BaseHook {
     uint256 private _pendingFee; // amount of wBLT fee owed for current swap
     bool private _pullFromSender; // true if we must pull extra fee token from trader (input side)
     Currency private _pendingCurrency; // fee token for current swap
+    bool private _isInternalSwap; // true if current swap is internal buyback
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
@@ -77,7 +78,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         address _bmx
     ) Ownable(msg.sender) BaseHook(_poolManager) {
         if (_wblt == address(0) || _bmx == address(0)) revert DeliErrors.ZeroAddress();
-        
+
         feeProcessor = _feeProcessor;
         dailyEpochGauge = _dailyEpochGauge;
         incentiveGauge = _incentiveGauge;
@@ -134,6 +135,7 @@ contract DeliHook is Ownable2Step, BaseHook {
     /// @notice Ensure any pool that chooses this hook includes wBLT as one of the two currencies.
     function _beforeInitialize(address, /*sender*/ PoolKey calldata key, uint160 /*sqrtPriceX96*/ )
         internal
+        view
         override
         returns (bytes4)
     {
@@ -168,16 +170,14 @@ contract DeliHook is Ownable2Step, BaseHook {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Called by PoolManager before executing the swap.
-    ///         If the calldata flag is present we bypass fee logic.
+    ///         Internal swaps still calculate fees but handle them differently.
     function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // Skip logic for internal buy-back swaps.
-        if (hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG) {
-            return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-        }
+        // Check if this is an internal buy-back swap
+        bool isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG;
 
         // Determine swap metadata
         bool exactInput = params.amountSpecified < 0;
@@ -202,19 +202,24 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Identify input currency
         Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
 
-        // Pull the fee from the trader only when the fee token is wBLT **and** it is on the input side.
-        // For the BMX pool we never pull, BMX is always borrowed via take()
-        _pullFromSender = (!isBmxPool && feeCurrency == inputCurrency);
+        // For non-BMX pools: use BeforeSwapDelta when fee is on input side (exact input swaps)
+        // Never pull from sender for internal swaps
+        _pullFromSender = (!isInternalSwap && !isBmxPool && feeCurrency == inputCurrency && exactInput);
 
         // Persist info for _afterSwap
         _pendingFee = feeAmount;
         _pendingCurrency = feeCurrency;
+        _isInternalSwap = isInternalSwap;
 
-        // Embed a positive specified-currency delta in the special case BMX pool, token0 -> token1
-        // This offsets the negative token0 delta created later by `take()` so that the hook ends the swap with a zero balance in both currencies.
+        // Calculate BeforeSwapDelta
         int128 specifiedDelta = 0;
-        if (isBmxPool && feeCurrency == inputCurrency && feeAmount > 0) {
-            // When the trader pays the fee token (BMX) on the input side we pre-credit the same amount so the later take() leaves zero delta.
+
+        if (_pullFromSender && feeAmount > 0) {
+            // For exact input with fee on input side:
+            // Reduce the swap input by the fee amount by returning a positive delta
+            specifiedDelta = SafeCast.toInt128(int256(feeAmount));
+        } else if (isBmxPool && feeCurrency == inputCurrency && feeAmount > 0) {
+            // BMX pool: pre-credit to offset later take()
             specifiedDelta = SafeCast.toInt128(int256(feeAmount));
         }
 
@@ -227,78 +232,63 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     /// @notice Responsible for forwarding collected fees and epoch maintenance
     function _afterSwap(
-        address sender,
+        address, /*sender*/
         PoolKey calldata key,
         SwapParams calldata params,
         BalanceDelta, /*balanceDelta*/
-        bytes calldata hookData
+        bytes calldata /*hookData*/
     ) internal override returns (bytes4, int128) {
-        // Early exit for internal buy-back swaps (no fee, no epoch roll)
-        if (hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG) {
-            return (BaseHook.afterSwap.selector, 0);
-        }
-
         // Collect the wBLT fee owed from beforeSwap
         uint256 feeOwed = _pendingFee;
         Currency feeCurrency = _pendingCurrency;
+        bool isInternalSwap = _isInternalSwap;
 
         // Reset pending fee storage
         _pendingFee = 0;
         _pendingCurrency = Currency.wrap(address(0));
+        _isInternalSwap = false;
 
-        // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
-        dailyEpochGauge.rollIfNeeded(key.toId());
-        dailyEpochGauge.pokePool(key);
-        incentiveGauge.pokePool(key);
+        // Skip gauge updates for internal swaps but still collect fees
+        if (!isInternalSwap) {
+            // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
+            dailyEpochGauge.rollIfNeeded(key.toId());
+            dailyEpochGauge.pokePool(key);
+            incentiveGauge.pokePool(key);
+        }
 
         // Clear the deltas produced by the gauge calls so we start fee logic from a zero-balance baseline.
         _clearHookDeltas(key);
 
-        // Identify whether this is the BMX/wBLT pool (different logic)
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX) || (Currency.unwrap(key.currency1) == BMX);
-
         // Forward the swap fee to FeeProcessor
+        int128 hookDeltaUnspecified = 0;
+
         if (feeOwed > 0) {
-            if (_pullFromSender) {
-                // Trader pays the fee token in, move it into the PoolManager
-                feeCurrency.settle(poolManager, sender, feeOwed, false);
-            }
+            // Always take the fee from PoolManager
+            feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
 
-            if (isBmxPool) {
-                // Move tokens to FeeProcessor so it holds the BMX
-                feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
-                feeProcessor.collectFee(key, feeOwed);
+            if (isInternalSwap) {
+                // For internal swaps from BMX pool, distribute fees directly
+                // All internal swaps use BMX/wBLT pool, so fee is always BMX
+                feeProcessor.collectInternalFee(feeOwed);
             } else {
-                if (params.zeroForOne) {
-                    // token0 -> token1 (wBLT). Unspecified currency = token1.
-                    // Borrow wBLT directly to FeeProcessor; hook books -fee delta on token1
-                    feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
-                    feeProcessor.collectFee(key, feeOwed);
-                } else {
-                    // token1 -> token0 path: fee token (wBLT) is already held by PoolManager
-                    // because we pulled it from the trader earlier in this swap.
-                    // Simply move the fee amount from the PoolManager to the FeeProcessor; no borrow / settle cycle required.
-                    feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
-                    feeProcessor.collectFee(key, feeOwed);
-                }
+                // Normal fee collection
+                feeProcessor.collectFee(key, feeOwed);
+            }
+
+            // Only return positive delta when fee is on OUTPUT side
+            Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
+
+            // If fee was NOT handled by BeforeSwapDelta (i.e., fee is on output side)
+            if (Currency.unwrap(feeCurrency) != Currency.unwrap(inputCurrency)) {
+                // Return positive delta to offset the negative delta created by take()
+                hookDeltaUnspecified = SafeCast.toInt128(int256(feeOwed));
             }
         }
 
-        // Preserve whether we pulled the fee token from the trader. This is needed later for retDelta logic because _pullFromSender is reset to false before we reach that point.
-        bool pulledFromSender = _pullFromSender;
+        // Clear hook deltas
+        _clearHookDeltas(key);
 
-        // Reconcile deltas once more *after* fee forwarding.
-        // We want to zero-out the delta of the *specified* currency while leaving the delta on the *unspecified* side intact so it can be returned to PoolManager via the int128 return value.
-        // Return delta to cancel negative balances introduced by take() operations in the cases where the hook borrowed the fee token from the pool (i.e. _pullFromSender == false) **and** the fee token is on the output side.
-        int128 retDelta = 0;
-        if (feeOwed > 0 && !pulledFromSender) {
-            Currency outputCurrency = params.zeroForOne ? key.currency1 : key.currency0;
-            if (feeCurrency == outputCurrency) {
-                retDelta = SafeCast.toInt128(int256(feeOwed));
-            }
-        }
-
-        return (BaseHook.afterSwap.selector, retDelta);
+        return (BaseHook.afterSwap.selector, hookDeltaUnspecified);
     }
 
     /// @dev Zero out any outstanding deltas the hook has for both pool currencies. Uses settle() when the hook owes tokens and take() when the pool owes the hook. After execution the hook’s delta for each currency is guaranteed to be zero so PoolManager won’t revert.

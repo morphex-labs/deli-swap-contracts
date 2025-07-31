@@ -15,6 +15,7 @@ import "src/interfaces/IFeeProcessor.sol";
 import "src/interfaces/IDailyEpochGauge.sol";
 import "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -124,7 +125,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
 
         // 3. Deploy gauge now that we know the hook address (deliHook param)
-        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManager(address(0)), predictedHook, IERC20(address(bmx)), address(0));
+        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, IERC20(address(bmx)), address(0));
         inc = new MockIncentiveGauge();
 
         // ------------------------------------------------------------------
@@ -299,5 +300,64 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         vm.warp(uint256(end0) + 2 days);
         gauge.rollIfNeeded(pid);
         assertEq(gauge.streamRate(pid), expectedBuy / 1 days);
+    }
+
+    function testInternalSwapFeeCollection() public {
+        // Configure buyback pool first
+        PoolKey memory bmxKey = PoolKey({
+            currency0: Currency.wrap(address(bmx)),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        fp.setBuybackPoolKey(bmxKey);
+        PoolId pid = bmxKey.toId();
+        
+        // Check gauge balance before
+        uint256 gaugeBefore = gauge.collectBucket(pid);
+        
+        // 1) Generate wBLT fees in OTHER pool
+        // With buyback pool configured, this will trigger automatic flush
+        uint256 otherSwapAmount = 1e18;
+        poolManager.unlock(abi.encode(address(other), otherSwapAmount));
+        
+        // Check that automatic flush happened
+        uint256 wbltBuybackAfter = fp.pendingWbltForBuyback();
+        uint256 wbltVoterAfter = fp.pendingWbltForVoter();
+        
+        // The buyback buffer should be empty (was flushed)
+        assertEq(wbltBuybackAfter, 0, "wBLT buyback should be empty after flush");
+        
+        // The voter wBLT buffer still has the 3% portion (9e13)
+        // This is NOT automatically sent, just accumulated for manual distribution
+        assertEq(wbltVoterAfter, 90000000000000, "wBLT voter should have 3% of original fee");
+        
+        // Verify gauge received BMX from automatic buyback
+        uint256 gaugeAfter = gauge.collectBucket(pid);
+        assertGt(gaugeAfter, gaugeBefore, "gauge should receive BMX from auto buyback");
+        
+        // The internal swaps generated their own fees
+        // Check that there's a small residual from the internal swaps
+        uint256 bmxVoterResidual = fp.pendingBmxForVoter();
+        assertGt(bmxVoterResidual, 0, "should have residual BMX from internal swaps");
+        
+        // 2) Generate BMX fees to test BMX->wBLT automatic flush
+        uint256 bmxSwapAmount = 2e18;
+        poolManager.unlock(abi.encode(address(bmx), bmxSwapAmount));
+        
+        // The swap should have triggered automatic flush of BMX voter buffer
+        // But there will be residual from the internal BMX->wBLT swap
+        uint256 bmxVoterAfterSecondSwap = fp.pendingBmxForVoter();
+        assertGt(bmxVoterAfterSecondSwap, 0, "should have residual from internal swap");
+        
+        // The residual should be much smaller than the original fee
+        // (it's 3% of 0.3% = 0.009% of the swap amount)
+        assertLt(bmxVoterAfterSecondSwap, bmxSwapAmount * 3000 / 1e6 / 100, "residual should be small");
+        
+        // The automatic flush demonstrates that internal swaps:
+        // 1. Execute automatically when buffers have funds
+        // 2. Generate their own fees that are collected
+        // 3. Don't cause recursion (residuals don't trigger more flushes)
     }
 } 

@@ -9,7 +9,8 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import "src/DeliHook.sol";
 import "src/FeeProcessor.sol";
 import "src/DailyEpochGauge.sol";
-import "src/GaugeSubscriber.sol";
+import "src/PositionManagerAdapter.sol";
+import "src/handlers/V4PositionHandler.sol";
 import "src/IncentiveGauge.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -26,6 +27,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
+import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 
 contract Token is ERC20 { constructor(string memory s) ERC20(s,s) { _mint(msg.sender,1e24);} }
 
@@ -37,7 +39,8 @@ contract GaugeStream_IT is Test, Deployers {
     FeeProcessor fp;
     DailyEpochGauge gauge;
     IncentiveGauge inc;
-    GaugeSubscriber gs;
+    PositionManagerAdapter adapter;
+    V4PositionHandler v4Handler;
 
     // tokens
     Token wblt;
@@ -69,26 +72,32 @@ contract GaugeStream_IT is Test, Deployers {
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address expectedHook, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
-        // 4. Deploy mock incentive gauge first (required for GaugeSubscriber)
-        inc = new IncentiveGauge(poolManager, IPositionManager(address(positionManager)), expectedHook);
+        // 4. Deploy mock incentive gauge first
+        inc = new IncentiveGauge(poolManager, IPositionManagerAdapter(address(0)), expectedHook);
 
         // 5. Deploy DailyEpochGauge and FeeProcessor
         gauge = new DailyEpochGauge(
             address(0),
             poolManager,
-            IPositionManager(address(positionManager)),
+            IPositionManagerAdapter(address(0)),
             expectedHook,
             IERC20(address(bmx)),
             address(inc)
         );
         fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
 
-        // Deploy GaugeSubscriber referencing both gauges
-        gs = new GaugeSubscriber(IPositionManager(address(positionManager)), ISubscriber(address(gauge)), ISubscriber(address(inc)));
-
-        // Wire subscriber addresses into gauges
-        gauge.setGaugeSubscriber(address(gs));
-        inc.setGaugeSubscriber(address(gs));
+        // Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setPositionManager(address(positionManager));
+        
+        // Update gauges to use the adapter
+        gauge.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
 
         // 6. Deploy hook
         hook = new DeliHook{salt: salt}(
@@ -112,9 +121,9 @@ contract GaugeStream_IT is Test, Deployers {
         pid = key.toId();
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
-        // 8. Add liquidity via EasyPosm and subscribe to gaugeSubscriber
+        // 8. Add liquidity via EasyPosm and subscribe to PositionManagerAdapter
         (wideTokenId,) = EasyPosm.mint(positionManager, key, -60000, 60000, 1e21, type(uint256).max, type(uint256).max, address(this), block.timestamp + 1 hours, bytes(""));
-        positionManager.subscribe(wideTokenId, address(gs), bytes(""));
+        positionManager.subscribe(wideTokenId, address(adapter), bytes(""));
 
         // 9. Fund gauge with BMX tokens used for streaming
         uint256 bucket = 1000 ether;
@@ -235,7 +244,7 @@ contract GaugeStream_IT is Test, Deployers {
         );
 
         // Subscribe to the gauge so accounting starts.
-        positionManager.subscribe(tokenIdOut, address(gs), bytes(""));
+        positionManager.subscribe(tokenIdOut, address(adapter), bytes(""));
 
         // Fast-forward to when streaming is active (reuse Day3 logic).
         gauge.rollIfNeeded(pid);
@@ -286,7 +295,7 @@ contract GaugeStream_IT is Test, Deployers {
             block.timestamp + 1 hours,
             bytes("")
         );
-        positionManager.subscribe(tokenIdNarrow, address(gs), bytes(""));
+        positionManager.subscribe(tokenIdNarrow, address(adapter), bytes(""));
 
         // 2. Advance until streamRate becomes non-zero
         gauge.rollIfNeeded(pid);
