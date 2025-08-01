@@ -1,85 +1,418 @@
-# Uniswap v4 Hook Template
+# 🍱 Deli Swap
 
-**A template for writing Uniswap v4 Hooks 🦄**
+**A DEX built on Uniswap v4 that implements custom fee distribution, liquidity incentives, and dual AMM models.**
 
-### Get Started
-
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
-
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
-
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
-
-<details>
-<summary>Updating to v4-template:latest</summary>
-
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers:
+## 🚀 Local Development Setup
 
 ```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
-```
-
-</details>
-
-### Requirements
-
-This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
-
-```
-foundryup
-```
-
-To set up the project, run the following commands in your terminal to install dependencies and run the tests:
-
-```
+# Install dependencies
 forge install
+
+# Build contracts
+forge build
+
+# Run tests
 forge test
+
+# Run specific test categories
+forge test --match-path test/unit/**/*.sol          # Unit tests only
+forge test --match-path test/integration/*.sol      # Integration tests
+forge test --match-path test/invariant/*.sol        # Invariant tests
+forge test --match-path test/constant-product/*.sol # V2 hook tests (contains relevant unit/integration/invariant)
 ```
 
-### Local Development
+## 📋 Table of Contents
 
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.
+- [Overview](#-overview)
+- [Key Features](#-key-features)
+- [Technical Requirements](#-technical-requirements)
+- [Architecture](#-architecture)
+- [Project Structure](#-project-structure)
+- [Core Contracts](#-core-contracts)
+- [Supporting Contracts](#-supporting-contracts)
+- [Libraries](#-libraries)
+- [Interfaces](#-interfaces)
+- [Hook Comparison](#-hook-comparison)
+- [System Flows](#-system-flows)
+- [Testing](#-testing)
+- [Summary](#-summary)
 
-### Troubleshooting
+## 🌟 Overview
 
-<details>
+Deli Swap is a new DeFi protocol that extends Uniswap v4's capabilities with sophisticated fee distribution mechanisms and liquidity incentives. The protocol implements two distinct AMM models:
 
-#### Permission Denied
+1. **Concentrated Liquidity (V4-style)**: Through `DeliHook` - maintains Uniswap v4's capital efficiency
+2. **Constant Product (V2-style)**: Through `DeliHookConstantProduct` - offers simplified x*y=k pools
 
-When installing dependencies with `forge install`, Github may throw a `Permission Denied` error
+Both models integrate with a unified fee distribution system that automatically converts collected fees to BMX tokens and streams them back to liquidity providers over 24-hour epochs.
 
-Typically caused by missing Github SSH keys, and can be resolved by following the steps [here](https://docs.github.com/en/github/authenticating-to-github/connecting-to-github-with-ssh)
+## 🎯 Key Features
 
-Or [adding the keys to your ssh-agent](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent), if you have already uploaded SSH keys
+- **Dual AMM Support**: Choice between concentrated liquidity and constant product curves
+- **Automated Fee Buybacks**: 97% of fees converted to BMX, 3% to voters (configurable)
+- **Range-Aware Rewards**: Only in-range positions earn rewards (even for V2-style full-range)
+- **Time-Aligned Epochs**: UTC-based periods (24h for daily rewards, 7d for weekly rewards and voting)
+- **Multi-Token Incentives**: Additional reward tokens via IncentiveGauge
+- **Modular Architecture**: Extensible handler system for new position types
 
-#### Anvil fork test failures
+## 🔧 Technical Requirements
 
-Some versions of Foundry may limit contract code size to ~25kb, which could prevent local tests to fail. You can resolve this by setting the `code-size-limit` flag
+### Pool Requirements
 
+- **All pools**: Must include wBLT token, no native ETH
+- **V4 pools**: Standard concentrated liquidity
+- **V2 pools**: Tick spacing = 1, min fee 0.1%, full-range only
+
+### Time-Based Systems
+
+- **DailyEpochGauge**: 24-hour UTC epochs with 48-hour delay (3-day pipeline)
+- **IncentiveGauge**: 7-day streaming periods
+- **Voter**: Weekly epochs starting Tuesday
+
+### Fee Configuration
+
+- **FeeProcessor**: 97% buyback / 3% voter split (configurable)
+- **Slippage Protection**: 1% default on buyback swaps
+- **Internal Swap Flag**: 0xDE1ABEEF prevents recursive fee collection
+
+### Position Management
+
+- **Position Keys**: Consistent formula: `keccak256(owner, tickLower, tickUpper, tokenId, poolId)`
+- **V2 Positions**: Always full-range (tickLower=TickMath.MIN_TICK, tickUpper=TickMath.MAX_TICK)
+- **Handler Registration**: Must register handlers with PositionManagerAdapter before use
+
+## 🏗 Architecture
+
+```mermaid
+flowchart LR
+    %% Define styles
+    classDef userStyle fill:#f0f4c3,stroke:#827717,stroke-width:2px
+    classDef coreStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef hookStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef feeStyle fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef rewardStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef govStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef handlerStyle fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    
+    %% User entry points
+    U[👤 User]
+    
+    %% Core Uniswap V4
+    subgraph V4["🏛️ Uniswap V4"]
+        PM[PoolManager]
+        POS[PositionManager]
+    end
+    
+    %% Hooks
+    subgraph HOOKS["🎣 Hooks"]
+        DH[DeliHook<br/>V4 Pools]
+        DHCP[DeliHookConstantProduct<br/>V2-style Pools]
+    end
+    
+    %% Position Management System
+    subgraph POSITIONS["📍 Position Management"]
+        PMA[PositionManagerAdapter<br/>Router]
+        subgraph HANDLERS[" "]
+            V4H[V4PositionHandler]
+            V2H[V2PositionHandler]
+        end
+    end
+    
+    %% Fee Processing
+    FP[💰 FeeProcessor<br/>97% / 3% split]
+    
+    %% Rewards
+    subgraph REWARDS["📊 Rewards"]
+        DEG[DailyEpochGauge<br/>BMX streaming]
+        IG[IncentiveGauge<br/>Extra tokens]
+    end
+    
+    %% Governance
+    subgraph GOV["🗳️ Governance"]
+        V[Voter]
+        SM[Safety Module]
+        RD[Reward Distributor]
+    end
+    
+    %% Apply styles
+    class U userStyle
+    class PM,POS coreStyle
+    class DH,DHCP hookStyle
+    class FP feeStyle
+    class DEG,IG rewardStyle
+    class PMA,V4H,V2H handlerStyle
+    class V,SM,RD govStyle
+    
+    %% User interactions
+    U -->|swap| PM
+    U -->|V4 liquidity| POS
+    U -->|V2 liquidity| DHCP
+    U -->|claim| DEG
+    U -->|vote| V
+    
+    %% Swap flow
+    PM -->|execute| DH
+    PM -->|execute| DHCP
+    
+    %% Fee flow
+    DH -->|collect fees| FP
+    DHCP -->|collect fees| FP
+    FP -->|97% BMX| DEG
+    FP -->|3% wBLT| V
+    
+    %% Position event routing
+    POS -->|events| PMA
+    PMA -->|routes| V4H
+    PMA -->|routes| V2H
+    
+    %% Direct hook notifications
+    DH -.->|notify| V4H
+    DHCP -.->|notify| V2H
+    
+    %% Handler subscriptions
+    V4H -->|subscribe| DEG
+    V4H -->|subscribe| IG
+    V2H -->|subscribe| DEG
+    V2H -->|subscribe| IG
+    
+    %% Governance flow
+    V -->|distribute| SM
+    V -->|distribute| RD
+    
+    %% Hook updates gauges
+    DH -.->|update| DEG
+    DHCP -.->|update| DEG
 ```
-anvil --code-size-limit 40000
+
+## 📁 Project Structure
+
+```text
+src/
+├── 🎣 Core Hooks
+│   ├── DeliHook.sol                    # V4 concentrated liquidity hook
+│   └── DeliHookConstantProduct.sol     # V2-style x*y=k hook
+│
+├── 💰 Fee & Reward System
+│   ├── FeeProcessor.sol                # Fee splitting & BMX buybacks
+│   ├── DailyEpochGauge.sol            # 24h epoch reward streaming
+│   └── IncentiveGauge.sol             # Additional token incentives
+│
+├── 🎯 Position Management
+│   ├── PositionManagerAdapter.sol      # Unified position interface
+│   └── handlers/
+│       ├── V2PositionHandler.sol       # V2-style position tracking
+│       └── V4PositionHandler.sol       # V4 position tracking
+│
+├── 🗳 Governance
+│   └── Voter.sol                       # Voting & fee distribution
+│
+├── 🏛 Base Contracts
+│   └── base/
+│       └── MultiPoolCustomCurve.sol    # Base for custom AMM curves
+│
+├── 🔧 Libraries
+│   └── libraries/
+│       ├── DeliErrors.sol              # Custom error definitions
+│       ├── InternalSwapFlag.sol        # Internal swap detection
+│       ├── Math.sol                    # Math utilities
+│       ├── RangePool.sol              # Range-aware pool accounting
+│       ├── RangePosition.sol          # Range position tracking
+│       └── TimeLibrary.sol            # Time/epoch utilities
+│
+└── 📋 Interfaces
+    └── interfaces/
+        ├── IDailyEpochGauge.sol
+        ├── IFeeProcessor.sol
+        ├── IIncentiveGauge.sol
+        ├── IPoolKeys.sol
+        ├── IPositionHandler.sol
+        ├── IPositionManagerAdapter.sol
+        ├── IRewardDistributor.sol
+        └── IV2PositionHandler.sol
 ```
 
-#### Hook deployment failures
+## 📜 Core Contracts
 
-Hook deployment failures are caused by incorrect flags or incorrect salt mining
+- **[DeliHook](src/README.md#delihook)** - V4 concentrated liquidity hook with fee interception
+- **[DeliHookConstantProduct](src/README.md#delihookconstantproduct)** - V2-style x*y=k AMM implementation
+- **[DailyEpochGauge](src/README.md#dailyepochgauge)** - BMX reward streaming (24h epochs, 3-day pipeline)
+- **[FeeProcessor](src/README.md#feeprocessor)** - Fee collection, 97/3 split, and BMX buyback execution
+- **[IncentiveGauge](src/README.md#incentivegauge)** - Additional ERC20 token rewards (7-day streaming)
+- **[PositionManagerAdapter](src/README.md#positionmanageradapter)** - ISubscriber event router for position tracking
+- **[Voter](src/README.md#voter)** - Weekly voting for protocol revenue distribution
 
-1. Verify the flags are in agreement:
-   - `getHookCalls()` returns the correct flags
-   - `flags` provided to `HookMiner.find(...)`
-2. Verify salt mining is correct:
-   - In **forge test**: the _deployer_ for: `new Hook{salt: salt}(...)` and `HookMiner.find(deployer, ...)` are the same. This will be `address(this)`. If using `vm.prank`, the deployer will be the pranking address
-   - In **forge script**: the deployer must be the CREATE2 Proxy: `0x4e59b44847b379578588920cA78FbF26c0B4956C`
-     - If anvil does not have the CREATE2 deployer, your foundry may be out of date. You can update it with `foundryup`
+## 🏛 Supporting Contracts
 
-</details>
+- **[MultiPoolCustomCurve](src/base/README.md)** - Abstract base for custom AMM implementations
+- **[V2PositionHandler](src/handlers/README.md)** - Synthetic position tracking for constant product pools
+- **[V4PositionHandler](src/handlers/README.md)** - Wrapper for V4 NFT positions
 
-### Additional Resources
+## 📚 Libraries
 
-- [Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview)
-- [v4-periphery](https://github.com/uniswap/v4-periphery)
-- [v4-core](https://github.com/uniswap/v4-core)
-- [v4-by-example](https://v4-by-example.org)
+- **[DeliErrors](src/libraries/README.md#delierrors)** - Custom error definitions for gas-efficient reverts
+- **[InternalSwapFlag](src/libraries/README.md#internalswapflag)** - Marker (0xDE1ABEEF) to identify internal buyback swaps
+- **[Math](src/libraries/README.md#math)** - Basic utilities (sqrt, min) for AMM calculations
+- **[RangePool](src/libraries/README.md#rangepool)** - Tick-aware accumulator for range-based reward distribution
+- **[RangePosition](src/libraries/README.md#rangeposition)** - Per-position reward tracking and owner indexing
+- **[TimeLibrary](src/libraries/README.md#timelibrary)** - UTC-aligned time utilities for epochs
+
+## 📋 Interfaces
+
+- **[IDailyEpochGauge](src/interfaces/README.md#idailyepochgauge)** - BMX reward streaming with 24-hour epochs
+- **[IIncentiveGauge](src/interfaces/README.md#iincentivegauge)** - Additional ERC20 token distribution
+- **[IFeeProcessor](src/interfaces/README.md#ifeeprocessor)** - Fee collection and buyback execution
+- **[IPositionManagerAdapter](src/interfaces/README.md#ipositionmanageradapter)** - Unified position event routing
+- **[IPositionHandler](src/interfaces/README.md#ipositionhandler)** - Base interface for position handlers
+- **[IV2PositionHandler](src/interfaces/README.md#iv2positionhandler)** - V2-specific position notifications
+- **[IPoolKeys](src/interfaces/README.md#ipoolkeys)** - PoolId to PoolKey reverse lookups
+- **[IRewardDistributor](src/interfaces/README.md#irewarddistributor)** - Voter reward configuration
+
+## 🔀 Hook Comparison
+
+| Feature | DeliHook (V4) | DeliHookConstantProduct (V2-style) |
+|---------|---------------|-------------------------------------|
+| **AMM Model** | Concentrated liquidity | Constant product (x*y=k) |
+| **Position Type** | NFT with tick ranges | Fungible shares (mapping) |
+| **Fee Collection** | Explicit calculation | Implicit in swap formula |
+| **Liquidity Ranges** | Customizable | Full-range only |
+| **Pool Fee** | Any | Minimum 0.1% fee |
+
+## 🔄 System Flows
+
+### Swap Fee Collection Flow
+
+```mermaid
+flowchart TB
+    Start([User Initiates Swap]) --> PM[PoolManager]
+    PM --> Hook{Hook Type?}
+    
+    Hook -->|V4 Pools| DH[DeliHook]
+    Hook -->|V2 Pools| DHCP[DeliHookConstantProduct]
+    
+    DH --> CalcFee1[Calculate Fee<br/>from Swap Amount]
+    DHCP --> CalcFee2[Extract Implicit Fee<br/>from x*y=k]
+    
+    CalcFee1 --> FP[FeeProcessor<br/>Receives Fee]
+    CalcFee2 --> FP
+    
+    FP --> PoolType{Pool Type?}
+    
+    PoolType -->|Non-BMX Pool| WBLTPath[wBLT Fee Collected]
+    PoolType -->|BMX Pool| BMXPath[BMX Fee Collected]
+    
+    WBLTPath --> Buyback[Swap wBLT → BMX<br/>via PoolManager]
+    Buyback --> Split1[97% BMX]
+    WBLTPath --> Split2[3% wBLT]
+    
+    BMXPath --> Split3[97% BMX]
+    BMXPath --> Split4[3% BMX<br/>Buffered]
+    
+    Split1 --> DEG[DailyEpochGauge]
+    Split2 --> Voter[Voter Contract]
+    Split3 --> DEG
+    Split4 --> Buyback2[Swap BMX → wBLT<br/>via PoolManager]
+    Buyback2 --> Voter
+    
+    DEG --> Queue[Queue for Day N+2]
+    Queue --> Stream[Stream to LPs<br/>over 24 hours]
+    
+    Voter --> GOV[Weekly Distribution<br/>to Safety Module &<br/>Reward Distributor]
+    
+    style Start fill:#f9f,stroke:#333,stroke-width:4px
+    style FP fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style DEG fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style Voter fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+```
+
+### Reward Distribution Timeline
+
+```mermaid
+flowchart LR
+    subgraph DEG["📊 DailyEpochGauge (BMX)"]
+        D1[Day N<br/>Fees Collected] --> D2[Day N+1<br/>Queued]
+        D2 --> D3[Day N+2<br/>Stream 24h]
+    end
+    
+    subgraph IG["🎁 IncentiveGauge (Other)"]
+        I1[Tokens<br/>Deposited] --> I2[Immediate<br/>7-day Stream]
+    end
+    
+    D3 --> LP[💰 LPs earn<br/>in-range only]
+    I2 --> LP
+    
+    style DEG fill:#fff3e0,stroke:#e65100
+    style IG fill:#e8f5e9,stroke:#1b5e20
+    style LP fill:#f3e5f5,stroke:#4a148c
+```
+
+## 🧪 Testing
+
+The test suite is organized into several categories for comprehensive coverage:
+
+### Test Structure
+
+```text
+test/
+├── 🔄 constant-product/         # V2-style constant product hook tests
+│   ├── BufferFlushAndPull_V2    # Fee pipeline integration for V2 pools
+│   ├── DeliHookConstantProduct  # Core V2 hook functionality
+│   ├── GaugeStream_V2           # V2 position reward streaming
+│   ├── LiquidityLifecycle_V2    # V2 liquidity add/remove flows
+│   ├── MultiPoolCustomCurve     # Base curve contract tests
+│   ├── MultiPool_V2             # Multiple V2 pool interactions
+│   └── SwapLifecycle_V2         # V2 swap mechanics and fees
+│
+├── 🔗 integration/              # End-to-end system tests
+│   ├── BufferFlushAndPull       # Fee buffer flushing and buybacks
+│   ├── FeeProcessorEdge         # Edge cases in fee processing
+│   ├── GaugeStream              # Daily gauge reward streaming
+│   ├── InRangeAccounting        # Range-aware reward distribution
+│   ├── IncentiveAndDaily        # Combined gauge interactions
+│   ├── PositionLifecycleCleanup # Position creation/removal flows
+│   ├── ReentrancyFlush          # Reentrancy protection tests
+│   └── SwapLifecycle            # Complete swap flows with fees
+│
+├── 🔒 invariant/                        # Property-based invariant tests
+│   ├── DailyEpochGaugeEpochInvariant    # Epoch transition correctness
+│   ├── DailyEpochGaugeLongInvariant     # Long-run streaming accuracy
+│   ├── FeeProcessorBuffersInvariant     # Buffer accounting consistency
+│   ├── IncentiveGaugeFOTInvariant       # Fee-on-transfer token support
+│   ├── IncentiveGaugeInvariant          # Standard reward distribution
+│   ├── RangePoolBitmapInvariant         # Tick bitmap consistency
+│   ├── RangePoolTwoPosInvariant         # Two-position interactions
+│   ├── RewardAccountingInvariant        # Total reward conservation
+│   ├── VoterGasInvariant                # Gas usage boundaries
+│   └── VoterInvariant                   # Voting state consistency
+│
+├── 🧩 unit/                     # Isolated unit tests by contract
+│   ├── DailyEpochGauge/         # Claim, epoch, storage, updates
+│   ├── DeliHook/                # Hook callbacks, fees, edge cases
+│   ├── FeeProcessor/            # Collection, swaps, configuration
+│   ├── IncentiveGauge/          # Streaming, storage, views
+│   ├── Libraries/               # RangePool, RangePosition, Time
+│   └── Voter/                   # Deposit, vote, finalize flows
+│
+├── 🎭 mocks/                    # Mock contracts for testing
+│
+└── 🛠 utils/                     # Test helpers and utilities
+```
+
+## 🎯 Summary
+
+Deli Swap extends Uniswap v4 with automated fee distribution, creating a self-sustaining ecosystem where:
+
+- Swap fees are automatically converted to BMX tokens
+- BMX streams to liquidity providers over 24-hour epochs
+- Only in-range positions earn rewards (V2-style pools are always full-range)
+- Additional incentive tokens can be layered on top
+
+### Future Extensibility
+
+The protocol's modular design allows for:
+
+- Additional AMM curves (extend MultiPoolCustomCurve)
+- New position types (implement IPositionHandler)
+- Alternative reward tokens (via IncentiveGauge)
+- Custom voting options (configure Voter)
+
+---
