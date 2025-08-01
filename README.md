@@ -85,14 +85,14 @@ Both models integrate with a unified fee distribution system that automatically 
 
 ```mermaid
 flowchart LR
-    %% Define styles
-    classDef userStyle fill:#f0f4c3,stroke:#827717,stroke-width:2px
-    classDef coreStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef hookStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef feeStyle fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    classDef rewardStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    classDef govStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px
-    classDef handlerStyle fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    %% Define styles with better contrast
+    classDef userStyle fill:#4a5568,stroke:#2d3748,stroke-width:2px,color:#ffffff
+    classDef coreStyle fill:#2563eb,stroke:#1d4ed8,stroke-width:2px,color:#ffffff
+    classDef hookStyle fill:#7c3aed,stroke:#6d28d9,stroke-width:2px,color:#ffffff
+    classDef feeStyle fill:#059669,stroke:#047857,stroke-width:2px,color:#ffffff
+    classDef rewardStyle fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#ffffff
+    classDef govStyle fill:#db2777,stroke:#be185d,stroke-width:2px,color:#ffffff
+    classDef handlerStyle fill:#0891b2,stroke:#0e7490,stroke-width:2px,color:#ffffff
     
     %% User entry points
     U[👤 User]
@@ -318,10 +318,22 @@ flowchart TB
     
     Voter --> GOV[Weekly Distribution<br/>to Safety Module &<br/>Reward Distributor]
     
-    style Start fill:#f9f,stroke:#333,stroke-width:4px
-    style FP fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
-    style DEG fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style Voter fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    %% Define styles with good contrast
+    classDef startStyle fill:#4a5568,stroke:#2d3748,stroke-width:3px,color:#ffffff
+    classDef hookStyle fill:#7c3aed,stroke:#6d28d9,stroke-width:2px,color:#ffffff
+    classDef feeStyle fill:#059669,stroke:#047857,stroke-width:2px,color:#ffffff
+    classDef rewardStyle fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#ffffff
+    classDef govStyle fill:#db2777,stroke:#be185d,stroke-width:2px,color:#ffffff
+    classDef processStyle fill:#2563eb,stroke:#1d4ed8,stroke-width:2px,color:#ffffff
+    classDef decisionStyle fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#ffffff
+    
+    class Start startStyle
+    class DH,DHCP hookStyle
+    class FP,WBLTPath,BMXPath,Buyback,Buyback2 feeStyle
+    class DEG,Queue,Stream rewardStyle
+    class Voter,GOV govStyle
+    class PM,CalcFee1,CalcFee2,Split1,Split2,Split3,Split4 processStyle
+    class Hook,PoolType decisionStyle
 ```
 
 ### Reward Distribution Timeline
@@ -340,9 +352,16 @@ flowchart LR
     D3 --> LP[💰 LPs earn<br/>in-range only]
     I2 --> LP
     
-    style DEG fill:#fff3e0,stroke:#e65100
-    style IG fill:#e8f5e9,stroke:#1b5e20
-    style LP fill:#f3e5f5,stroke:#4a148c
+    %% Define styles with good contrast
+    classDef gaugeStyle fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#ffffff
+    classDef incentiveStyle fill:#059669,stroke:#047857,stroke-width:2px,color:#ffffff
+    classDef lpStyle fill:#7c3aed,stroke:#6d28d9,stroke-width:2px,color:#ffffff
+    classDef processStyle fill:#2563eb,stroke:#1d4ed8,stroke-width:2px,color:#ffffff
+    
+    class DEG gaugeStyle
+    class IG incentiveStyle
+    class LP lpStyle
+    class D1,D2,D3,I1,I2 processStyle
 ```
 
 ## 🧪 Testing
