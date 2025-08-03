@@ -12,7 +12,7 @@ interface IDailyEpochGauge {
     function rollIfNeeded(PoolId poolId) external;
     function initPool(PoolId pid, int24 initialTick) external;
     function pokePool(PoolKey calldata key) external;
-    function claim(address to, bytes32 positionKey) external returns (uint256);
+    function claim(uint256 tokenId, address to) external returns (uint256);
     function claimAllForOwner(PoolId[] calldata pids, address owner) external returns (uint256);
     
     // Subscription callbacks (from ISubscriber interface)
