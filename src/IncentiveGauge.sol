@@ -243,20 +243,13 @@ contract IncentiveGauge is Ownable2Step {
         if (msg.sender != owner) revert DeliErrors.NotAuthorized();
 
         (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
-        PoolId pid = key.toId();
-
-        // Get current tick and update pool state
-        (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-        _updatePool(key, pid, token, currentTick);
 
         // Reconstruct the position key
-        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey =
+            keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), key.toId()));
 
-        // Accrue latest rewards
-        TickRange storage tr = positionTicks[positionKey];
-        uint128 liq = positionLiquidity[positionKey];
-        RangePosition.State storage ps = positionRewards[positionKey][token];
-        ps.accrue(liq, poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper));
+        // Update pool and accrue rewards
+        _updateAndAccrue(key, positionKey, token);
 
         // Claim and transfer
         amount = _claimRewards(positionKey, token, to);
@@ -278,28 +271,22 @@ contract IncentiveGauge is Ownable2Step {
             IERC20[] storage toks = poolTokens[pid];
             if (toks.length == 0) continue; // nothing to claim
 
-            // Get pool key and sync state for all tokens
+            // Get pool key
             PoolKey memory key =
                 IPoolKeys(positionManagerAdapter.positionManager()).poolKeys(bytes25(PoolId.unwrap(pid)));
-            (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-
-            // Update pool state for all tokens
-            for (uint256 t; t < toks.length; ++t) {
-                _updatePool(key, pid, toks[t], currentTick);
-            }
 
             // Accrue and claim for every position
             for (uint256 i; i < keyLen; ++i) {
-                bytes32 k = keys[i];
-                TickRange storage tr = positionTicks[k];
-                uint128 liq = positionLiquidity[k];
+                bytes32 posKey = keys[i];
 
                 for (uint256 t; t < toks.length; ++t) {
                     IERC20 tok = toks[t];
-                    RangePosition.State storage ps = positionRewards[k][tok];
-                    // accrue pending delta before claim
-                    ps.accrue(liq, poolRewards[pid][tok].rangeRplX128(tr.lower, tr.upper));
-                    uint256 amt = ps.claim();
+
+                    // Update pool state and accrue rewards
+                    _updateAndAccrue(key, posKey, tok);
+
+                    // Claim
+                    uint256 amt = positionRewards[posKey][tok].claim();
                     if (amt > 0) {
                         tok.safeTransfer(owner, amt);
                         emit Claimed(owner, tok, amt);
@@ -387,6 +374,21 @@ contract IncentiveGauge is Ownable2Step {
     /*//////////////////////////////////////////////////////////////
                                INTERNAL
     //////////////////////////////////////////////////////////////*/
+
+    /// @dev internal helper to update pool state and accrue position rewards
+    function _updateAndAccrue(PoolKey memory key, bytes32 positionKey, IERC20 token) internal {
+        PoolId pid = key.toId();
+
+        // Get current tick and update pool state
+        (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        _updatePool(key, pid, token, currentTick);
+
+        // Accrue latest rewards
+        TickRange storage tr = positionTicks[positionKey];
+        positionRewards[positionKey][token].accrue(
+            positionLiquidity[positionKey], poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper)
+        );
+    }
 
     /// @dev internal helper to add a token to a pool
     function _addTokenToPool(PoolId pid, IERC20 token) internal {
@@ -592,27 +594,22 @@ contract IncentiveGauge is Ownable2Step {
         // save tick range
         positionTicks[positionKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
 
-        // Cache values to avoid repeated calls
-        int24 tickLower = info.tickLower();
-        int24 tickUpper = info.tickUpper();
-        int128 liquidityDelta = SafeCast.toInt128(uint256(liquidity));
-
         // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
-            IERC20 token = toks[t];
-
             // Update pool state
-            _updatePool(key, pid, token, _currTick);
+            _updatePool(key, pid, toks[t], _currTick);
 
             // Snapshot rewards
-            positionRewards[positionKey][token].initSnapshot(poolRewards[pid][token].rangeRplX128(tickLower, tickUpper));
+            positionRewards[positionKey][toks[t]].initSnapshot(
+                poolRewards[pid][toks[t]].rangeRplX128(info.tickLower(), info.tickUpper())
+            );
 
             // Modify position liquidity
-            poolRewards[pid][token].modifyPositionLiquidity(
+            poolRewards[pid][toks[t]].modifyPositionLiquidity(
                 RangePool.ModifyLiquidityParams({
-                    tickLower: tickLower,
-                    tickUpper: tickUpper,
-                    liquidityDelta: liquidityDelta,
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
                     tickSpacing: key.tickSpacing
                 })
             );
@@ -627,54 +624,48 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = key.toId();
 
         IERC20[] storage _tokens = poolTokens[pid];
-        uint256 _len = _tokens.length;
 
         // Early exit if no tokens
-        if (_len == 0) {
+        if (_tokens.length == 0) {
             return;
         }
 
         bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
-        int24 _tickLower = info.tickLower();
-        int24 _tickUpper = info.tickUpper();
-        int24 _spacing = key.tickSpacing;
 
         // Get current tick once
         (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
 
         // Single loop to handle all tokens
-        for (uint256 t; t < _len; ++t) {
-            IERC20 token = _tokens[t];
-
+        for (uint256 t; t < _tokens.length; ++t) {
             // Check if position has liquidity for this token
             // Skip if position was never initialized for this token
-            RangePosition.State storage posState = positionRewards[positionKey][token];
+            RangePosition.State storage posState = positionRewards[positionKey][_tokens[t]];
             if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
                 continue;
             }
 
             // Update pool state
-            _updatePool(key, pid, token, _currTick);
+            _updatePool(key, pid, _tokens[t], _currTick);
 
             // Apply liquidity delta using optimized removal
             _removeLiquidityCompletely(
                 DeltaParams({
                     pid: pid,
-                    token: token,
+                    token: _tokens[t],
                     positionKey: positionKey,
-                    tickLower: _tickLower,
-                    tickUpper: _tickUpper,
-                    tickSpacing: _spacing,
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    tickSpacing: key.tickSpacing,
                     liquidityBefore: liquidity,
                     liquidityDelta: -int128(uint128(liquidity))
                 })
             );
 
             // Auto-claim any remaining rewards
-            _claimRewards(positionKey, token, owner);
+            _claimRewards(positionKey, _tokens[t], owner);
 
             // Delete position rewards inline
-            delete positionRewards[positionKey][token];
+            delete positionRewards[positionKey][_tokens[t]];
         }
 
         // Clean up position tracking
@@ -699,37 +690,32 @@ contract IncentiveGauge is Ownable2Step {
             return;
         }
 
-        // Cache tick values to avoid repeated calls
-        int24 tickLower = info.tickLower();
-        int24 tickUpper = info.tickUpper();
-
-        bytes32 positionKey = keccak256(abi.encode(ownerAddr, tickLower, tickUpper, bytes32(tokenId), pid));
+        bytes32 positionKey =
+            keccak256(abi.encode(ownerAddr, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
 
         // Get current tick once
         (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
 
         // Single loop to handle all tokens
         for (uint256 t; t < _tokens.length; ++t) {
-            IERC20 token = _tokens[t];
-
             // Check if position has liquidity for this token
             // Skip if position was never initialized for this token
-            RangePosition.State storage posState = positionRewards[positionKey][token];
+            RangePosition.State storage posState = positionRewards[positionKey][_tokens[t]];
             if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
                 continue;
             }
 
             // Update pool state
-            _updatePool(key, pid, token, _currTick);
+            _updatePool(key, pid, _tokens[t], _currTick);
 
             // Apply liquidity delta using optimized removal
             _removeLiquidityCompletely(
                 DeltaParams({
                     pid: pid,
-                    token: token,
+                    token: _tokens[t],
                     positionKey: positionKey,
-                    tickLower: tickLower,
-                    tickUpper: tickUpper,
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
                     tickSpacing: key.tickSpacing,
                     liquidityBefore: uint128(liquidity),
                     liquidityDelta: -int128(uint128(liquidity))
@@ -737,10 +723,10 @@ contract IncentiveGauge is Ownable2Step {
             );
 
             // Auto-claim any remaining rewards
-            _claimRewards(positionKey, token, ownerAddr);
+            _claimRewards(positionKey, _tokens[t], ownerAddr);
 
             // Delete position rewards inline
-            delete positionRewards[positionKey][token];
+            delete positionRewards[positionKey][_tokens[t]];
         }
 
         // Clean up position tracking
@@ -778,37 +764,29 @@ contract IncentiveGauge is Ownable2Step {
         // Get current tick once
         (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
 
-        // Cache values
-        int24 _tickLower = info.tickLower();
-        int24 _tickUpper = info.tickUpper();
-        int24 _tickSpacing = key.tickSpacing;
-        int128 _delta = SafeCast.toInt128(liquidityChange);
-
         // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
-            IERC20 token = toks[t];
-
             // Update pool state
-            _updatePool(key, pid, token, _currTick);
+            _updatePool(key, pid, toks[t], _currTick);
 
             // Apply liquidity delta
             _applyLiquidityDelta(
                 DeltaParams({
                     pid: pid,
-                    token: token,
+                    token: toks[t],
                     positionKey: positionKey,
-                    tickLower: _tickLower,
-                    tickUpper: _tickUpper,
-                    tickSpacing: _tickSpacing,
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    tickSpacing: key.tickSpacing,
                     liquidityBefore: liquidityBefore,
-                    liquidityDelta: _delta
+                    liquidityDelta: SafeCast.toInt128(liquidityChange)
                 })
             );
 
             // If liquidity is now zero, auto-claim and delete rewards
             if (currentLiq == 0) {
-                _claimRewards(positionKey, token, owner);
-                delete positionRewards[positionKey][token];
+                _claimRewards(positionKey, toks[t], owner);
+                delete positionRewards[positionKey][toks[t]];
             }
         }
 
