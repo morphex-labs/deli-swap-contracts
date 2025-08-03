@@ -10,7 +10,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 /// @title IIncentiveGauge
 interface IIncentiveGauge {
     function poolTokensOf(PoolId pid) external view returns (IERC20[] memory);
-    function claim(IERC20 token, bytes32 positionKey, address to) external returns (uint256);
+    function claim(uint256 tokenId, IERC20 token, address to) external returns (uint256);
     function claimAllForOwner(PoolId[] calldata pids, address owner) external;
     function pokePool(PoolKey calldata key) external;
     

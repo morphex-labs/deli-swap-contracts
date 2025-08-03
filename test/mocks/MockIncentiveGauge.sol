@@ -17,11 +17,11 @@ contract MockIncentiveGauge is IIncentiveGauge {
     }
 
     // View helper
-    function poolTokensOf(PoolId) external view returns (IERC20[] memory arr) {
+    function poolTokensOf(PoolId) external pure returns (IERC20[] memory arr) {
         arr = new IERC20[](0);
     }
 
-    function claim(IERC20, bytes32, address) external returns (uint256) { return 0; }
+    function claim(uint256, IERC20, address) external pure returns (uint256) { return 0; }
     function claimAllForOwner(PoolId[] calldata, address) external {
         called = true;
     }
