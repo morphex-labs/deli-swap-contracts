@@ -14,6 +14,7 @@ import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
 import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -173,7 +174,8 @@ contract IncentiveGauge is Ownable2Step {
         uint256 len = toks.length;
         if (len == 0) return;
 
-        (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         for (uint256 i; i < len; ++i) {
             _updatePool(key, pid, toks[i], currentTick);
         }
@@ -222,7 +224,8 @@ contract IncentiveGauge is Ownable2Step {
         RangePool.State storage pool = poolRewards[pid][rewardToken];
         // Ensure pool struct exists (initPool may have initialised a sentinel entry)
         if (pool.lastUpdated == 0) {
-            (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+            (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+            int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
             pool.initialize(currentTick);
         }
 
@@ -380,7 +383,8 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = key.toId();
 
         // Get current tick and update pool state
-        (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         _updatePool(key, pid, token, currentTick);
 
         // Accrue latest rewards
@@ -588,7 +592,8 @@ contract IncentiveGauge is Ownable2Step {
         }
 
         // Get current tick once
-        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 _currTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
 
         // save tick range
@@ -633,7 +638,8 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
 
         // Get current tick once
-        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 _currTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
         // Single loop to handle all tokens
         for (uint256 t; t < _tokens.length; ++t) {
@@ -694,7 +700,8 @@ contract IncentiveGauge is Ownable2Step {
             keccak256(abi.encode(ownerAddr, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
 
         // Get current tick once
-        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 _currTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
         // Single loop to handle all tokens
         for (uint256 t; t < _tokens.length; ++t) {
@@ -762,7 +769,8 @@ contract IncentiveGauge is Ownable2Step {
         }
 
         // Get current tick once
-        (, int24 _currTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 _currTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
         // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
