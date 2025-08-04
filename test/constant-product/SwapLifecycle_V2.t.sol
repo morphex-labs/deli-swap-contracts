@@ -28,6 +28,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
 
 /// @notice Tests V2 constant product swap lifecycle, reserve tracking, and x*y=k invariant
 contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
@@ -41,6 +42,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
     FeeProcessor fp;
     DailyEpochGauge gauge;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -106,6 +108,10 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
 
         // Initialize pool
         key = PoolKey({

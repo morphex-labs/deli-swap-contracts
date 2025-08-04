@@ -27,6 +27,7 @@ import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockC
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
 
 /// @notice Tests multiple V2 pools managed by a single hook instance
 contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
@@ -39,6 +40,7 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
     DailyEpochGauge gauge;
     FeeProcessor fp;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -116,6 +118,10 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
 
         // Approve tokens to hook
         bmx.approve(address(hook), type(uint256).max);
@@ -332,23 +338,28 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // - BMX fees: 97% goes directly to DailyEpochGauge, 3% to pendingBmxForVoter
         // - wBLT fees: 97% to pendingWbltForBuyback, 3% to pendingWbltForVoter
         
-        // Pool1 (BMX/wBLT) fee: 10 ether * 0.003 = 0.03 ether in BMX
+        // Pool1 (BMX/wBLT): BMX -> wBLT swap, fee in BMX (input)
+        // Fee = 10 ether * 0.003 = 0.03 ether in BMX
         // - 0.03 * 0.97 = 0.0291 ether sent directly to gauge
         // - 0.03 * 0.03 = 0.0009 ether to pendingBmxForVoter
         
-        // Pool2 (token1/wBLT) fee: 10 ether * 0.001 = 0.01 ether in wBLT
-        // - 0.01 * 0.97 = 0.0097 ether to pendingWbltForBuyback
-        // - 0.01 * 0.03 = 0.0003 ether to pendingWbltForVoter
+        // Pool2 (tokenA/wBLT): tokenA -> wBLT swap, fee in wBLT (output)
+        // Fee calculation is different when taken from output:
+        // Fee = output_reduction = output_without_fee - output_with_fee
+        // With 100:100 reserves and 10 ether input:
+        // Output without fee = (10 * 100) / (100 + 10) ≈ 9.0909 ether
+        // Output with fee = (10 * 0.999 * 100) / (100 + 10 * 0.999) ≈ 9.0826 ether
+        // Fee ≈ 0.0083 ether in wBLT
         
         uint256 pendingWbltBuyback = fp.pendingWbltForBuyback();
         uint256 pendingWbltVoter = fp.pendingWbltForVoter();
         uint256 pendingBmxVoter = fp.pendingBmxForVoter();
         
-        // Check wBLT fees from pool2
-        assertApproxEqAbs(pendingWbltBuyback, 0.0097 ether, 1e14, "wBLT buyback from pool2");
-        assertApproxEqAbs(pendingWbltVoter, 0.0003 ether, 1e13, "wBLT voter from pool2");
+        // Check wBLT fees from pool2 (output-based fee calculation)
+        assertApproxEqAbs(pendingWbltBuyback, 0.0083 ether * 97 / 100, 1e14, "wBLT buyback from pool2");
+        assertApproxEqAbs(pendingWbltVoter, 0.0083 ether * 3 / 100, 1e13, "wBLT voter from pool2");
         
-        // Check BMX fees from pool1 (only voter portion is pending)
+        // Check BMX fees from pool1 (input-based fee calculation)
         assertApproxEqAbs(pendingBmxVoter, 0.0009 ether, 1e14, "BMX voter from pool1");
     }
 
@@ -434,7 +445,7 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
 
         // Use different swap amounts to ensure meaningful fee collection
         uint256 swapAmount1 = 10 ether;  // 10% of pool for 0.3% fee
-        uint256 swapAmount3 = 20 ether;  // 20% of pool for 0.05% fee (larger to compensate for lower fee)
+        uint256 swapAmount3 = 20 ether;  // 20% of pool for 0.1% fee (larger to compensate for lower fee)
 
         // Get initial K values
         (uint128 r0_1_before, uint128 r1_1_before) = hook.getReserves(pool1.toId());
@@ -445,7 +456,7 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // Swap on pool1 (0.3% fee)
         poolManager.unlock(abi.encode(pool1, true, swapAmount1, true));
 
-        // Swap on pool3 (0.05% fee) - larger amount to ensure fee is meaningful
+        // Swap on pool3 (0.1% fee) - larger amount to ensure fee is meaningful
         poolManager.unlock(abi.encode(pool3, address(tokenB) < address(wblt), swapAmount3, true));
 
         // Get K values after swaps
@@ -454,18 +465,22 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         uint256 k1After = uint256(r0_1_after) * uint256(r1_1_after);
         uint256 k3After = uint256(r0_3_after) * uint256(r1_3_after);
 
-        // Due to the interaction between implicit fees in the constant product formula
-        // and explicit fee extraction, K behavior varies:
-        // - When fee token = input token: K tends to increase slightly
-        // - When fee token = output token: K tends to decrease
+        // With our new fee logic:
+        // - When fee token = input token: K decreases (fee explicitly removed from reserves)
+        // - When fee token = output token: K unchanged (fee implicit in swap calculation)
         
         // Pool1 (BMX->wBLT): BMX pool takes fees in BMX (input token)
+        // K should decrease because fee is extracted from reserves
+        // However, due to V2 math with implicit fees, K might increase slightly due to rounding
         if (k1After > k1Before) {
+            // Allow small increase due to rounding in V2 math
             uint256 k1Increase = k1After - k1Before;
-            assertLt(k1Increase * 10000, k1Before, "Pool1 K increase should be < 0.01%");
+            assertLt(k1Increase, k1Before / 10000, "Pool1 K increase should be < 0.01% (rounding)");
         } else {
+            // Expected case: K decreases
             uint256 k1Decrease = k1Before - k1After;
-            assertLt(k1Decrease * 10000, k1Before, "Pool1 K decrease should be < 0.01%");
+            // Fee = 10 ether * 0.003 = 0.03 ether BMX removed from reserves
+            assertLt(k1Decrease, k1Before / 100, "Pool1 K decrease should be < 1%");
         }
         
         // Pool3: Non-BMX pool takes fees in wBLT
@@ -476,19 +491,14 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
             (Currency.unwrap(pool3.currency0) == address(wblt));
             
         if (wbltIsOutput) {
-            // Fee taken from output, K should decrease
-            assertLt(k3After, k3Before, "Pool3 K should decrease when fee taken from output");
-            uint256 k3Decrease = k3Before - k3After;
-            assertLt(k3Decrease * 1000, k3Before, "Pool3 K decrease should be < 0.1%");
+            // Fee taken from output, K should remain unchanged (fee is implicit)
+            assertApproxEqRel(k3After, k3Before, 0.001e18, "Pool3 K should remain approximately unchanged when fee from output");
         } else {
-            // Fee taken from input, K might increase
-            if (k3After > k3Before) {
-                uint256 k3Increase = k3After - k3Before;
-                assertLt(k3Increase * 10000, k3Before, "Pool3 K increase should be < 0.01%");
-            } else {
-                uint256 k3Decrease = k3Before - k3After;
-                assertLt(k3Decrease * 10000, k3Before, "Pool3 K decrease should be < 0.01%");
-            }
+            // Fee taken from input, K should decrease
+            assertLt(k3After, k3Before, "Pool3 K should decrease with input fee extraction");
+            uint256 k3Decrease = k3Before - k3After;
+            // Fee = 20 ether * 0.001 = 0.02 ether wBLT removed from reserves
+            assertLt(k3Decrease, k3Before / 100, "Pool3 K decrease should be < 1%");
         }
     }
 
