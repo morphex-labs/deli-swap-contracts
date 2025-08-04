@@ -13,6 +13,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
@@ -450,7 +451,9 @@ contract DailyEpochGauge is Ownable2Step {
         _ensureEpoch(pid);
 
         // Get current active tick from poolManager
-        (, int24 tickNow,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        // Calculate tick from sqrtPriceX96 to handle edge case where slot0.tick may be off by 1
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 tickNow = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
         // One-liner: initialise (if needed), accumulate streamRate, adjust tick.
         poolRewards[pid].sync(streamRate(pid), key.tickSpacing, tickNow);
