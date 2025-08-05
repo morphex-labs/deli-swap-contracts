@@ -93,7 +93,8 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
@@ -108,7 +109,8 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
 
         // 5. deploy gauges & fee processor, wire contracts

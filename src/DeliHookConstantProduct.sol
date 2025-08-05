@@ -81,10 +81,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                                    EVENTS
     //////////////////////////////////////////////////////////////////////////*/
 
-    event PoolInitialized(PoolId indexed poolId);
+    event PairCreated(PoolId indexed poolId, Currency indexed currency0, Currency indexed currency1, uint24 fee);
     event Sync(PoolId indexed poolId, uint128 reserve0, uint128 reserve1);
-    event MintShares(PoolId indexed poolId, address indexed to, uint256 shares);
-    event BurnShares(PoolId indexed poolId, address indexed from, uint256 shares);
+    event Mint(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
     event FeeForwarded(address indexed pool, uint256 amount, bool indexed isBmxPool);
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
@@ -101,9 +101,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         IDailyEpochGauge _dailyEpochGauge,
         IIncentiveGauge _incentiveGauge,
         address _wblt,
-        address _bmx
-    ) Ownable(msg.sender) MultiPoolCustomCurve(_poolManager) {
-        if (_wblt == address(0) || _bmx == address(0)) revert DeliErrors.ZeroAddress();
+        address _bmx,
+        address _owner
+    ) Ownable(_owner) MultiPoolCustomCurve(_poolManager) {
+        if (_wblt == address(0) || _bmx == address(0) || _owner == address(0)) revert DeliErrors.ZeroAddress();
 
         feeProcessor = _feeProcessor;
         dailyEpochGauge = _dailyEpochGauge;
@@ -176,8 +177,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         PoolId poolId = key.toId();
 
-        // V2Pool will be initialized with default values (0) on first access
-        emit PoolInitialized(poolId);
+        emit PairCreated(poolId, key.currency0, key.currency1, key.fee);
 
         // Let the base class handle pool initialization tracking
         return super._beforeInitialize(sender, key, sqrtPriceX96);
@@ -430,7 +430,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             IV2PositionHandler(v2PositionHandler).notifyAddLiquidity(key, msg.sender, uint128(shares));
         }
 
-        emit MintShares(poolId, msg.sender, shares);
+        emit Mint(poolId, msg.sender, amount0, amount1);
     }
 
     function _burn(
@@ -461,7 +461,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Update reserves by subtracting removed amounts
         _update(poolId, pool.reserve0 - amount0, pool.reserve1 - amount1);
 
-        emit BurnShares(poolId, msg.sender, shares);
+        emit Burn(poolId, msg.sender, amount0, amount1, msg.sender);
     }
 
     /*//////////////////////////////////////////////////////////////

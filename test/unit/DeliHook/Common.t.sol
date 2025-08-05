@@ -36,12 +36,13 @@ contract DeliHook_CommonTest is Test {
             IDailyEpochGauge(address(daily)),
             IIncentiveGauge(address(inc)),
             WBLT,
-            BMX
+            BMX,
+            address(this)  // owner
         );
         
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
-        hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(0)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), WBLT, BMX);
+        hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(0)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), WBLT, BMX, address(this));
 
         hook.setFeeProcessor(address(0xBEEF));
         hook.setDailyEpochGauge(address(daily));

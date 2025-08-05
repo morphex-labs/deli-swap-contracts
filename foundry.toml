@@ -10,3 +10,9 @@ optimizer = true
 optimizer_steps = ""
 optimizer_runs = 1000
 dynamic_test_linking = true
+
+[rpc_endpoints]
+base = "${BASE_RPC_URL}"
+
+[etherscan]
+base = { key= "${ETHERSCAN_API_KEY}" }
