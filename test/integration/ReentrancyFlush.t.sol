@@ -20,6 +20,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
@@ -166,7 +167,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         canonicalKey = PoolKey({
             currency0: Currency.wrap(bmxIsToken0 ? address(bmx) : address(wblt)),
             currency1: Currency.wrap(bmxIsToken0 ? address(wblt) : address(bmx)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
@@ -175,10 +176,14 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         otherKey = PoolKey({
             currency0: Currency.wrap(otherIsToken0 ? address(other) : address(wblt)),
             currency1: Currency.wrap(otherIsToken0 ? address(wblt) : address(other)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
+        // Register fees before initialization (0.3% = 3000)
+        hook.registerPoolFee(canonicalKey.currency0, canonicalKey.currency1, canonicalKey.tickSpacing, 3000);
+        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
+        
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
         EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));

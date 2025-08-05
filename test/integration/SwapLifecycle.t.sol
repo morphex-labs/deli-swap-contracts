@@ -20,6 +20,7 @@ import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.so
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
@@ -94,7 +95,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         PoolKey memory otherKey = PoolKey({
             currency0: Currency.wrap(address(other)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook)) // will be valid after hook deployed
         });
@@ -105,7 +106,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         PoolKey memory initKey = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook)) // temp placeholder; will set later
         });
@@ -160,6 +161,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
 
         // 8. Initialise the pool now that hook address is final
         initKey.hooks = IHooks(address(hook));
+        // Register fee before initialization (0.3% = 3000)
+        hook.registerPoolFee(initKey.currency0, initKey.currency1, initKey.tickSpacing, 3000);
         poolManager.initialize(initKey, TickMath.getSqrtPriceAtTick(0));
 
         // 9. Add a small liquidity position so the pool owns tokens
@@ -178,6 +181,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
 
         // initialize second pool after hook set
         otherKey.hooks = IHooks(address(hook));
+        // Register fee before initialization (0.3% = 3000)
+        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
 
         // add liquidity to second pool
@@ -211,7 +216,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
             key = PoolKey({
                 currency0: Currency.wrap(address(bmx)),
                 currency1: Currency.wrap(address(wblt)),
-                fee: 3000,
+                fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
                 tickSpacing: 60,
                 hooks: IHooks(address(hook))
             });
@@ -232,7 +237,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
             key = PoolKey({
                 currency0: Currency.wrap(address(other)),
                 currency1: Currency.wrap(address(wblt)),
-                fee: 3000,
+                fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
                 tickSpacing: 60,
                 hooks: IHooks(address(hook))
             });
@@ -283,7 +288,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         uint256 expectedBuy = feeAmt * fp.buybackBps() / 1e4;
         uint256 expectedBuyTotal = expectedBuy; // only BMX pool credited immediately
         PoolId pid = PoolId.wrap(bytes25(uint200(0))); // convert key later
-        pid = (PoolKey({currency0:Currency.wrap(address(bmx)),currency1:Currency.wrap(address(wblt)),fee:3000,tickSpacing:60,hooks:IHooks(address(hook))})).toId();
+        pid = (PoolKey({currency0:Currency.wrap(address(bmx)),currency1:Currency.wrap(address(wblt)),fee:LPFeeLibrary.DYNAMIC_FEE_FLAG,tickSpacing:60,hooks:IHooks(address(hook))})).toId();
         // Verify 97% buy-back bucket registered
         assertEq(gauge.collectBucket(pid), expectedBuyTotal);
 
@@ -307,7 +312,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         PoolKey memory bmxKey = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });

@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {DeliHook} from "src/DeliHook.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
@@ -66,10 +67,16 @@ contract DeliHook_EdgeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
+        
+        // Provide wBLT to PoolManager for fee collection
+        wblt.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        wblt.approve(address(hook), type(uint256).max);
+        
         // exact output (positive) 1e18 of token1 (wBLT)
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xAAA), key, sp, "");
@@ -83,10 +90,16 @@ contract DeliHook_EdgeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
+        
+        // Provide BMX to PoolManager for fee collection  
+        bmx.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        bmx.approve(address(hook), type(uint256).max);
+        
         // exact output (positive) 2e18 of token0 (BMX)
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBB), key, sp, "");
@@ -103,7 +116,7 @@ contract DeliHook_EdgeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
@@ -122,7 +135,7 @@ contract DeliHook_EdgeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });

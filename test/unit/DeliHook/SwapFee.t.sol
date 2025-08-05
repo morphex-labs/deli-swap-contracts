@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {DeliHook} from "src/DeliHook.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
@@ -66,17 +67,24 @@ contract DeliHook_SwapFeeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
+        
+        // Provide wBLT to PoolManager for fee collection
+        wblt.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        wblt.approve(address(hook), type(uint256).max);
+        
         // zeroForOne true (OTHER -> wBLT), exactInput 1e18
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
 
         _callSwap(address(0xAAAA), key, sp, "");
 
         assertEq(fp.calls(), 1, "fee not forwarded");
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // With mock returning 3000 (0.3%) fee
+        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
         assertEq(fp.lastAmount(), expected);
         // fee currency should be wBLT
         // no further asserts
@@ -90,7 +98,7 @@ contract DeliHook_SwapFeeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
@@ -98,7 +106,8 @@ contract DeliHook_SwapFeeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:-2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBBB), key, sp, "");
 
-        uint256 expected = 2e18 * 3000 / 1_000_000;
+        // With mock returning 3000 (0.3%) fee
+        uint256 expected = 6000000000000000; // 0.006 ETH (0.3% of 2e18)
         assertEq(fp.lastAmount(), expected);
         // fee token BMX
         // no further asserts on key
@@ -109,7 +118,7 @@ contract DeliHook_SwapFeeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
@@ -121,13 +130,14 @@ contract DeliHook_SwapFeeTest is Test {
         
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
         bytes memory flagData = abi.encode(bytes4(0xDE1ABEEF));
-        _callSwap(address(0xAAAA), key, sp, flagData);
+        _callSwap(address(fp), key, sp, flagData);
         
         // Should call collectInternalFee, not regular collectFee
         assertEq(fp.calls(), 0, "regular collectFee should not be called");
         assertEq(fp.internalFeeCalls(), 1, "collectInternalFee should be called");
         
-        uint256 expectedFee = 1e18 * 3000 / 1_000_000;
+        // With mock returning 3000 (0.3%) fee
+        uint256 expectedFee = 1e18 * 3000 / 1_000_000; // 0.3% of 1e18
         assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
     }
 
@@ -137,10 +147,15 @@ contract DeliHook_SwapFeeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
+        
+        // Provide wBLT to PoolManager for fee collection
+        wblt.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        wblt.approve(address(hook), type(uint256).max);
         
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:-1e18, sqrtPriceLimitX96:0});
 
@@ -149,7 +164,8 @@ contract DeliHook_SwapFeeTest is Test {
         // Fee should be forwarded to FeeProcessor
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // With mock returning 3000 (0.3%) fee
+        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
         assertEq(tkAmt, expected);
     }
 
@@ -158,10 +174,15 @@ contract DeliHook_SwapFeeTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
+
+        // Provide wBLT to PoolManager for fee collection
+        wblt.mintExternal(address(pm), 10e18);
+        vm.prank(address(pm));
+        wblt.approve(address(hook), type(uint256).max);
 
         // Exact output swap: wBLT -> OTHER (positive amount)
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:1e18, sqrtPriceLimitX96:0});
@@ -172,8 +193,8 @@ contract DeliHook_SwapFeeTest is Test {
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
         // For exact output, fee is calculated on the unspecified (input) amount
-        // Since this is a mock, we expect the standard fee calculation
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // With mock returning 3000 (0.3%) fee
+        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
         assertEq(tkAmt, expected);
     }
 } 

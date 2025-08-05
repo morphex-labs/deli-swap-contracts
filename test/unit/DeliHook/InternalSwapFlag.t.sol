@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {DeliHook} from "src/DeliHook.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
@@ -64,7 +65,7 @@ contract DeliHook_InternalSwapFlagTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });
@@ -78,11 +79,12 @@ contract DeliHook_InternalSwapFlagTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
         bytes memory flagData = abi.encode(bytes4(0xDE1ABEEF));
 
-        _callSwap(address(0xCAFE), key, sp, flagData);
+        _callSwap(address(fp), key, sp, flagData);
 
         // 1. Internal fee should be collected (not regular fee)
         assertEq(fp.calls(), 0, "regular collectFee should not be called");
         assertEq(fp.internalFeeCalls(), 1, "collectInternalFee should be called once");
+        // With mock returning 3000 (0.3%) fee
         uint256 expectedFee = 1e18 * 3000 / 1_000_000; // 0.3% of 1e18
         assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
         
@@ -99,7 +101,7 @@ contract DeliHook_InternalSwapFlagTest is Test {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: hook
         });

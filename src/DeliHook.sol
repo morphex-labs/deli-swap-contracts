@@ -17,6 +17,8 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {CurrencyDelta} from "@uniswap/v4-core/src/libraries/CurrencyDelta.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
 import {IFeeProcessor} from "./interfaces/IFeeProcessor.sol";
@@ -38,10 +40,13 @@ contract DeliHook is Ownable2Step, BaseHook {
     using CurrencyDelta for Currency;
     using SafeCast for uint256;
     using InternalSwapFlag for bytes;
+    using LPFeeLibrary for uint24;
 
     /*//////////////////////////////////////////////////////////////
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
+
+    uint24 public constant MAX_FEE = 50000; // 5%
 
     address public immutable WBLT;
     address public immutable BMX;
@@ -56,6 +61,9 @@ contract DeliHook is Ownable2Step, BaseHook {
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
+    // Fee registration system
+    mapping(bytes32 => uint24) private _pendingPoolFees; // poolKey hash => registered fee
+
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -64,6 +72,10 @@ contract DeliHook is Ownable2Step, BaseHook {
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
     event IncentiveGaugeUpdated(address indexed newGauge);
+    event PoolFeeRegistered(
+        Currency indexed currency0, Currency indexed currency1, int24 tickSpacing, uint24 fee, address registrant
+    );
+    event PoolFeeSet(PoolId indexed poolId, uint24 fee);
 
     /*//////////////////////////////////////////////////////////////
                                   CONSTRUCTOR
@@ -115,6 +127,28 @@ contract DeliHook is Ownable2Step, BaseHook {
     }
 
     /*//////////////////////////////////////////////////////////////
+                              FEE REGISTRATION
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Register desired fee for a pool before initialization
+    /// @param currency0 First currency of the pool
+    /// @param currency1 Second currency of the pool
+    /// @param tickSpacing Tick spacing of the pool
+    /// @param desiredFee The fee to set (in hundredths of a bip, max 100000 = 10%)
+    function registerPoolFee(Currency currency0, Currency currency1, int24 tickSpacing, uint24 desiredFee) external {
+        // Validate fee is reasonable (must be > 0 and <= 5%)
+        if (desiredFee == 0 || desiredFee > MAX_FEE) revert DeliErrors.InvalidFee();
+
+        // Calculate pool key hash
+        bytes32 keyHash = _hashPoolKey(currency0, currency1, tickSpacing);
+
+        // Store the pending fee
+        _pendingPoolFees[keyHash] = desiredFee;
+
+        emit PoolFeeRegistered(currency0, currency1, tickSpacing, desiredFee, msg.sender);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                               HOOK PERMISSIONS
     //////////////////////////////////////////////////////////////*/
 
@@ -148,19 +182,43 @@ contract DeliHook is Ownable2Step, BaseHook {
         if (!(key.currency0 == Currency.wrap(WBLT) || key.currency1 == Currency.wrap(WBLT))) {
             revert DeliErrors.WbltMissing();
         }
+
+        // Require pool to use dynamic fee (to override LP fees)
+        if (!key.fee.isDynamicFee()) {
+            revert DeliErrors.MustUseDynamicFee();
+        }
+
         // Require deployed gauges + fee processor
         if (address(dailyEpochGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(incentiveGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(feeProcessor) == address(0)) revert DeliErrors.ComponentNotDeployed();
 
+        // Check that a fee has been registered for this pool
+        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
+        if (_pendingPoolFees[keyHash] == 0) {
+            revert DeliErrors.PoolFeeNotRegistered();
+        }
+
         return BaseHook.beforeInitialize.selector;
     }
 
-    /// @notice Bootstraps the DailyEpochGauge pool state.
+    /// @notice Bootstraps the DailyEpochGauge pool state and sets the registered fee.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
         // Bootstrap DailyEpochGauge pool state
         PoolId pid = key.toId();
         dailyEpochGauge.initPool(pid, tick);
+
+        // Get and set the registered fee
+        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
+        uint24 registeredFee = _pendingPoolFees[keyHash];
+
+        // Set the dynamic fee
+        poolManager.updateDynamicLPFee(key, registeredFee);
+
+        // Clean up
+        delete _pendingPoolFees[keyHash];
+
+        emit PoolFeeSet(pid, registeredFee);
 
         return BaseHook.afterInitialize.selector;
     }
@@ -171,13 +229,14 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     /// @notice Called by PoolManager before executing the swap.
     ///         Internal swaps still calculate fees but handle them differently.
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Check if this is an internal buy-back swap
-        bool isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG;
+        bool isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG
+            && sender == address(feeProcessor);
 
         // Determine swap metadata
         bool exactInput = params.amountSpecified < 0;
@@ -188,8 +247,11 @@ contract DeliHook is Ownable2Step, BaseHook {
             ? uint256(uint128(uint256(-params.amountSpecified)))
             : uint256(uint128(uint256(params.amountSpecified)));
 
-        // Compute fee amount based on pool fee
-        uint256 feeAmount = (absAmountSpecified * uint256(key.fee)) / 1_000_000;
+        // Get the actual fee for this pool from PoolManager
+        (,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
+
+        // Compute fee amount based on actual pool fee
+        uint256 feeAmount = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
 
         // Identify whether this is BMX/wBLT pool (different logic)
         bool isBmxPool = (Currency.unwrap(key.currency0) == BMX) || (Currency.unwrap(key.currency1) == BMX);
@@ -226,7 +288,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         return (
             BaseHook.beforeSwap.selector,
             specifiedDelta == 0 ? BeforeSwapDeltaLibrary.ZERO_DELTA : toBeforeSwapDelta(specifiedDelta, 0),
-            0
+            poolFee | LPFeeLibrary.OVERRIDE_FEE_FLAG // Return actual fee with override flag
         );
     }
 
@@ -312,5 +374,17 @@ contract DeliHook is Ownable2Step, BaseHook {
         // return updated deltas after operations
         res0 = SafeCast.toInt128(key.currency0.getDelta(address(this)));
         res1 = SafeCast.toInt128(key.currency1.getDelta(address(this)));
+    }
+
+    /// @dev Hash a pool key for fee registration lookup
+    function _hashPoolKey(Currency currency0, Currency currency1, int24 tickSpacing) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                currency0,
+                currency1,
+                tickSpacing,
+                address(this) // hook
+            )
+        );
     }
 }
