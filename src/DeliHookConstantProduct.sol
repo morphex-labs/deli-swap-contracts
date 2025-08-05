@@ -714,15 +714,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     function _forwardFeeToProcessor(PoolKey memory key, Currency feeCurrency, uint256 feeAmount) private {
         bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
 
-        // Since the fee is already part of the V2 swap reserves, we need to:
-        // 1. Burn the fee amount of ERC-6909 tokens from hook's balance
-        // 2. Take the actual tokens (not claims) and send to FeeProcessor
-
-        // First burn ERC-6909 tokens from hook's balance
-        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
-
-        // Then take the actual tokens and send to FeeProcessor
-        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
+        // Transfer fee tokens to FeeProcessor
+        _transferFeeTokens(feeCurrency, feeAmount);
 
         // Notify FeeProcessor about the collected fee
         feeProcessor.collectFee(key, feeAmount);
@@ -732,17 +725,26 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
     /// @dev Forward the implicit fee from internal swaps to FeeProcessor
     function _forwardInternalFeeToProcessor(Currency feeCurrency, uint256 feeAmount) private {
-        // For internal swaps on BMX pool, fee is always BMX
-        // First burn ERC-6909 tokens from hook's balance
-        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
-
-        // Then take the actual tokens and send to FeeProcessor
-        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
+        // Transfer fee tokens to FeeProcessor
+        _transferFeeTokens(feeCurrency, feeAmount);
 
         // Notify FeeProcessor about the internal fee
         feeProcessor.collectInternalFee(feeAmount);
 
         emit FeeForwarded(address(this), feeAmount, true);
+    }
+
+    /// @dev Helper to transfer fee tokens from hook to FeeProcessor
+    function _transferFeeTokens(Currency feeCurrency, uint256 feeAmount) private {
+        // Since the fee is already part of the V2 swap reserves, we need to:
+        // 1. Burn the fee amount of ERC-6909 tokens from hook's balance
+        // 2. Take the actual tokens (not claims) and send to FeeProcessor
+
+        // First burn ERC-6909 tokens from hook's balance
+        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
+
+        // Then take the actual tokens and send to FeeProcessor
+        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
     }
 
     /*//////////////////////////////////////////////////////////////
