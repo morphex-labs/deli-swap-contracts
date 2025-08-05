@@ -456,6 +456,9 @@ contract V2ConstantProductHookTest is Test, Deployers {
         addLiquidityToPool1(100 ether, 200 ether);
 
         uint256 amountIn = 20 ether;
+        
+        // For token2 -> wBLT swap, fee is in wBLT (output currency)
+        // The user receives output as per standard V2 formula WITH fee
         uint256 expectedAmountOut = calculateExactInputSwap(
             amountIn,
             200 ether, // reserve1
@@ -770,16 +773,15 @@ contract V2ConstantProductHookTest is Test, Deployers {
         swapInPool1(10 ether, true);
         (uint128 r0, uint128 r1) = hook.getReserves(id1);
         uint256 k1 = uint256(r0) * uint256(r1);
-        // In V2 AMMs with implicit fees, K can increase slightly due to rounding
-        // The fee is extracted separately, but the constant product formula ensures
-        // that K remains approximately constant or increases very slightly
-        assertTrue(k1 >= k0 * 9999 / 10000); // K should remain within 0.01% of original
+        // Since fees are extracted and forwarded to FeeProcessor,
+        // K should remain approximately constant (not increase)
+        assertApproxEqRel(k1, k0, 0.01e18); // K should remain within 1% of original
 
         swapInPool1(5 ether, false);
         (r0, r1) = hook.getReserves(id1);
         uint256 k2 = uint256(r0) * uint256(r1);
-        // Each swap maintains or slightly increases K
-        assertTrue(k2 >= k1 * 9999 / 10000); // K should remain within 0.01% of k1
+        // Each swap maintains K approximately constant
+        assertApproxEqRel(k2, k1, 0.01e18); // K should remain within 1% of k1
 
         // Add more liquidity - use current ratio
         // After swaps, reserves are no longer 1:1, so we need to add at the current ratio
