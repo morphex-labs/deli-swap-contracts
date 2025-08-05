@@ -265,7 +265,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
 
         // For non-BMX pools: use BeforeSwapDelta when fee is on input side (exact input swaps)
-        // Never pull from sender for internal swaps
+        // Never pull tokens from sender for internal swaps (fees still apply but are handled differently)
         _pullFromSender = (!isInternalSwap && !isBmxPool && feeCurrency == inputCurrency && exactInput);
 
         // Persist info for _afterSwap
@@ -318,9 +318,6 @@ contract DeliHook is Ownable2Step, BaseHook {
             incentiveGauge.pokePool(key);
         }
 
-        // Clear the deltas produced by the gauge calls so we start fee logic from a zero-balance baseline.
-        _clearHookDeltas(key);
-
         // Forward the swap fee to FeeProcessor
         int128 hookDeltaUnspecified = 0;
 
@@ -347,33 +344,7 @@ contract DeliHook is Ownable2Step, BaseHook {
             }
         }
 
-        // Clear hook deltas
-        _clearHookDeltas(key);
-
         return (BaseHook.afterSwap.selector, hookDeltaUnspecified);
-    }
-
-    /// @dev Zero out any outstanding deltas the hook has for both pool currencies. Uses settle() when the hook owes tokens and take() when the pool owes the hook. After execution the hook’s delta for each currency is guaranteed to be zero so PoolManager won’t revert.
-    function _clearHookDeltas(PoolKey memory key) internal returns (int128 res0, int128 res1) {
-        // --- currency0 ---
-        int256 d0 = key.currency0.getDelta(address(this));
-        if (d0 < 0) {
-            key.currency0.settle(poolManager, address(this), uint256(-d0), false);
-        } else if (d0 > 0) {
-            key.currency0.take(poolManager, address(this), uint256(d0), false);
-        }
-
-        // --- currency1 ---
-        int256 d1 = key.currency1.getDelta(address(this));
-        if (d1 < 0) {
-            key.currency1.settle(poolManager, address(this), uint256(-d1), false);
-        } else if (d1 > 0) {
-            key.currency1.take(poolManager, address(this), uint256(d1), false);
-        }
-
-        // return updated deltas after operations
-        res0 = SafeCast.toInt128(key.currency0.getDelta(address(this)));
-        res1 = SafeCast.toInt128(key.currency1.getDelta(address(this)));
     }
 
     /// @dev Hash a pool key for fee registration lookup
