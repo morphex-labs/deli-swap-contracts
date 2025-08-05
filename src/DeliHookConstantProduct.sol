@@ -573,10 +573,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             }
         }
 
-        // Adjust for fee removal (only for non-internal swaps)
-        // In our system, fees are extracted and sent to FeeProcessor
+        // Adjust for fee removal, fees are extracted and sent to FeeProcessor
         // This intentionally causes K to decrease, unlike traditional V2
-        if (_pendingFeeAmount > 0 && !_isInternalSwap && !_feeFromOutput) {
+        if (_pendingFeeAmount > 0 && !_feeFromOutput) {
             // Only deduct from reserves when fee is taken from INPUT currency
             // When fee is from OUTPUT, it's already implicit in the V2 swap math
             // Example: WETH->WBLT with WBLT fee - user gets less WBLT, no reserve adjustment needed
