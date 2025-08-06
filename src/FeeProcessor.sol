@@ -349,12 +349,9 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         // Settle input token from this contract into PoolManager
         if (stype == PendingSwapType.WBLT_TO_BMX) {
             (wbltIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
-            // Need a settle() call only when settling token1 side (i.e. wBLT is token1)
-            if (!wbltIsC0) poolManager.settle();
         } else {
             // BMX input
             (bmxIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
-            if (!bmxIsC0) poolManager.settle();
         }
 
         // Construct swap params & pre-swap price for slippage estimation
@@ -418,8 +415,6 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         } else {
             // Output is wBLT, forward to voter distributor
             IERC20(Currency.unwrap(WBLT)).safeTransfer(VOTER_DISTRIBUTOR, outAmt);
-            // Clear potential negative delta on wBLT due to take()
-            poolManager.settle();
             emit VoterFlush(amtIn, outAmt);
         }
 
