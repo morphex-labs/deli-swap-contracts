@@ -214,7 +214,7 @@ contract IncentiveGauge is Ownable2Step {
         if (block.timestamp < info.periodFinish) {
             uint256 remainingTime = info.periodFinish - block.timestamp;
             leftover = remainingTime * info.rewardRate;
-            
+
             // Prevent griefing: new deposit must be larger than remaining rewards
             if (amount <= leftover) {
                 revert DeliErrors.InsufficientIncentive();
@@ -286,11 +286,11 @@ contract IncentiveGauge is Ownable2Step {
             // Accrue and claim for every position
             for (uint256 i; i < keyLen; ++i) {
                 bytes32 posKey = keys[i];
-                
+
                 // Verify this position still belongs to the owner
                 uint256 tokenId = positionTokenIds[posKey];
                 if (tokenId == 0) continue; // Position was removed
-                
+
                 // Check ownership (use try-catch to handle burned tokens)
                 try positionManagerAdapter.ownerOf(tokenId) returns (address currentOwner) {
                     if (currentOwner != owner) continue; // Skip if no longer owned
@@ -473,7 +473,7 @@ contract IncentiveGauge is Ownable2Step {
         if (positionLiquidity[posKey] == 0) {
             return positionRewards[posKey][tok].rewardsAccrued;
         }
-        
+
         TickRange storage tr = positionTicks[posKey];
         uint256 rangeRpl = poolRewards[pid][tok].rangeRplX128(tr.lower, tr.upper);
         uint256 delta = rangeRpl - positionRewards[posKey][tok].rewardsPerLiquidityLastX128;
@@ -483,13 +483,13 @@ contract IncentiveGauge is Ownable2Step {
     /// @dev internal helper to update pool state
     function _updatePool(PoolKey memory key, PoolId pid, IERC20 token, int24 currentTick) internal {
         IncentiveInfo storage info = incentives[pid][token];
-        
+
         // Calculate effective reward rate (0 after period ends)
         uint256 effectiveRate = block.timestamp > info.periodFinish ? 0 : info.rewardRate;
-        
+
         // Always sync pool state to keep tick and lastUpdate current
         poolRewards[pid][token].sync(effectiveRate, key.tickSpacing, currentTick);
-        
+
         // Early exit if no rewards to distribute
         if (info.rewardRate == 0) return;
 
@@ -504,7 +504,7 @@ contract IncentiveGauge is Ownable2Step {
                 if (streamed > info.remaining) streamed = info.remaining;
                 info.remaining -= uint128(streamed);
             }
-            
+
             info.lastUpdate = uint64(block.timestamp);
             if (info.remaining == 0 || block.timestamp >= info.periodFinish) {
                 info.rewardRate = 0;
@@ -783,7 +783,7 @@ contract IncentiveGauge is Ownable2Step {
         (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
         PoolId pid = key.toId();
         address owner = positionManagerAdapter.ownerOf(tokenId);
-        
+
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
         bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
