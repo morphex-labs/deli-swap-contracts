@@ -150,8 +150,8 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
         if (isBmxPool) {
             // buybackPortion already in BMX, send directly to gauge
-            PoolId pid = key.toId();
-            DAILY_GAUGE.addRewards(pid, buybackPortion);
+            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), buybackPortion);
+            DAILY_GAUGE.addRewards(buybackPoolKey.toId(), buybackPortion);
 
             // voterPortion is currently BMX; stored for manual conversion to wETH before voter deposit
             pendingBmxForVoter += voterPortion;
@@ -167,7 +167,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         _tryFlushBuffers();
     }
 
-    /// @notice Called by DeliHook to process fees from internal buyback swaps.
+    /// @notice Called by DeliHook after it transfers `bmxAmount` to process fees from internal buyback swaps.
     /// @dev For internal swaps on BMX pool, fees are always in BMX.
     ///      97% goes directly to gauge, 3% to voter buffer.
     /// @param bmxAmount The amount of BMX fee collected from internal swap.
@@ -183,8 +183,8 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
         // Send 97% directly to gauge (BMX is already the target token)
         if (buybackPortion > 0 && buybackPoolSet) {
-            PoolId pid = buybackPoolKey.toId();
-            DAILY_GAUGE.addRewards(pid, buybackPortion);
+            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), buybackPortion);
+            DAILY_GAUGE.addRewards(buybackPoolKey.toId(), buybackPortion);
         }
 
         // Add 3% to voter buffer (needs conversion to wBLT later)
@@ -227,17 +227,17 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         emit MinOutBpsUpdated(newBps);
     }
 
-    /// @notice One-time configuration of the canonical BMX/wBLT pool used for
-    ///         buy-backs.
+    /// @notice Configuration of the BMX/wBLT pool used for buy-backs.
     /// @param key The poolKey of the BMX/wBLT pool.
     function setBuybackPoolKey(PoolKey calldata key) external onlyOwner {
-        if (buybackPoolSet) revert DeliErrors.AlreadySet();
         // pair must consist of BMX and wBLT
         bool hasBmx = Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX;
         bool hasWblt = key.currency0 == WBLT || key.currency1 == WBLT;
         if (!(hasBmx && hasWblt)) revert DeliErrors.InvalidPoolKey();
         buybackPoolKey = key;
-        buybackPoolSet = true;
+        if (!buybackPoolSet) {
+            buybackPoolSet = true;
+        }
         emit BuybackPoolSet(key);
     }
 
@@ -312,7 +312,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
             _executeSwap();
         } else {
             // Need to unlock first
-            poolManager.unlock(abi.encode(amount));
+            poolManager.unlock("");
         }
     }
 
@@ -412,8 +412,8 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
         if (stype == PendingSwapType.WBLT_TO_BMX) {
             // Output is BMX, stream to gauge
-            PoolId pid = buybackPoolKey.toId();
-            DAILY_GAUGE.addRewards(pid, outAmt);
+            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), outAmt);
+            DAILY_GAUGE.addRewards(buybackPoolKey.toId(), outAmt);
             emit BuybackExecuted(amtIn, outAmt);
         } else {
             // Output is wBLT, forward to voter distributor
