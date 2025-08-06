@@ -92,7 +92,6 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     event BuybackPoolSet(PoolKey poolKey);
     event BuybackExecuted(uint256 wbltIn, uint256 bmxOut);
     event VoterFlush(uint256 bmxIn, uint256 wbltOut);
-    event SwapFailed(PendingSwapType swapType, uint256 amountIn);
     event BuybackBpsUpdated(uint16 newBps);
     event MinOutBpsUpdated(uint16 newBps);
     event VoterFeesClaimed(uint256 amount, address to);
@@ -164,7 +163,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         }
 
         // attempt to flush buffers if we have a buyback pool set
-        _tryFlushBuffers();
+        try this.flushBuffers() {} catch {}
     }
 
     /// @notice Called by DeliHook after it transfers `bmxAmount` to process fees from internal buyback swaps.
@@ -274,11 +273,8 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
                                INTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Attempts to process any pending buy-back or voter buffers.
-    /// @dev Reverts if no buy-back pool key has been configured yet.
+    /// @dev Attempts to process any pending buy-back or voter buffers.
     function _tryFlushBuffers() internal {
-        if (!buybackPoolSet) return;
-
         // If we have wBLT to convert to BMX for buybacks
         if (pendingWbltForBuyback > 0) {
             _initiateSwap(PendingSwapType.WBLT_TO_BMX, pendingWbltForBuyback);
@@ -290,7 +286,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         }
     }
 
-    /// @notice Initiates a swap of the specified type and amount.
+    /// @dev Initiates a swap of the specified type and amount.
     /// @param t The type of swap to initiate.
     /// @param amount The amount of the swap.
     function _initiateSwap(PendingSwapType t, uint256 amount) internal {
@@ -323,8 +319,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         return bytes("");
     }
 
-    /// @notice Executes the pending swap operation
-    /// @dev Can be called either from _unlockCallback or directly if already unlocked
+    /// @dev Executes the pending swap operation, called from _unlockCallback or directly if already unlocked.
     function _executeSwap() internal {
         PendingSwapType stype = _pendingSwap;
         uint256 amtIn = _pendingAmount;
@@ -375,28 +370,8 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
             quoteOut = FullMath.mulDiv(amtIn, q192, pxSquared);
         }
 
-        BalanceDelta delta;
-        try poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG)) returns (
-            BalanceDelta d
-        ) {
-            delta = d;
-        } catch {
-            // Swap failed, re-credit the corresponding buffer so fees aren’t lost.
-            emit SwapFailed(stype, amtIn);
-            // Pull back the input tokens so they remain in FeeProcessor custody
-            if (stype == PendingSwapType.WBLT_TO_BMX) {
-                // input was WBLT
-                (wbltIsC0 ? c0 : c1).take(poolManager, address(this), amtIn, false);
-                pendingWbltForBuyback += amtIn;
-            } else if (stype == PendingSwapType.BMX_TO_WBLT) {
-                // input was BMX
-                (bmxIsC0 ? c0 : c1).take(poolManager, address(this), amtIn, false);
-                pendingBmxForVoter += amtIn;
-            }
-            _pendingSwap = PendingSwapType.NONE;
-            _pendingAmount = 0;
-            return;
-        }
+        // Execute the swap - any failures will be caught by the try-catch in collectFee()
+        BalanceDelta delta = poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG));
 
         // Determine output values & currency helpers
         Currency outCurrency = zeroForOne ? c1 : c0;

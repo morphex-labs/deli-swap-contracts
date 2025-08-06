@@ -123,10 +123,29 @@ contract FeeProcessor_SwapTest is Test {
         _collectNonBmx(amt);
         _registerPool();
         pm.setRevertOnSwap(true);
-        // flush should NOT revert even though swap fails internally
+        
+        // Direct flushBuffers() call will revert since there's no try-catch wrapper
+        vm.expectRevert("swap fail");
         fp.flushBuffers();
-        // Buffer should be restored after failure (no loss)
+        
+        // Buffer should remain after failed direct flush (no state change)
         uint256 expectedBuf = amt * fp.buybackBps() / 10000;
         assertEq(fp.pendingWbltForBuyback(), expectedBuf);
+        
+        // Now test that collectFee with try-catch silently fails and buffer accumulates
+        pm.setRevertOnSwap(true); // Keep swap reverting
+        _collectNonBmx(amt); // This won't revert due to try-catch, flush fails silently
+        
+        // The second collect added to buffer, flush failed, so buffer = first + second amount
+        assertEq(fp.pendingWbltForBuyback(), expectedBuf * 2, "Buffer should have accumulated both collections");
+        
+        // Give FeeProcessor more wBLT and BMX tokens for the final successful flush
+        wblt.transfer(address(fp), 2e21);
+        bmx.transfer(address(fp), 2e21); // Need BMX for the swap output
+        
+        // Now allow swaps and verify the accumulated buffer can be flushed
+        pm.setRevertOnSwap(false);
+        fp.flushBuffers();
+        assertEq(fp.pendingWbltForBuyback(), 0, "Buffer should be cleared after successful flush");
     }
 } 

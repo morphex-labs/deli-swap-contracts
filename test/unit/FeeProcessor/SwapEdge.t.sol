@@ -187,14 +187,51 @@ contract FeeProcessor_SwapEdgeTest is Test {
     function testSlippageRevertsOnBuyback() public {
         // Set poor price before buffer collection so slippage triggers in first swap
         pm.setOutputBps(9000);
-        vm.expectRevert(DeliErrors.Slippage.selector);
+        
+        // collectFee won't revert due to try-catch, but buffer should remain
         _collectNonBmx(100 ether);
+        
+        // Check actual buffer value first
+        uint256 actualBuffer = fp.pendingWbltForBuyback();
+        
+        // Calculate expected buffer
+        uint256 feeAmount = 100 ether;
+        uint256 buybackBps = fp.buybackBps();
+        uint256 expectedBuffer = (feeAmount * buybackBps) / 10_000;
+        
+        // Verify buffer wasn't cleared due to slippage (the internal revert was caught)
+        assertEq(actualBuffer, expectedBuffer, "Buffer should remain after slippage");
+        
+        // Direct flushBuffers() call would still revert on slippage
+        vm.expectRevert(DeliErrors.Slippage.selector);
+        fp.flushBuffers();
     }
 
     function testSlippageRevertsOnVoterFlush() public {
         pm.setOutputBps(9000);
-        vm.expectRevert(DeliErrors.Slippage.selector);
+        
+        // collectFee won't revert due to try-catch, but voter buffer should remain
         _collectBmx(100 ether);
+        
+        // Check actual values first
+        uint256 actualVoterBuffer = fp.pendingBmxForVoter();
+        uint256 actualGaugeRewards = gauge.rewards(buybackKey.toId());
+        
+        // Calculate expected values
+        uint256 feeAmount = 100 ether;
+        uint256 buybackBps = fp.buybackBps();
+        uint256 expectedGauge = (feeAmount * buybackBps) / 10_000;
+        uint256 expectedVoterBuffer = feeAmount - expectedGauge;
+        
+        // Verify voter buffer wasn't cleared due to slippage
+        assertEq(actualVoterBuffer, expectedVoterBuffer, "Voter buffer should remain after slippage");
+        
+        // Gauge should still have received the buyback portion (97%)
+        assertEq(actualGaugeRewards, expectedGauge, "Gauge should have buyback portion");
+        
+        // Direct flushBuffers() call would still revert on slippage
+        vm.expectRevert(DeliErrors.Slippage.selector);
+        fp.flushBuffers();
     }
 
     // ---------------------------------------------------------------------
