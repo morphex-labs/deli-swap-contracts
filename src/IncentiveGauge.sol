@@ -200,6 +200,12 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = key.toId();
         IncentiveInfo storage info = incentives[pid][rewardToken];
 
+        // Update pool with old rate before changing it
+        if (info.rewardRate > 0) {
+            (, int24 currentTick,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+            _updatePool(key, pid, rewardToken, currentTick);
+        }
+
         // pull tokens
         rewardToken.safeTransferFrom(msg.sender, address(this), amount);
 
