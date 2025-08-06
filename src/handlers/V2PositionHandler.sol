@@ -46,8 +46,13 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     // Track which pools use V2
     mapping(PoolId => bool) public isV2Pool;
 
-    // Counter for synthetic tokenIds
-    uint256 private nextTokenId = 1;
+    // Type prefix for V2 tokenIds (bit 255 set to 1)
+    // This ensures V2 tokenIds never collide with V4 PositionManager tokenIds
+    // V2 tokenIds will be in range [2^255, 2^256-1] while V4 uses [1, 2^255-1]
+    uint256 private constant V2_TOKEN_PREFIX = 1 << 255;
+
+    // Counter for synthetic tokenIds (without prefix)
+    uint256 private baseTokenId = 1;
 
     struct SyntheticPosition {
         PoolKey poolKey;
@@ -145,7 +150,10 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     /// @inheritdoc IPositionHandler
     function handlesTokenId(uint256 tokenId) external view override returns (bool) {
-        // Check if this tokenId exists in our synthetic positions
+        // Check: V2 tokenIds always have bit 255 set
+        if ((tokenId & V2_TOKEN_PREFIX) == 0) return false;
+
+        // Then check if this tokenId exists in our synthetic positions
         return syntheticPositions[tokenId].exists;
     }
 
@@ -189,7 +197,8 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
         internal
         returns (uint256 tokenId)
     {
-        tokenId = nextTokenId++;
+        // Generate tokenId with V2 prefix (bit 255 set)
+        tokenId = V2_TOKEN_PREFIX | baseTokenId++;
 
         // Store mappings
         v2TokenIds[poolId][owner] = tokenId;
