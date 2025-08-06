@@ -100,6 +100,7 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     mapping(bytes32 => TickRange) internal positionTicks;
+    mapping(bytes32 => uint256) internal positionTokenIds;
 
     // per pool list of active incentive tokens
     mapping(PoolId => IERC20[]) internal poolTokens;
@@ -250,11 +251,10 @@ contract IncentiveGauge is Ownable2Step {
         address owner = positionManagerAdapter.ownerOf(tokenId);
         if (msg.sender != owner) revert DeliErrors.NotAuthorized();
 
-        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
 
         // Reconstruct the position key
-        bytes32 positionKey =
-            keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), key.toId()));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, key.toId()));
 
         // Update pool and accrue rewards
         _updateAndAccrue(key, positionKey, token);
@@ -286,6 +286,17 @@ contract IncentiveGauge is Ownable2Step {
             // Accrue and claim for every position
             for (uint256 i; i < keyLen; ++i) {
                 bytes32 posKey = keys[i];
+                
+                // Verify this position still belongs to the owner
+                uint256 tokenId = positionTokenIds[posKey];
+                if (tokenId == 0) continue; // Position was removed
+                
+                // Check ownership (use try-catch to handle burned tokens)
+                try positionManagerAdapter.ownerOf(tokenId) returns (address currentOwner) {
+                    if (currentOwner != owner) continue; // Skip if no longer owned
+                } catch {
+                    continue; // Skip if token doesn't exist or ownerOf reverts
+                }
 
                 for (uint256 t; t < toks.length; ++t) {
                     IERC20 tok = toks[t];
@@ -409,11 +420,10 @@ contract IncentiveGauge is Ownable2Step {
 
     /// @dev internal helper for calculating pending rewards by tokenId
     function _pendingRewardsByTokenId(uint256 tokenId, IERC20 token) internal view returns (uint256 amount) {
-        try positionManagerAdapter.ownerOf(tokenId) returns (address owner) {
-            (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        try positionManagerAdapter.ownerOf(tokenId) returns (address) {
+            (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
             PoolId pid = key.toId();
-            bytes32 positionKey =
-                keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+            bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
             RangePosition.State storage ps = positionRewards[positionKey][token];
             uint128 liq = positionLiquidity[positionKey];
@@ -602,13 +612,14 @@ contract IncentiveGauge is Ownable2Step {
         IERC20[] storage toks = poolTokens[pid];
 
         // index position key once
-        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
         // Early exit if no tokens
         if (toks.length == 0) {
             // Still need to track the position even if no tokens
             RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
             positionTicks[positionKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
+            positionTokenIds[positionKey] = tokenId;
             return;
         }
 
@@ -617,8 +628,9 @@ contract IncentiveGauge is Ownable2Step {
         int24 _currTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
 
-        // save tick range
+        // save tick range and tokenId
         positionTicks[positionKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
+        positionTokenIds[positionKey] = tokenId;
 
         // Single loop to handle all tokens
         for (uint256 t; t < toks.length; ++t) {
@@ -656,7 +668,7 @@ contract IncentiveGauge is Ownable2Step {
             return;
         }
 
-        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
         // Get current tick once
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
@@ -698,6 +710,7 @@ contract IncentiveGauge is Ownable2Step {
         // Clean up position tracking
         RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
         delete positionTicks[positionKey];
+        delete positionTokenIds[positionKey];
     }
 
     /// @notice Called by PositionManagerAdapter when a position is burned.
@@ -717,8 +730,7 @@ contract IncentiveGauge is Ownable2Step {
             return;
         }
 
-        bytes32 positionKey =
-            keccak256(abi.encode(ownerAddr, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
         // Get current tick once
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
@@ -760,6 +772,7 @@ contract IncentiveGauge is Ownable2Step {
         // Clean up position tracking
         RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
         delete positionTicks[positionKey];
+        delete positionTokenIds[positionKey];
     }
 
     /// @notice Called by PositionManagerAdapter when a position's liquidity is modified.
@@ -772,7 +785,7 @@ contract IncentiveGauge is Ownable2Step {
         address owner = positionManagerAdapter.ownerOf(tokenId);
         
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
-        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
         // Always update cached liquidity (keep position tracked even at 0)
         positionLiquidity[positionKey] = currentLiq;
