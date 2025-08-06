@@ -12,6 +12,8 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {RangePool} from "src/libraries/RangePool.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
+import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 contract DummyToken is ERC20 {
     constructor(string memory n) ERC20(n,n) { _mint(msg.sender, 1e30); }
@@ -33,6 +35,19 @@ contract IncentiveGaugeHarness is IncentiveGauge {
 
     function posAccrued(bytes32 key, IERC20 tok) external view returns (uint256) {
         return positionRewards[key][tok].rewardsAccrued;
+    }
+
+    // Helper for tests that use the old pendingRewards interface
+    function pendingRewards(bytes32 posKey, IERC20 token, uint128 currentLiquidity, PoolId pid)
+        external
+        view
+        returns (uint256 amount)
+    {
+        TickRange storage tr = positionTicks[posKey];
+        RangePosition.State storage ps = positionRewards[posKey][token];
+        uint256 rangeRpl = poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper);
+        uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+        amount = ps.rewardsAccrued + (delta * currentLiquidity) / FixedPoint128.Q128;
     }
 
     // Mimic removed updatePosition hook entry for tests only.
@@ -114,6 +129,8 @@ contract IncentiveGauge_StorageTest is Test {
 
         // set pool liquidity for accumulator tests
         pm.setLiquidity(PoolId.unwrap(pid), 1_000_000);
+        // Set slot0 with a valid sqrtPriceX96 at tick 0
+        pm.setSlot0(PoolId.unwrap(pid), TickMath.getSqrtPriceAtTick(0), 0, 0, 0);
 
         vm.warp(1000); // deterministic start
     }

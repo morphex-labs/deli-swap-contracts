@@ -32,6 +32,7 @@ library DeliErrors {
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
+    error InsufficientIncentive();
     
     // pool errors
     error PoolNotInitialized();

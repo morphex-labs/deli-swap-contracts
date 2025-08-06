@@ -269,6 +269,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         // 2. Activate stream and accrue some rewards
         _activateStream();
+        
         vm.warp(block.timestamp + 4 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
@@ -315,6 +316,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         // 2. Activate stream and accrue some rewards
         _activateStream();
+        
         vm.warp(block.timestamp + 3 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);

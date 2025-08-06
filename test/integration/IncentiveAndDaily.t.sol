@@ -208,8 +208,8 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         (uint256 rateBefore, uint256 finishBefore, uint256 remainingBefore) = inc.incentiveData(pid, rewardTok);
         assertGt(rateBefore, 0, "stream not active");
 
-        // Extend by adding 350 tokens mid-stream
-        uint256 topUp = 350 ether;
+        // Extend by adding more tokens than remaining (griefing protection)
+        uint256 topUp = 450 ether; // More than the ~400 ether remaining
         rewardTok.approve(address(inc), topUp);
         inc.createIncentive(key, rewardTok, topUp);
 
@@ -418,6 +418,13 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testClaimAcrossPositions() public {
+        // First, warp past the incentive period so it expires
+        vm.warp(block.timestamp + 8 days);
+        
+        // Update the pool to finalize the incentive
+        vm.prank(address(hook));
+        inc.pokePool(key);
+
         // Mint a *second* position for the Daily gauge within the same pool
         // ticks must align with spacing (60). Use -12000 / 12000 which are multiples of 60.
         (uint256 tokenDailyId2,) = EasyPosm.mint(
@@ -434,16 +441,20 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         );
         positionManager.subscribe(tokenDailyId2, address(adapter), bytes(""));
 
+        // Add new BMX rewards since the original bucket has likely been depleted
+        uint256 newBucket = 500 ether;
+        bmx.transfer(address(daily), newBucket);
+        daily.addRewards(pid, newBucket);
+
         // -------------------------------------------------------------
-        // Advance until the daily stream is active for sure.  Because
-        // the pipeline introduces a 1-day delay (bucket → queued → next →
-        // current) we may need to roll twice.
+        // Advance enough days for rewards to move through the pipeline.
+        // Day 1: bucket → queued
+        // Day 2: queued → next  
+        // Day 3: next → current (active streaming)
         // -------------------------------------------------------------
         daily.rollIfNeeded(pid);
-        while (daily.streamRate(pid) == 0) {
-            vm.warp(block.timestamp + 1 days);
-            daily.rollIfNeeded(pid);
-        }
+        vm.warp(block.timestamp + 3 days + 1);
+        daily.rollIfNeeded(pid);
 
         vm.prank(address(hook));
         daily.pokePool(key);
@@ -455,7 +466,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         daily.claimAllForOwner(arr, address(this));
 
         uint256 gain = bmx.balanceOf(address(this)) - pre;
-        // Expect some positive payout that combines both positions’ share
+        // Expect some positive payout that combines both positions' share
         assertGt(gain, 0, "no BMX from multiple-position claim");
     }
 

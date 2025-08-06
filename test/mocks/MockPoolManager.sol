@@ -20,6 +20,22 @@ contract MockPoolManager is IExtsload {
         bytes32 slot = bytes32(uint256(stateSlot) + 3);
         _slotValue[slot] = bytes32(uint256(liq));
     }
+    
+    function setSlot0(bytes32 poolId, uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 swapFee) external {
+        // compute slot same as StateLibrary
+        bytes32 poolsSlot = bytes32(uint256(6));
+        bytes32 stateSlot = keccak256(abi.encodePacked(poolId, poolsSlot));
+        // Slot0 is at offset 0 from stateSlot
+        // Pack the data as it's stored in real PoolManager
+        // Layout: sqrtPriceX96 (160 bits) | tick (24 bits) | protocolFee (24 bits) | swapFee (24 bits)
+        bytes32 packedValue = bytes32(
+            uint256(sqrtPriceX96) | 
+            (uint256(uint24(tick)) << 160) | 
+            (uint256(protocolFee) << 184) | 
+            (uint256(swapFee) << 208)
+        );
+        _slotValue[stateSlot] = packedValue;
+    }
 
     // internal helper to compute storage slot identical to v4-core layout
     function _liquiditySlot(bytes25 poolId) internal pure returns (bytes32) {

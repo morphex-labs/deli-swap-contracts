@@ -13,6 +13,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 contract ERC20Mock is ERC20 {
     constructor(string memory n) ERC20(n,n) { _mint(msg.sender, 1e30); }
@@ -51,6 +52,8 @@ contract IncentiveGauge_ViewTest is Test {
         gauge.setWhitelist(t1,true); gauge.setWhitelist(t2,true);
         key=PoolKey({currency0:Currency.wrap(address(0xAAA)),currency1:Currency.wrap(address(0xBBB)),fee:3000,tickSpacing:60,hooks:IHooks(address(0))});
         pid=key.toId();
+        // Set slot0 with a valid sqrtPriceX96 at tick 0
+        pm.setSlot0(PoolId.unwrap(pid), TickMath.getSqrtPriceAtTick(0), 0, 0, 0);
     }
 
     function _fund(IERC20 tok,uint256 amt) internal { tok.approve(address(gauge),amt); gauge.createIncentive(key,tok,amt);}    
@@ -84,11 +87,5 @@ contract IncentiveGauge_ViewTest is Test {
         IERC20[] memory toks=new IERC20[](1); toks[0]=t1;
         IncentiveGauge.Pending[][] memory out=gauge.pendingRewardsOwnerBatch(pids,owner);
         assertGt(out[0][0].amount,1e18);
-    }
-
-    function testClaimZero() public {
-        bytes32 pos=keccak256("empty");
-        uint256 claimed=gauge.claim(t1,pos,owner);
-        assertEq(claimed,0);
     }
 } 

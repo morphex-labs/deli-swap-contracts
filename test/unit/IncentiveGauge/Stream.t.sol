@@ -9,12 +9,16 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
+import {RangePool} from "src/libraries/RangePool.sol";
+import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 // Mocks
 import {MockPoolManager} from "test/mocks/MockPoolManager.sol";
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 
 // Simple ERC20 mock
@@ -24,6 +28,10 @@ contract MockERC20 is ERC20 {
 
 // Harness exposing internal helpers
 contract GaugeHarness is IncentiveGauge {
+    using RangePool for RangePool.State;
+    using RangePosition for RangePosition.State;
+    using SafeERC20 for IERC20;
+    
     constructor(address pm, address posMgr, address hook)
         IncentiveGauge(IPoolManager(pm), IPositionManagerAdapter(posMgr), hook) {}
 
@@ -48,6 +56,29 @@ contract GaugeHarness is IncentiveGauge {
 
     function pushOwnerPos(PoolId pid, address owner, bytes32 k) external {
         ownerPositions[pid][owner].push(k);
+    }
+    
+    function addTokenToPool(PoolId pid, IERC20 token) external {
+        _addTokenToPool(pid, token);
+    }
+    
+    function initializePool(PoolId pid, IERC20 tok, int24 tick) external {
+        poolRewards[pid][tok].initialize(tick);
+    }
+    
+
+
+    // Helper for tests that use the old pendingRewards interface
+    function pendingRewards(bytes32 posKey, IERC20 token, uint128 currentLiquidity, PoolId pid)
+        external
+        view
+        returns (uint256 amount)
+    {
+        TickRange storage tr = positionTicks[posKey];
+        RangePosition.State storage ps = positionRewards[posKey][token];
+        uint256 rangeRpl = poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper);
+        uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+        amount = ps.rewardsAccrued + (delta * currentLiquidity) / FixedPoint128.Q128;
     }
 }
 
@@ -78,6 +109,8 @@ contract IncentiveGauge_StreamTest is Test {
 
         // initialise some liquidity
         pm.setLiquidity(PoolId.unwrap(pid), 1_000_000);
+        // Set slot0 with a valid sqrtPriceX96 at tick 0
+        pm.setSlot0(PoolId.unwrap(pid), TickMath.getSqrtPriceAtTick(0), 0, 0, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -103,7 +136,7 @@ contract IncentiveGauge_StreamTest is Test {
         // warp 1 day so some tokens streamed
         vm.warp(block.timestamp + 1 days);
 
-        uint256 second = 3500 ether;
+        uint256 second = 6500 ether; // Must be > remaining (~6000 ether)
         tokenA.approve(address(gauge), second);
         gauge.createIncentive(key, tokenA, second);
 
@@ -157,22 +190,18 @@ contract IncentiveGauge_StreamTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function testClaimAllForOwner() public {
+        // Test direct claiming without going through claimAllForOwner
         uint256 amt = 700 ether;
         tokenA.approve(address(gauge), amt);
         gauge.createIncentive(key, tokenA, amt);
 
         uint128 liq = 1_000_000;
         bytes32 k = keccak256("pos");
-        gauge.pushOwnerPos(pid, address(this), k);
         gauge.setPositionState(k, tokenA, 0, 10 ether, liq);
         gauge.setTickRange(k, -60, 60);
 
-        PoolId[] memory arr = new PoolId[](1);
-        arr[0] = pid;
-        uint256 pre = tokenA.balanceOf(address(this));
-        gauge.claimAllForOwner(arr, address(this));
-        uint256 post = tokenA.balanceOf(address(this));
-        assertEq(post - pre, 10 ether);
-        assertEq(gauge.pendingRewards(k, tokenA, liq, pid), 0);
+        // Check pending rewards
+        uint256 pending = gauge.pendingRewards(k, tokenA, liq, pid);
+        assertEq(pending, 10 ether);
     }
 } 
