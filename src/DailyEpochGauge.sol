@@ -607,15 +607,12 @@ contract DailyEpochGauge is Ownable2Step {
             })
         );
 
-        // update cached liq
+        // Always update cached liquidity (keep position tracked even at 0)
+        positionLiquidity[posKey] = currentLiq;
+        
+        // Auto-claim if liquidity is now zero
         if (currentLiq == 0) {
-            // 3. Auto-claim any remaining rewards
             _claimRewards(posKey, owner);
-
-            // 4. Clean up position data
-            _removePosition(pid, owner, posKey);
-        } else {
-            positionLiquidity[posKey] = currentLiq; // cache update stays
         }
     }
 }

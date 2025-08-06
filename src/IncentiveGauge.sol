@@ -392,19 +392,10 @@ contract IncentiveGauge is Ownable2Step {
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         _updatePool(key, pid, token, currentTick);
 
-        // Check if position has been initialized for this token
+        // Accrue latest rewards
         RangePosition.State storage ps = positionRewards[positionKey][token];
         TickRange storage tr = positionTicks[positionKey];
-        uint256 rangeRpl = poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper);
-        
-        // Initialize position if this is the first time seeing this token
-        // (position was subscribed before this incentive existed)
-        if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && rangeRpl > 0) {
-            ps.initSnapshot(rangeRpl);
-        }
-        
-        // Accrue latest rewards
-        ps.accrue(positionLiquidity[positionKey], rangeRpl);
+        ps.accrue(positionLiquidity[positionKey], poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper));
     }
 
     /// @dev internal helper to add a token to a pool
@@ -430,14 +421,8 @@ contract IncentiveGauge is Ownable2Step {
             if (liq > 0) {
                 TickRange storage tr = positionTicks[positionKey];
                 uint256 rangeRpl = poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper);
-                
-                // If position was never initialized for this token, no rewards
-                if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && rangeRpl > 0) {
-                    amount = 0;
-                } else {
-                    uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
-                    amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
-                }
+                uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+                amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
             } else {
                 amount = ps.rewardsAccrued;
             }
@@ -468,12 +453,6 @@ contract IncentiveGauge is Ownable2Step {
     /// @dev small helper to compute pending for one position & token
     function _pendingForPosTok(bytes32 posKey, IERC20 tok, uint256 poolRpl) internal view returns (uint256) {
         RangePosition.State storage ps = positionRewards[posKey][tok];
-        
-        // If position was never initialized for this token, no rewards
-        if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && poolRpl > 0) {
-            return 0;
-        }
-        
         uint256 delta = poolRpl - ps.rewardsPerLiquidityLastX128;
         return ps.rewardsAccrued + (delta * positionLiquidity[posKey]) / FixedPoint128.Q128;
     }
@@ -487,33 +466,39 @@ contract IncentiveGauge is Ownable2Step {
         
         TickRange storage tr = positionTicks[posKey];
         uint256 rangeRpl = poolRewards[pid][tok].rangeRplX128(tr.lower, tr.upper);
-        RangePosition.State storage ps = positionRewards[posKey][tok];
-        
-        // If position was never initialized for this token, no rewards
-        if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && rangeRpl > 0) {
-            return 0;
-        }
-        
-        uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
-        return ps.rewardsAccrued + (delta * positionLiquidity[posKey]) / FixedPoint128.Q128;
+        uint256 delta = rangeRpl - positionRewards[posKey][tok].rewardsPerLiquidityLastX128;
+        return positionRewards[posKey][tok].rewardsAccrued + (delta * positionLiquidity[posKey]) / FixedPoint128.Q128;
     }
 
     /// @dev internal helper to update pool state
     function _updatePool(PoolKey memory key, PoolId pid, IERC20 token, int24 currentTick) internal {
         IncentiveInfo storage info = incentives[pid][token];
+        
+        // Calculate effective reward rate (0 after period ends)
+        uint256 effectiveRate = block.timestamp > info.periodFinish ? 0 : info.rewardRate;
+        
+        // Always sync pool state to keep tick and lastUpdate current
+        poolRewards[pid][token].sync(effectiveRate, key.tickSpacing, currentTick);
+        
+        // Early exit if no rewards to distribute
         if (info.rewardRate == 0) return;
 
-        // Sync pool state (init, accumulate, tick adjust) in one call
-        poolRewards[pid][token].sync(info.rewardRate, key.tickSpacing, currentTick);
-
-        // update incentive streaming bookkeeping
+        // Update incentive streaming bookkeeping
         uint256 dt = block.timestamp - info.lastUpdate;
         if (dt > 0) {
-            uint256 streamed = dt * info.rewardRate;
-            if (streamed > info.remaining) streamed = info.remaining;
-            info.remaining -= uint128(streamed);
+            // Cap time delta at periodFinish to prevent over-streaming
+            uint256 cappedTimestamp = block.timestamp > info.periodFinish ? info.periodFinish : block.timestamp;
+            if (cappedTimestamp > info.lastUpdate) {
+                dt = cappedTimestamp - info.lastUpdate;
+                uint256 streamed = dt * info.rewardRate;
+                if (streamed > info.remaining) streamed = info.remaining;
+                info.remaining -= uint128(streamed);
+            }
+            
             info.lastUpdate = uint64(block.timestamp);
-            if (info.remaining == 0) info.rewardRate = 0;
+            if (info.remaining == 0 || block.timestamp >= info.periodFinish) {
+                info.rewardRate = 0;
+            }
         }
     }
 
@@ -524,13 +509,6 @@ contract IncentiveGauge is Ownable2Step {
 
         // Accrue rewards before mutating liquidity using range-aware accumulator
         uint256 rangeRpl = pool.rangeRplX128(d.tickLower, d.tickUpper);
-        
-        // Initialize position if this is the first time seeing this token
-        // (position was subscribed before this incentive existed)
-        if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && rangeRpl > 0) {
-            ps.initSnapshot(rangeRpl);
-        }
-        
         ps.accrue(d.liquidityBefore, rangeRpl);
 
         // Ensure each boundary tick holds at least `liquidityBefore` gross
@@ -587,13 +565,6 @@ contract IncentiveGauge is Ownable2Step {
 
         // Accrue rewards before removing liquidity
         uint256 rangeRpl = pool.rangeRplX128(d.tickLower, d.tickUpper);
-        
-        // Initialize position if this is the first time seeing this token
-        // (position was subscribed before this incentive existed)
-        if (ps.rewardsPerLiquidityLastX128 == 0 && ps.rewardsAccrued == 0 && rangeRpl > 0) {
-            ps.initSnapshot(rangeRpl);
-        }
-        
         ps.accrue(d.liquidityBefore, rangeRpl);
 
         // For complete removal, we can skip the tick initialization checks
@@ -693,7 +664,12 @@ contract IncentiveGauge is Ownable2Step {
 
         // Single loop to handle all tokens
         for (uint256 t; t < _tokens.length; ++t) {
+            RangePosition.State storage posState = positionRewards[positionKey][_tokens[t]];
 
+            // Skip if never initialized for this token
+            if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
+                continue;
+            }
 
             // Update pool state
             _updatePool(key, pid, _tokens[t], _currTick);
@@ -750,7 +726,12 @@ contract IncentiveGauge is Ownable2Step {
 
         // Single loop to handle all tokens
         for (uint256 t; t < _tokens.length; ++t) {
+            RangePosition.State storage posState = positionRewards[positionKey][_tokens[t]];
 
+            // Skip if never initialized for this token
+            if (posState.rewardsPerLiquidityLastX128 == 0 && posState.rewardsAccrued == 0) {
+                continue;
+            }
 
             // Update pool state
             _updatePool(key, pid, _tokens[t], _currTick);
@@ -793,14 +774,11 @@ contract IncentiveGauge is Ownable2Step {
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
         bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
 
+        // Always update cached liquidity (keep position tracked even at 0)
+        positionLiquidity[positionKey] = currentLiq;
+
         // Early exit if no tokens
         if (poolTokens[pid].length == 0) {
-            if (currentLiq == 0) {
-                RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
-                delete positionTicks[positionKey];
-            } else {
-                positionLiquidity[positionKey] = currentLiq;
-            }
             return;
         }
 
@@ -827,19 +805,10 @@ contract IncentiveGauge is Ownable2Step {
                 })
             );
 
-            // If liquidity is now zero, auto-claim and delete rewards
+            // Auto-claim if liquidity is now zero
             if (currentLiq == 0) {
                 _claimRewards(positionKey, poolTokens[pid][t], owner);
-                delete positionRewards[positionKey][poolTokens[pid][t]];
             }
-        }
-
-        // Clean up or update position tracking
-        if (currentLiq == 0) {
-            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
-            delete positionTicks[positionKey];
-        } else {
-            positionLiquidity[positionKey] = currentLiq;
         }
     }
 }
