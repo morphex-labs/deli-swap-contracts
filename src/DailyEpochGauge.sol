@@ -74,6 +74,7 @@ contract DailyEpochGauge is Ownable2Step {
 
     mapping(address => bool) public isHook;
     mapping(bytes32 => TickRange) internal positionTicks;
+    mapping(bytes32 => uint256) internal positionTokenIds;
 
     IPositionManagerAdapter public positionManagerAdapter;
     IPoolManager public immutable POOL_MANAGER;
@@ -209,11 +210,11 @@ contract DailyEpochGauge is Ownable2Step {
         address owner = positionManagerAdapter.ownerOf(tokenId);
         if (msg.sender != owner) revert DeliErrors.NotAuthorized();
 
-        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
         PoolId pid = key.toId();
 
         // Reconstruct the position key
-        bytes32 positionKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
         // Sync pool state and accrue rewards
         _syncAndAccrue(key, pid, positionKey);
@@ -243,6 +244,17 @@ contract DailyEpochGauge is Ownable2Step {
             // Accrue and claim BMX for every position key of this owner in the pool.
             for (uint256 i; i < keyLen; ++i) {
                 bytes32 posKey = keys[i];
+
+                // Verify this position still belongs to the owner
+                uint256 tokenId = positionTokenIds[posKey];
+                if (tokenId == 0) continue; // Position was removed
+
+                // Check ownership (use try-catch to handle burned tokens)
+                try positionManagerAdapter.ownerOf(tokenId) returns (address currentOwner) {
+                    if (currentOwner != owner) continue; // Skip if no longer owned
+                } catch {
+                    continue; // Skip if token doesn't exist or ownerOf reverts
+                }
 
                 // Sync pool state and accrue rewards
                 _syncAndAccrue(key, pid, posKey);
@@ -312,11 +324,10 @@ contract DailyEpochGauge is Ownable2Step {
 
     /// @notice Returns pending rewards for an active position by tokenId.
     function pendingRewardsByTokenId(uint256 tokenId) external view returns (uint256 amount) {
-        try positionManagerAdapter.ownerOf(tokenId) returns (address owner) {
-            (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        try positionManagerAdapter.ownerOf(tokenId) returns (address) {
+            (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
             PoolId pid = key.toId();
-            bytes32 positionKey =
-                keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+            bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
 
             RangePosition.State storage ps = positionRewards[positionKey];
             uint128 liq = positionLiquidity[positionKey];
@@ -396,6 +407,7 @@ contract DailyEpochGauge is Ownable2Step {
         RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
         delete positionTicks[posKey];
         delete positionRewards[posKey];
+        delete positionTokenIds[posKey];
     }
 
     /// @dev internal: claim rewards for a position and transfer to recipient
@@ -486,8 +498,9 @@ contract DailyEpochGauge is Ownable2Step {
         );
 
         // index position
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
         RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, posKey, liquidity);
+        positionTokenIds[posKey] = tokenId;
 
         // store tick range for later range-aware accounting
         positionTicks[posKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
@@ -505,7 +518,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         _syncPoolState(key, pid);
 
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
 
         // 1. Accrue rewards with current liquidity
         positionRewards[posKey].accrue(liquidity, poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper()));
@@ -538,7 +551,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         _syncPoolState(key, pid);
 
-        bytes32 posKey = keccak256(abi.encode(ownerAddr, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
 
         // 1. Accrue rewards with current liquidity
         positionRewards[posKey].accrue(
@@ -577,7 +590,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         uint128 liquidityBefore = uint128(int128(currentLiq) - int128(liquidityChange));
 
-        bytes32 posKey = keccak256(abi.encode(owner, info.tickLower(), info.tickUpper(), bytes32(tokenId), pid));
+        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
 
         // 1. Accrue rewards with liquidity before change
         positionRewards[posKey].accrue(
