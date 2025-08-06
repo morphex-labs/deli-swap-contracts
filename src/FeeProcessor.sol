@@ -360,14 +360,15 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
         // Expected quote at mid-price
         uint256 quoteOut;
-        uint256 q192 = 1 << 192;
-        uint256 pxSquared = uint256(sqrtPx96) * uint256(sqrtPx96);
+        // Use ratioX128 to avoid overflow when squaring sqrtPx96
+        // Following Uniswap v3's OracleLibrary implementation
+        uint256 ratioX128 = FullMath.mulDiv(sqrtPx96, sqrtPx96, 1 << 64);
         if (zeroForOne) {
-            // token0 -> token1
-            quoteOut = FullMath.mulDiv(amtIn, pxSquared, q192);
+            // token0 -> token1: price = sqrtPrice^2
+            quoteOut = FullMath.mulDiv(amtIn, ratioX128, 1 << 128);
         } else {
-            // token1 -> token0
-            quoteOut = FullMath.mulDiv(amtIn, q192, pxSquared);
+            // token1 -> token0: price = 1 / sqrtPrice^2
+            quoteOut = FullMath.mulDiv(amtIn, 1 << 128, ratioX128);
         }
 
         // Execute the swap - any failures will be caught by the try-catch in collectFee()
