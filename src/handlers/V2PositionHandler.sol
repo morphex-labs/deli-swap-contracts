@@ -45,6 +45,10 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     // Track which pools use V2
     mapping(PoolId => bool) public isV2Pool;
+    
+    // Track PoolKey for each V2 pool to support getPoolKeyFromPositionInfo
+    // Uses truncated poolId (bytes25) as key to match PositionInfo storage
+    mapping(bytes25 => PoolKey) public poolKeysByTruncatedId;
 
     // Type prefix for V2 tokenIds (bit 255 set to 1)
     // This ensures V2 tokenIds never collide with V4 PositionManager tokenIds
@@ -111,6 +115,13 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     function notifyAddLiquidity(PoolKey calldata poolKey, address owner, uint128 liquidityDelta) external onlyV2Hook {
         PoolId poolId = poolKey.toId();
         isV2Pool[poolId] = true;
+        
+        // Store poolKey for this pool if not already stored
+        // Use truncated poolId to match PositionInfo storage format
+        bytes25 truncatedPoolId = bytes25(PoolId.unwrap(poolId));
+        if (poolKeysByTruncatedId[truncatedPoolId].tickSpacing == 0) {
+            poolKeysByTruncatedId[truncatedPoolId] = poolKey;
+        }
 
         uint256 tokenId = v2TokenIds[poolId][owner];
 
@@ -186,6 +197,13 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     /// @inheritdoc IPositionHandler
     function handlerType() external pure override returns (string memory) {
         return "V2_CONSTANT_PRODUCT";
+    }
+    
+    /// @notice Get the PoolKey for a given truncated poolId
+    /// @dev Returns the stored PoolKey as a proper memory struct
+    /// @param truncatedPoolId The truncated poolId (bytes25) from PositionInfo
+    function getPoolKeyByTruncatedId(bytes25 truncatedPoolId) external view returns (PoolKey memory) {
+        return poolKeysByTruncatedId[truncatedPoolId];
     }
 
     /*//////////////////////////////////////////////////////////////

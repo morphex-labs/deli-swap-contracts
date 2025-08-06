@@ -10,6 +10,7 @@ import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step
 import {IPositionHandler} from "./interfaces/IPositionHandler.sol";
 import {DeliErrors} from "./libraries/DeliErrors.sol";
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
+import {IV2PositionHandler} from "./interfaces/IV2PositionHandler.sol";
 
 /**
  * @title PositionManagerAdapter
@@ -178,11 +179,35 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     }
 
     /// @notice Get PoolKey from PositionInfo for burned tokens
-    /// @dev Uses the IPoolKeys interface to look up from truncated poolId
+    /// @dev First tries V4 PositionManager, then falls back to V2 pools
     function getPoolKeyFromPositionInfo(PositionInfo info) external view returns (PoolKey memory) {
         if (positionManager == address(0)) revert DeliErrors.ZeroAddress();
         bytes25 truncatedPoolId = PositionInfoLibrary.poolId(info);
-        return IPoolKeys(positionManager).poolKeys(truncatedPoolId);
+
+        // First try to get from V4 PositionManager
+        PoolKey memory poolKey = IPoolKeys(positionManager).poolKeys(truncatedPoolId);
+
+        // If not found (tickSpacing = 0), check V2 pools
+        if (poolKey.tickSpacing == 0) {
+            // Try each handler to see if it's a V2 pool
+            uint256 length = handlers.length;
+            for (uint256 i = 0; i < length; i++) {
+                // Check if this is the V2 handler
+                if (keccak256(bytes(handlers[i].handlerType())) == keccak256(bytes("V2_CONSTANT_PRODUCT"))) {
+                    // Cast to IV2PositionHandler and get poolKey using truncated poolId
+                    IV2PositionHandler v2Handler = IV2PositionHandler(address(handlers[i]));
+                    poolKey = v2Handler.getPoolKeyByTruncatedId(truncatedPoolId);
+                    if (poolKey.tickSpacing != 0) {
+                        return poolKey;
+                    }
+                }
+            }
+
+            // If still not found, revert
+            revert DeliErrors.PoolNotFound();
+        }
+
+        return poolKey;
     }
 
     /*//////////////////////////////////////////////////////////////
