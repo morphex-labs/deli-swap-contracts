@@ -44,7 +44,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         // no-op
     }
 
-    function claim(address /* to */ , bytes32 /* positionKey */ ) external override returns (uint256) {
+    function claim(uint256 /* tokenId */ , address /* to */ ) external override returns (uint256) {
         return 0;
     }
 

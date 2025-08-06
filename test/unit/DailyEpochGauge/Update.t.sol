@@ -10,12 +10,42 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {MockPoolManager} from "test/mocks/MockPoolManager.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
+import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 
 // simple token
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract TokenMock is ERC20 {
     constructor() ERC20("BMX","BMX") { _mint(msg.sender, 1e24); }
+}
+
+contract MockAdapter {
+    mapping(uint256 => address) public ownerOf;
+    address public positionManager;
+    
+    function setOwner(uint256 tokenId, address owner) external {
+        ownerOf[tokenId] = owner;
+    }
+    
+    function setPositionManager(address pm) external {
+        positionManager = pm;
+    }
+    
+    function getPoolAndPositionInfo(uint256) external pure returns (PoolKey memory key, PositionInfo info) {
+        key = PoolKey({
+            currency0: Currency.wrap(address(0xAAA)),
+            currency1: Currency.wrap(address(0xBBB)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
+        // Return an empty PositionInfo - it's a struct with packed data
+        info = PositionInfo.wrap(0);
+    }
+    
+    function getPositionLiquidity(uint256) external pure returns (uint128) {
+        return 1_000_000; // Return the same liquidity used in the test
+    }
 }
 
 // harness to expose internal mappings we need for assertions
@@ -42,12 +72,16 @@ contract GaugeViewHarness is DailyEpochGauge {
         uint128 liquidity
     ) external {
         PoolId pid = key.toId();
+        
+        // Use salt as tokenId (for test purposes)
+        uint256 tokenId = uint256(salt);
 
-        // Compute positionKey same as production logic
-        bytes32 posKey = keccak256(abi.encode(owner, tickLower, tickUpper, salt, pid));
+        // Compute positionKey using new format
+        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
 
         if (positionLiquidity[posKey] == 0 && liquidity > 0) {
             ownerPositions[pid][owner].push(posKey);
+            positionTokenIds[posKey] = tokenId; // Store tokenId mapping
         }
 
         positionLiquidity[posKey] = liquidity;
@@ -73,6 +107,7 @@ contract GaugeViewHarness is DailyEpochGauge {
                     break;
                 }
             }
+            delete positionTokenIds[posKey];
         }
     }
 
@@ -84,6 +119,7 @@ contract GaugeViewHarness is DailyEpochGauge {
 contract DailyEpochGauge_UpdateTest is Test {
     GaugeViewHarness gauge;
     MockPoolManager pm;
+    MockAdapter mockAdapter;
     address hookAddr = address(0xBEEF1);
 
     PoolKey key;
@@ -95,8 +131,12 @@ contract DailyEpochGauge_UpdateTest is Test {
     function setUp() public {
         pm = new MockPoolManager();
         bmxToken = new TokenMock();
+        mockAdapter = new MockAdapter();
+        
+        // Set owner for tokenId 0 (used in tests)
+        mockAdapter.setOwner(0, owner);
 
-        gauge = new GaugeViewHarness(address(0xFEE), address(pm), address(0x1111), hookAddr, bmxToken);
+        gauge = new GaugeViewHarness(address(0xFEE), address(pm), address(mockAdapter), hookAddr, bmxToken);
 
         key = PoolKey({
             currency0: Currency.wrap(address(0xAAA)),
@@ -117,7 +157,7 @@ contract DailyEpochGauge_UpdateTest is Test {
     function _callUpdate(uint128 liq) internal returns (bytes32 posKey) {
         vm.prank(hookAddr);
         gauge.updatePosition(key, owner, -60000, 60000, bytes32(0), liq);
-        posKey = keccak256(abi.encode(owner, int24(-60000), int24(60000), bytes32(0), pid));
+        posKey = keccak256(abi.encode(uint256(0), pid));
     }
 
     function testIndexingAndCache() public {
@@ -184,7 +224,7 @@ contract DailyEpochGauge_UpdateTest is Test {
         gauge.rollIfNeeded(pid);
 
         // add position before accumulator starts
-        bytes32 pk = _callUpdate(1_000_000);
+        _callUpdate(1_000_000);
 
         // advance 1h into streaming day and poke
         vm.warp(block.timestamp + 3600);
@@ -196,7 +236,7 @@ contract DailyEpochGauge_UpdateTest is Test {
         vm.prank(hookAddr);
         gauge.pokePool(key);
 
-        uint256 pending = gauge.pendingRewards(pk, 1_000_000, pid);
+        uint256 pending = gauge.pendingRewardsByTokenId(0);
         assertGt(pending, 0);
     }
 
@@ -206,7 +246,7 @@ contract DailyEpochGauge_UpdateTest is Test {
         DailyEpochGauge g2 = new DailyEpochGauge(
             address(0xFEE),
             IPoolManager(address(pm)),
-            IPositionManagerAdapter(address(0x1111)),
+            IPositionManagerAdapter(address(mockAdapter)),
             hookAddr,
             bmxToken,
             address(mig)

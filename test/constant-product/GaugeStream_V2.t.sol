@@ -279,9 +279,7 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         require(activeLiquidity > 0, "No active liquidity");
         
         // Check if Alice has pending rewards before claiming
-        bytes32 posKeyA = keccak256(abi.encode(alice, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posA), pid));
-        uint128 liqA = v2Handler.getPositionLiquidity(posA);
-        uint256 pendingA = gauge.pendingRewards(posKeyA, liqA, pid);
+        uint256 pendingA = gauge.pendingRewardsByTokenId(posA);
         require(pendingA > 0, "No pending rewards for Alice");
 
         PoolId[] memory arr = new PoolId[](1);
@@ -344,18 +342,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        // compute pos keys - V2 positions are full-range (with tick spacing 1)
-        bytes32 posKeyA = keccak256(abi.encode(alice, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posA), pid));
-        bytes32 posKeyB = keccak256(abi.encode(bob, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posB), pid));
-
         // Get liquidity from V2PositionHandler synthetic positions
         uint128 liqA = v2Handler.getPositionLiquidity(posA);
         uint128 liqB = v2Handler.getPositionLiquidity(posB);
         // Note: Alice gets slightly less liquidity due to MINIMUM_LIQUIDITY lock on first mint
         assertApproxEqAbs(liqA, liqB, 1000, "liquidity mismatch");
 
-        uint256 pendingA = gauge.pendingRewards(posKeyA, liqA, pid);
-        uint256 pendingB = gauge.pendingRewards(posKeyB, liqB, pid);
+        uint256 pendingA = gauge.pendingRewardsByTokenId(posA);
+        uint256 pendingB = gauge.pendingRewardsByTokenId(posB);
         // Rewards should be proportional to liquidity
         // Since liqA is slightly less than liqB, pendingA should be slightly less than pendingB
         assertApproxEqRel(pendingA, pendingB, 0.0001e18, "pending rewards not proportional");

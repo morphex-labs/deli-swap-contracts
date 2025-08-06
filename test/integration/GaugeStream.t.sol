@@ -260,12 +260,7 @@ contract GaugeStream_IT is Test, Deployers {
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        // Compute posKey for out-of-range position
-        bytes32 posKey = keccak256(
-            abi.encode(address(this), tickLower, tickUpper, bytes32(tokenIdOut), pid)
-        );
-
-        uint256 pending = gauge.pendingRewards(posKey, uint128(liq), pid);
+        uint256 pending = gauge.pendingRewardsByTokenId(tokenIdOut);
         assertEq(pending, 0, "out-of-range position accrued rewards");
     }
 
@@ -313,15 +308,8 @@ contract GaugeStream_IT is Test, Deployers {
         uint128 liqWide = positionManager.getPositionLiquidity(wideTokenId);
         uint128 liqNarrow = positionManager.getPositionLiquidity(tokenIdNarrow);
 
-        bytes32 posWide = keccak256(
-            abi.encode(address(this), int24(-60000), int24(60000), bytes32(wideTokenId), pid)
-        );
-        bytes32 posNarrow = keccak256(
-            abi.encode(address(this), tickLower, tickUpper, bytes32(tokenIdNarrow), pid)
-        );
-
-        uint256 pendingWide = gauge.pendingRewards(posWide, liqWide, pid);
-        uint256 pendingNarrow = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 pendingWide = gauge.pendingRewardsByTokenId(wideTokenId);
+        uint256 pendingNarrow = gauge.pendingRewardsByTokenId(tokenIdNarrow);
 
         // Sanity: confirm narrow position minted MORE liquidity units with same budget
         assertGt(liqNarrow, liqWide, "narrow position did not mint more liquidity units");
