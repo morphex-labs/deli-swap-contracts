@@ -53,10 +53,10 @@ contract V2ConstantProductHookTest is Test, Deployers {
 
     uint256 constant MAX_DEADLINE = 12329839823;
 
-    event PoolInitialized(PoolId indexed poolId);
+    event PairCreated(PoolId indexed poolId, Currency indexed currency0, Currency indexed currency1, uint24 fee);
     event Sync(PoolId indexed poolId, uint128 reserve0, uint128 reserve1);
-    event MintShares(PoolId indexed poolId, address indexed to, uint256 shares);
-    event BurnShares(PoolId indexed poolId, address indexed from, uint256 shares);
+    event Mint(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1);
+    event Burn(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
 
     function setUp() public {
         deployFreshManagerAndRouters();
@@ -95,7 +95,8 @@ contract V2ConstantProductHookTest is Test, Deployers {
                 address(dailyEpochGauge),
                 address(incentiveGauge),
                 Currency.unwrap(wBLT),
-                Currency.unwrap(bmx)
+                Currency.unwrap(bmx),
+                address(this)  // owner
             )
         );
 
@@ -105,7 +106,8 @@ contract V2ConstantProductHookTest is Test, Deployers {
             IDailyEpochGauge(address(dailyEpochGauge)),
             IIncentiveGauge(address(incentiveGauge)),
             Currency.unwrap(wBLT),
-            Currency.unwrap(bmx)
+            Currency.unwrap(bmx),
+            address(this)  // owner
         );
         require(address(hook) == hookAddress, "Hook address mismatch");
 
@@ -191,7 +193,7 @@ contract V2ConstantProductHookTest is Test, Deployers {
         uint256 expectedShares = sqrt(amount0 * amount1) - hook.MINIMUM_LIQUIDITY();
 
         vm.expectEmit(true, true, true, true);
-        emit MintShares(id1, address(this), expectedShares);
+        emit Mint(id1, address(this), amount0, amount1);
 
         hook.addLiquidity(key1, MultiPoolCustomCurve.AddLiquidityParams({
             amount0Desired: amount0,

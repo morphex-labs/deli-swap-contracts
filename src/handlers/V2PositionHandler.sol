@@ -45,9 +45,18 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     // Track which pools use V2
     mapping(PoolId => bool) public isV2Pool;
+    
+    // Track PoolKey for each V2 pool to support getPoolKeyFromPositionInfo
+    // Uses truncated poolId (bytes25) as key to match PositionInfo storage
+    mapping(bytes25 => PoolKey) public poolKeysByTruncatedId;
 
-    // Counter for synthetic tokenIds
-    uint256 private nextTokenId = 1;
+    // Type prefix for V2 tokenIds (bit 255 set to 1)
+    // This ensures V2 tokenIds never collide with V4 PositionManager tokenIds
+    // V2 tokenIds will be in range [2^255, 2^256-1] while V4 uses [1, 2^255-1]
+    uint256 private constant V2_TOKEN_PREFIX = 1 << 255;
+
+    // Counter for synthetic tokenIds (without prefix)
+    uint256 private baseTokenId = 1;
 
     struct SyntheticPosition {
         PoolKey poolKey;
@@ -104,8 +113,17 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     /// @notice Called by DeliHookConstantProduct when liquidity is added
     function notifyAddLiquidity(PoolKey calldata poolKey, address owner, uint128 liquidityDelta) external onlyV2Hook {
+        if (address(positionManagerAdapter) == address(0)) revert DeliErrors.ComponentNotDeployed();
+        
         PoolId poolId = poolKey.toId();
         isV2Pool[poolId] = true;
+        
+        // Store poolKey for this pool if not already stored
+        // Use truncated poolId to match PositionInfo storage format
+        bytes25 truncatedPoolId = bytes25(PoolId.unwrap(poolId));
+        if (poolKeysByTruncatedId[truncatedPoolId].tickSpacing == 0) {
+            poolKeysByTruncatedId[truncatedPoolId] = poolKey;
+        }
 
         uint256 tokenId = v2TokenIds[poolId][owner];
 
@@ -145,7 +163,10 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     /// @inheritdoc IPositionHandler
     function handlesTokenId(uint256 tokenId) external view override returns (bool) {
-        // Check if this tokenId exists in our synthetic positions
+        // Check: V2 tokenIds always have bit 255 set
+        if ((tokenId & V2_TOKEN_PREFIX) == 0) return false;
+
+        // Then check if this tokenId exists in our synthetic positions
         return syntheticPositions[tokenId].exists;
     }
 
@@ -179,6 +200,13 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     function handlerType() external pure override returns (string memory) {
         return "V2_CONSTANT_PRODUCT";
     }
+    
+    /// @notice Get the PoolKey for a given truncated poolId
+    /// @dev Returns the stored PoolKey as a proper memory struct
+    /// @param truncatedPoolId The truncated poolId (bytes25) from PositionInfo
+    function getPoolKeyByTruncatedId(bytes25 truncatedPoolId) external view returns (PoolKey memory) {
+        return poolKeysByTruncatedId[truncatedPoolId];
+    }
 
     /*//////////////////////////////////////////////////////////////
                         INTERNAL FUNCTIONS
@@ -189,17 +217,16 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
         internal
         returns (uint256 tokenId)
     {
-        tokenId = nextTokenId++;
+        // Generate tokenId with V2 prefix (bit 255 set)
+        tokenId = V2_TOKEN_PREFIX | baseTokenId++;
 
         // Store mappings
         v2TokenIds[poolId][owner] = tokenId;
         tokenOwners[tokenId] = owner;
         syntheticPositions[tokenId] = SyntheticPosition({poolKey: poolKey, liquidity: liquidity, exists: true});
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            positionManagerAdapter.notifySubscribe(tokenId, "");
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        positionManagerAdapter.notifySubscribe(tokenId, "");
 
         emit V2PositionCreated(poolId, owner, tokenId);
     }
@@ -220,11 +247,9 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
             pos.liquidity += uint128(uint256(liquidityDelta));
         }
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
-            positionManagerAdapter.notifyModifyLiquidity(tokenId, liquidityDelta, delta);
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
+        positionManagerAdapter.notifyModifyLiquidity(tokenId, liquidityDelta, delta);
 
         emit V2PositionModified(poolId, owner, tokenId, liquidityDelta);
     }
@@ -236,11 +261,9 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
         // Create synthetic PositionInfo for the burn notification
         PositionInfo info = _createPositionInfo(poolKey);
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
-            positionManagerAdapter.notifyBurn(tokenId, owner, info, uint256(liquidity), delta);
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
+        positionManagerAdapter.notifyBurn(tokenId, owner, info, uint256(liquidity), delta);
 
         // Clean up storage
         delete v2TokenIds[poolId][owner];

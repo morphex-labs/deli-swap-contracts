@@ -75,9 +75,10 @@ contract DeliHook is Ownable2Step, BaseHook {
         IDailyEpochGauge _dailyEpochGauge,
         IIncentiveGauge _incentiveGauge,
         address _wblt,
-        address _bmx
-    ) Ownable(msg.sender) BaseHook(_poolManager) {
-        if (_wblt == address(0) || _bmx == address(0)) revert DeliErrors.ZeroAddress();
+        address _bmx,
+        address _owner
+    ) Ownable(_owner) BaseHook(_poolManager) {
+        if (_wblt == address(0) || _bmx == address(0) || _owner == address(0)) revert DeliErrors.ZeroAddress();
 
         feeProcessor = _feeProcessor;
         dailyEpochGauge = _dailyEpochGauge;

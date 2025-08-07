@@ -36,6 +36,7 @@ library DeliErrors {
     
     // pool errors
     error PoolNotInitialized();
+    error PoolNotFound();
     error InvalidTickSpacing();
     error InvalidFee();
     error NoLiquidity();
