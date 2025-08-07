@@ -15,7 +15,6 @@ import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
-import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "./interfaces/IPositionManagerAdapter.sol";
 
@@ -237,9 +236,8 @@ contract DailyEpochGauge is Ownable2Step {
             uint256 keyLen = keys.length;
             if (keyLen == 0) continue;
 
-            // Look up the pool key from the position manager using IPoolKeys interface
-            PoolKey memory key =
-                IPoolKeys(positionManagerAdapter.positionManager()).poolKeys(bytes25(PoolId.unwrap(pid)));
+            // Look up the pool key using the adapter's fallback mechanism for V2 pools
+            PoolKey memory key = positionManagerAdapter.getPoolKeyFromPoolId(pid);
 
             // Accrue and claim BMX for every position key of this owner in the pool.
             for (uint256 i; i < keyLen; ++i) {

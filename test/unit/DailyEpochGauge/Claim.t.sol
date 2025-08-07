@@ -20,14 +20,24 @@ contract MockBMX is ERC20 {
 
 contract MockAdapter {
     mapping(uint256 => address) public ownerOf;
-    address public positionManager;
+    address public immutable positionManager;
+    
+    constructor(address _positionManager) {
+        positionManager = _positionManager;
+    }
     
     function setOwner(uint256 tokenId, address owner) external {
         ownerOf[tokenId] = owner;
     }
     
-    function setPositionManager(address pm) external {
-        positionManager = pm;
+    function getPoolKeyFromPoolId(PoolId) external pure returns (PoolKey memory) {
+        return PoolKey({
+            currency0: Currency.wrap(address(0x1)),
+            currency1: Currency.wrap(address(0x2)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
     }
 }
 
@@ -81,9 +91,8 @@ contract DailyEpochGauge_ClaimAllTest is Test {
 
     function setUp() public {
         bmx = new MockBMX();
-        mockAdapter = new MockAdapter();
         mockPositionManager = new MockPositionManager();
-        mockAdapter.setPositionManager(address(mockPositionManager));
+        mockAdapter = new MockAdapter(address(mockPositionManager));
         mockPoolManager = new MockPoolManager();
         gauge = new GaugeHarness2(address(0xFEE), address(mockPoolManager), address(mockAdapter), address(0x3), bmx);
 

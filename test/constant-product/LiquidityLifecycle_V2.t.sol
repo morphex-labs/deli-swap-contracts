@@ -92,8 +92,7 @@ contract LiquidityLifecycle_V2_IT is Test, Deployers {
         );
 
         // Now deploy adapter with correct addresses
-        adapter = new PositionManagerAdapter(address(gauge), address(inc));
-        adapter.setPositionManager(address(positionManager));  // Set the V4 position manager
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
         
         // Update gauges with adapter
         gauge.setPositionManagerAdapter(address(adapter));

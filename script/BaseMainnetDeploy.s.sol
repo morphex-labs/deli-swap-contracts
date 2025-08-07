@@ -237,7 +237,8 @@ contract BaseMainnetDeploy is Script {
         // 9. Now deploy PositionManagerAdapter with gauge addresses
         positionManagerAdapter = new PositionManagerAdapter(
             address(dailyEpochGauge),
-            address(incentiveGauge)
+            address(incentiveGauge),
+            address(positionManager)
         );
         console.log("PositionManagerAdapter deployed:", address(positionManagerAdapter));
     }
@@ -305,7 +306,6 @@ contract BaseMainnetDeploy is Script {
         positionManagerAdapter.setAuthorizedCaller(address(positionManager), true);
         positionManagerAdapter.setAuthorizedCaller(address(deliHookConstantProduct), true);
         positionManagerAdapter.setAuthorizedCaller(address(v2Handler), true);
-        positionManagerAdapter.setPositionManager(address(positionManager));
         
         // Update gauges with adapter (they were deployed with address(0))
         dailyEpochGauge.setPositionManagerAdapter(address(positionManagerAdapter));

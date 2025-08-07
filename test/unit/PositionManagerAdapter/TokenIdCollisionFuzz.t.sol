@@ -53,8 +53,7 @@ contract TokenIdCollisionFuzzTest is Test {
         v4Handler = new V4PositionHandler(address(mockPositionManager));
         
         // Deploy adapter
-        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge));
-        adapter.setPositionManager(address(mockPositionManager));
+        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager));
         
         // Set up v2Handler
         v2Handler.setPositionManagerAdapter(address(adapter));
@@ -64,7 +63,6 @@ contract TokenIdCollisionFuzzTest is Test {
         adapter.addHandler(address(v2Handler));
         
         // Authorize callers
-        adapter.setAuthorizedCaller(address(mockPositionManager), true);
         adapter.setAuthorizedCaller(address(v2Handler), true);
     }
     

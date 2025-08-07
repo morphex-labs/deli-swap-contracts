@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PositionInfo, PositionInfoLibrary} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
@@ -22,6 +23,9 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
 
+    // V4 PositionManager address for poolKeys lookup
+    address public immutable positionManager;
+
     // Array of registered position handlers
     IPositionHandler[] public handlers;
 
@@ -32,11 +36,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     ISubscriber public dailyEpochGauge;
     ISubscriber public incentiveGauge;
 
-    // Who can call subscriber methods (PositionManager or V2Hook)
+    // Who can call subscriber methods (Hook or Handler)
     mapping(address => bool) public isAuthorizedCaller;
-
-    // V4 PositionManager address for poolKeys lookup
-    address public positionManager;
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
@@ -51,21 +52,28 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
                                 CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address _dailyEpochGauge, address _incentiveGauge) Ownable(msg.sender) {
-        if (_dailyEpochGauge == address(0) || _incentiveGauge == address(0)) {
+    constructor(address _dailyEpochGauge, address _incentiveGauge, address _positionManager) Ownable(msg.sender) {
+        if (_dailyEpochGauge == address(0) || _incentiveGauge == address(0) || _positionManager == address(0)) {
             revert DeliErrors.ZeroAddress();
         }
 
         dailyEpochGauge = ISubscriber(_dailyEpochGauge);
         incentiveGauge = ISubscriber(_incentiveGauge);
+        positionManager = _positionManager;
     }
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Only allow calls from PositionManager, handlers, or hooks
     modifier onlyAuthorizedCaller() {
-        if (!isAuthorizedCaller[msg.sender]) revert DeliErrors.NotAuthorized();
+        if (
+            !(msg.sender == positionManager)
+            && !isAuthorizedCaller[msg.sender]
+        ) {
+            revert DeliErrors.NotAuthorized();
+        }
         _;
     }
 
@@ -135,11 +143,6 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         emit CallerAuthorized(caller, authorized);
     }
 
-    /// @notice Set the V4 PositionManager address for poolKeys lookup
-    function setPositionManager(address _positionManager) external onlyOwner {
-        positionManager = _positionManager;
-    }
-
     /*//////////////////////////////////////////////////////////////
                         POSITION QUERY FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -181,12 +184,24 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @notice Get PoolKey from PositionInfo for burned tokens
     /// @dev First tries V4 PositionManager, then falls back to V2 pools
     function getPoolKeyFromPositionInfo(PositionInfo info) external view returns (PoolKey memory) {
-        if (positionManager == address(0)) revert DeliErrors.ZeroAddress();
         bytes25 truncatedPoolId = PositionInfoLibrary.poolId(info);
+        return _getPoolKeyFromTruncatedId(truncatedPoolId);
+    }
 
+    /// @notice Get PoolKey from a PoolId
+    /// @dev First tries V4 PositionManager, then falls back to V2 pools
+    function getPoolKeyFromPoolId(PoolId poolId) external view returns (PoolKey memory) {
+        bytes25 truncatedPoolId = bytes25(PoolId.unwrap(poolId));
+        return _getPoolKeyFromTruncatedId(truncatedPoolId);
+    }
+
+    /// @dev Internal helper to get PoolKey from truncated poolId with V2 fallback
+    function _getPoolKeyFromTruncatedId(bytes25 truncatedPoolId) internal view returns (PoolKey memory) {
+        if (positionManager == address(0)) revert DeliErrors.ZeroAddress();
+        
         // First try to get from V4 PositionManager
         PoolKey memory poolKey = IPoolKeys(positionManager).poolKeys(truncatedPoolId);
-
+        
         // If not found (tickSpacing = 0), check V2 pools
         if (poolKey.tickSpacing == 0) {
             // Try each handler to see if it's a V2 pool
@@ -202,11 +217,11 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
                     }
                 }
             }
-
+            
             // If still not found, revert
             revert DeliErrors.PoolNotFound();
         }
-
+        
         return poolKey;
     }
 

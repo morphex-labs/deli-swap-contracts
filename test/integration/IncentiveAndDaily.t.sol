@@ -131,13 +131,12 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         (tokenIncId,)   = EasyPosm.mint(positionManager, key, -30000, 30000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
 
         // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(daily), address(inc));
+        adapter = new PositionManagerAdapter(address(daily), address(inc), address(positionManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
         adapter.addHandler(address(v4Handler));
         adapter.setAuthorizedCaller(address(positionManager), true);
-        adapter.setPositionManager(address(positionManager));
         
         // Update gauges to use the adapter
         daily.setPositionManagerAdapter(address(adapter));

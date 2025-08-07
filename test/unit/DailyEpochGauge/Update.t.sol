@@ -19,16 +19,29 @@ contract TokenMock is ERC20 {
     constructor() ERC20("BMX","BMX") { _mint(msg.sender, 1e24); }
 }
 
+contract MockPositionManager {
+    function poolKeys(bytes25) external pure returns (PoolKey memory) {
+        // Return a dummy pool key for testing
+        return PoolKey({
+            currency0: Currency.wrap(address(0xAAA)),
+            currency1: Currency.wrap(address(0xBBB)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
+    }
+}
+
 contract MockAdapter {
     mapping(uint256 => address) public ownerOf;
-    address public positionManager;
+    address public immutable positionManager;
+    
+    constructor(address _positionManager) {
+        positionManager = _positionManager;
+    }
     
     function setOwner(uint256 tokenId, address owner) external {
         ownerOf[tokenId] = owner;
-    }
-    
-    function setPositionManager(address pm) external {
-        positionManager = pm;
     }
     
     function getPoolAndPositionInfo(uint256) external pure returns (PoolKey memory key, PositionInfo info) {
@@ -45,6 +58,16 @@ contract MockAdapter {
     
     function getPositionLiquidity(uint256) external pure returns (uint128) {
         return 1_000_000; // Return the same liquidity used in the test
+    }
+    
+    function getPoolKeyFromPoolId(PoolId) external pure returns (PoolKey memory) {
+        return PoolKey({
+            currency0: Currency.wrap(address(0xAAA)),
+            currency1: Currency.wrap(address(0xBBB)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(0))
+        });
     }
 }
 
@@ -120,6 +143,7 @@ contract DailyEpochGauge_UpdateTest is Test {
     GaugeViewHarness gauge;
     MockPoolManager pm;
     MockAdapter mockAdapter;
+    MockPositionManager mockPositionManager;
     address hookAddr = address(0xBEEF1);
 
     PoolKey key;
@@ -131,7 +155,8 @@ contract DailyEpochGauge_UpdateTest is Test {
     function setUp() public {
         pm = new MockPoolManager();
         bmxToken = new TokenMock();
-        mockAdapter = new MockAdapter();
+        mockPositionManager = new MockPositionManager();
+        mockAdapter = new MockAdapter(address(mockPositionManager));
         
         // Set owner for tokenId 0 (used in tests)
         mockAdapter.setOwner(0, owner);

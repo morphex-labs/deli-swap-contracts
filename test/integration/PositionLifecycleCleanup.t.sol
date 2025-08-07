@@ -119,13 +119,12 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // just needs to be non-zero & authorised
         // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
         adapter.addHandler(address(v4Handler));
         adapter.setAuthorizedCaller(address(positionManager), true);
-        adapter.setPositionManager(address(positionManager));
         
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));

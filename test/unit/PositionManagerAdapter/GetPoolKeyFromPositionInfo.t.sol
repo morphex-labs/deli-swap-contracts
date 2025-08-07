@@ -41,8 +41,7 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         v4Handler = new V4PositionHandler(address(mockPositionManager));
         
         // Deploy adapter
-        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge));
-        adapter.setPositionManager(address(mockPositionManager));
+        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager));
         
         // Set up v2Handler
         v2Handler.setPositionManagerAdapter(address(adapter));
@@ -52,7 +51,6 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         adapter.addHandler(address(v2Handler));
         
         // Authorize callers
-        adapter.setAuthorizedCaller(address(mockPositionManager), true);
         adapter.setAuthorizedCaller(address(v2Handler), true);
     }
     
@@ -86,32 +84,6 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         assertEq(retrievedKey.fee, v2PoolKey.fee);
         assertEq(retrievedKey.tickSpacing, v2PoolKey.tickSpacing);
         assertEq(address(retrievedKey.hooks), address(v2PoolKey.hooks));
-    }
-    
-    function test_GetPoolKeyFromPositionInfo_V4Pool() public {
-        // Create test pool key
-        PoolKey memory v4PoolKey = PoolKey({
-            currency0: Currency.wrap(address(0x3)),
-            currency1: Currency.wrap(address(0x4)),
-            fee: 500,
-            tickSpacing: 10,  // V4 typical tick spacing
-            hooks: IHooks(address(0))
-        });
-        
-        // For V4 pools, we need to mock the PositionManager having the poolKey stored
-        // In a real scenario, this would happen when someone mints a V4 position
-        // For this test, we'll just verify the flow works when V4 has the mapping
-        
-        // Create PositionInfo for V4 pool
-        PositionInfo info = PositionInfoLibrary.initialize(
-            v4PoolKey,
-            -100 * v4PoolKey.tickSpacing,
-            100 * v4PoolKey.tickSpacing
-        );
-        
-        // Note: In this test, the MockPositionManager doesn't have the poolKeys mapping,
-        // so this would normally fail. In production, the V4 PositionManager would have
-        // this mapping populated when positions are created.
     }
     
     function test_GetPoolKeyFromPositionInfo_UnknownPool_Reverts() public {
