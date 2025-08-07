@@ -88,13 +88,11 @@ library RangePool {
 
     /// @notice Apply streaming rewards for the elapsed time window.
     function accumulate(State storage self, uint256 streamRate) internal {
-        if (streamRate == 0) return; // short-circuit cheap path
-
         uint256 dt = block.timestamp - uint256(self.lastUpdated);
-        if (dt == 0) return; // no time passed
-
         self.lastUpdated = uint64(block.timestamp);
 
+        if (streamRate == 0) return; // short-circuit cheap path
+        if (dt == 0) return; // no time passed
         if (self.liquidity == 0) return; // avoid div-by-zero without adding garbage
 
         uint256 rewards = streamRate * dt;
