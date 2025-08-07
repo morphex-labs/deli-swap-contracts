@@ -532,7 +532,7 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
             afterAddLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: true,
+            afterSwap: false,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: true,
