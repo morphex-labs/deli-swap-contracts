@@ -379,23 +379,36 @@ contract DailyEpochGauge is Ownable2Step {
 
     /// @dev internal: perform a single 24-hour roll.
     function _rollOnce(PoolId poolId, EpochInfo storage e) internal {
-        // 1. Current day's streamRate becomes the value prepared from previous roll
-        e.streamRate = e.nextStreamRate;
+        // 1) Accrue the remainder of the ending epoch at the ending day's streamRate, so no rewards are skipped when rolling.
+        RangePool.State storage pool = poolRewards[poolId];
+        if (pool.lastUpdated == 0) {
+            // Uninitialized pool: anchor to the boundary so future syncs don't backdate
+            pool.lastUpdated = e.end;
+        } else {
+            uint256 fromTs = pool.lastUpdated < e.start ? uint256(e.start) : uint256(pool.lastUpdated);
+            if (fromTs < e.end) {
+                uint256 dt = uint256(e.end) - fromTs;
+                uint128 liq = pool.liquidity;
+                uint128 rate = e.streamRate;
+                if (liq > 0 && rate > 0) {
+                    pool.rewardsPerLiquidityCumulativeX128 += ((uint256(rate) * dt) << 128) / liq;
+                }
+                // Cap the accumulator timestamp at the epoch boundary
+                pool.lastUpdated = e.end;
+            }
+        }
 
-        // 2. Move queued → next, compute new queued from bucket.
+        // 2) Roll epoch parameters (prepare next/queued rates and clear bucket)
+        e.streamRate = e.nextStreamRate;
         e.nextStreamRate = e.queuedStreamRate;
         uint256 bucket = collectBucket[poolId];
         collectBucket[poolId] = 0;
         e.queuedStreamRate = uint128(bucket / TimeLibrary.DAY);
 
-        // 3. Advance the epoch window by 1 day.
+        // 3) Advance the epoch window by 1 day
         uint256 nextStart = uint256(e.end);
         e.start = uint64(nextStart);
         e.end = uint64(nextStart + TimeLibrary.DAY);
-
-        // 4. Reset pool accumulator timestamp to new epoch start so that
-        //    subsequent accrue calls only count rewards from this day.
-        poolRewards[poolId].lastUpdated = uint64(nextStart);
 
         emit EpochRolled(poolId, e.streamRate, nextStart);
     }
@@ -607,7 +620,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Always update cached liquidity (keep position tracked even at 0)
         positionLiquidity[posKey] = currentLiq;
-        
+
         // Auto-claim if liquidity is now zero
         if (currentLiq == 0) {
             _claimRewards(posKey, owner);
