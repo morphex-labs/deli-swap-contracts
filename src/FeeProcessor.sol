@@ -87,8 +87,9 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    event FeeReceived(address indexed pool, uint256 amount, bool isBmxPool);
-    event FeeSplit(uint256 buybackPortion, uint256 voterPortion, bool isBmxPool);
+    event FeeCollected(
+        address indexed pool, uint256 totalAmount, uint256 buybackPortion, uint256 voterPortion, bool indexed isBmxPool
+    );
     event BuybackPoolSet(PoolKey poolKey);
     event BuybackExecuted(uint256 wbltIn, uint256 bmxOut);
     event VoterFlush(uint256 bmxIn, uint256 wbltOut);
@@ -138,14 +139,13 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     /// Splits amount into buy-back and voter portions, buffers and/or swaps as needed.
     function collectFee(PoolKey calldata key, uint256 amount) external onlyHook {
         bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-        emit FeeReceived(address(key.hooks), amount, isBmxPool);
 
         if (amount == 0) revert DeliErrors.ZeroAmount();
 
         uint256 buybackPortion = (amount * buybackBps) / 10_000;
         uint256 voterPortion = amount - buybackPortion;
 
-        emit FeeSplit(buybackPortion, voterPortion, isBmxPool);
+        emit FeeCollected(msg.sender, amount, buybackPortion, voterPortion, isBmxPool);
 
         if (isBmxPool) {
             // buybackPortion already in BMX, send directly to gauge
@@ -177,8 +177,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         uint256 buybackPortion = (bmxAmount * buybackBps) / 10_000;
         uint256 voterPortion = bmxAmount - buybackPortion;
 
-        emit FeeReceived(msg.sender, bmxAmount, true);
-        emit FeeSplit(buybackPortion, voterPortion, true);
+        emit FeeCollected(msg.sender, bmxAmount, buybackPortion, voterPortion, true);
 
         // Send 97% directly to gauge (BMX is already the target token)
         if (buybackPortion > 0 && buybackPoolSet) {
