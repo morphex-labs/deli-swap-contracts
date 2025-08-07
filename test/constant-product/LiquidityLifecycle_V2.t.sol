@@ -93,6 +93,7 @@ contract LiquidityLifecycle_V2_IT is Test, Deployers {
 
         // Now deploy adapter with correct addresses
         adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        adapter.setPositionManager(address(positionManager));  // Set the V4 position manager
         
         // Update gauges with adapter
         gauge.setPositionManagerAdapter(address(adapter));
@@ -115,8 +116,10 @@ contract LiquidityLifecycle_V2_IT is Test, Deployers {
 
         // Deploy V2 handler and register
         v2Handler = new V2PositionHandler(address(hook));
+        v2Handler.setPositionManagerAdapter(address(adapter));  // Set adapter on V2Handler
         adapter.addHandler(address(v2Handler));
         adapter.setAuthorizedCaller(address(hook), true);
+        adapter.setAuthorizedCaller(address(v2Handler), true);  // V2Handler needs authorization too
         hook.setV2PositionHandler(address(v2Handler));
 
         // Initialize pool

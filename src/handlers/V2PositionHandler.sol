@@ -113,6 +113,8 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     /// @notice Called by DeliHookConstantProduct when liquidity is added
     function notifyAddLiquidity(PoolKey calldata poolKey, address owner, uint128 liquidityDelta) external onlyV2Hook {
+        if (address(positionManagerAdapter) == address(0)) revert DeliErrors.ComponentNotDeployed();
+        
         PoolId poolId = poolKey.toId();
         isV2Pool[poolId] = true;
         
@@ -223,10 +225,8 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
         tokenOwners[tokenId] = owner;
         syntheticPositions[tokenId] = SyntheticPosition({poolKey: poolKey, liquidity: liquidity, exists: true});
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            positionManagerAdapter.notifySubscribe(tokenId, "");
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        positionManagerAdapter.notifySubscribe(tokenId, "");
 
         emit V2PositionCreated(poolId, owner, tokenId);
     }
@@ -247,11 +247,9 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
             pos.liquidity += uint128(uint256(liquidityDelta));
         }
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
-            positionManagerAdapter.notifyModifyLiquidity(tokenId, liquidityDelta, delta);
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
+        positionManagerAdapter.notifyModifyLiquidity(tokenId, liquidityDelta, delta);
 
         emit V2PositionModified(poolId, owner, tokenId, liquidityDelta);
     }
@@ -263,11 +261,9 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
         // Create synthetic PositionInfo for the burn notification
         PositionInfo info = _createPositionInfo(poolKey);
 
-        // Notify PositionManagerAdapter if set
-        if (address(positionManagerAdapter) != address(0)) {
-            BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
-            positionManagerAdapter.notifyBurn(tokenId, owner, info, uint256(liquidity), delta);
-        }
+        // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
+        BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
+        positionManagerAdapter.notifyBurn(tokenId, owner, info, uint256(liquidity), delta);
 
         // Clean up storage
         delete v2TokenIds[poolId][owner];
