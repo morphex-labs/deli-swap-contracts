@@ -342,7 +342,8 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // - 0.01 * 0.97 = 0.0097 ether to pendingWbltForBuyback
         // - 0.01 * 0.03 = 0.0003 ether to pendingWbltForVoter
         
-        uint256 pendingWbltBuyback = fp.pendingWbltForBuyback();
+        PoolId pool2Id = pool2.toId();
+        uint256 pendingWbltBuyback = fp.pendingWbltForBuyback(pool2Id);
         uint256 pendingWbltVoter = fp.pendingWbltForVoter();
         uint256 pendingBmxVoter = fp.pendingBmxForVoter();
         

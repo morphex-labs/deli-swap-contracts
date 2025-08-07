@@ -434,7 +434,8 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(nonBmxKey, !wbltIsCurrency0, 10 ether, true));
         
         // Now we should have wBLT fees for buyback
-        uint256 pendingBuyback = fp.pendingWbltForBuyback();
+        PoolId nonBmxPoolId = nonBmxKey.toId();
+        uint256 pendingBuyback = fp.pendingWbltForBuyback(nonBmxPoolId);
         assertGt(pendingBuyback, 0, "Should have pending wBLT fees");
         
         // Setup for internal swap using the BMX/wBLT pool
@@ -443,7 +444,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         (uint128 r0Before, uint128 r1Before) = hook.getReserves(pid);
         
         // Flush buffers (triggers internal swap with INTERNAL_SWAP_FLAG)
-        fp.flushBuffers();
+        fp.flushBuffer(nonBmxPoolId);
         
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
         
@@ -452,6 +453,6 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         assertLt(r0After, r0Before, "BMX reserves should decrease (BMX out)");
         
         // The swap should have consumed the pending wBLT
-        assertEq(fp.pendingWbltForBuyback(), 0, "Pending wBLT should be consumed");
+        assertEq(fp.pendingWbltForBuyback(nonBmxPoolId), 0, "Pending wBLT should be consumed");
     }
 }

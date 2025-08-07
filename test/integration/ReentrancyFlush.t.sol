@@ -24,18 +24,19 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
 
-interface IFlusher { function flushBuffers() external; }
+interface IFlusher { function flushBuffer(PoolId poolId) external; }
 
 /*//////////////////////////////////////////////////////////////////////////
                                     REENTRANCY TEST
-  Ensures FeeProcessor.flushBuffers() cannot be re-entered while an internal
-  buy-back swap is in flight.  A malicious BMX token calls flushBuffers()
+  Ensures FeeProcessor.flushBuffer() cannot be re-entered while an internal
+  buy-back swap is in flight.  A malicious BMX token calls flushBuffer()
   during the ERC20.transfer triggered inside FeeProcessor._unlockCallback.
 //////////////////////////////////////////////////////////////////////////*/
 contract ReentrantBMX is MockERC20 {
     address public poolManager;
     IFlusher public fp;
     bool public reentered;
+    PoolId public poolIdToFlush;
 
     constructor(string memory name, address _pm) MockERC20(name, name, 18) {
         poolManager = _pm;
@@ -45,13 +46,17 @@ contract ReentrantBMX is MockERC20 {
     function setFeeProcessor(address _fp) external {
         fp = IFlusher(_fp);
     }
+    
+    function setPoolIdToFlush(PoolId _poolId) external {
+        poolIdToFlush = _poolId;
+    }
 
     function transfer(address to, uint256 amount) public override returns (bool) {
         // Attempt re-entrancy only when PoolManager is the msg.sender (i.e. inside take())
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
             // Expect revert with "swap-active" but ignore failure so transfer proceeds.
-            try fp.flushBuffers() { } catch { }
+            try fp.flushBuffer(poolIdToFlush) { } catch { }
         }
         return super.transfer(to, amount);
     }
@@ -59,7 +64,7 @@ contract ReentrantBMX is MockERC20 {
     function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
-            try fp.flushBuffers() { } catch { }
+            try fp.flushBuffer(poolIdToFlush) { } catch { }
         }
         return super.transferFrom(from, to, amount);
     }
@@ -195,21 +200,25 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Step 1: create wBLT buy-back buffer via OTHER -> wBLT swap
         uint256 input = 1e17;
         poolManager.unlock(abi.encode(address(other), input));
-        assertGt(fp.pendingWbltForBuyback(), 0, "buffer not populated");
+        PoolId otherPoolId = otherKey.toId();
+        assertGt(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not populated");
 
         // Step 2: configure pool key and slippage tolerance
         fp.setBuybackPoolKey(canonicalKey);
         fp.setMinOutBps(9900);
+        
+        // Set the pool ID for reentrancy attempt
+        bmx.setPoolIdToFlush(otherPoolId);
 
         // Step 3: flush – should succeed and token will attempt re-enter internally
-        fp.flushBuffers();
+        fp.flushBuffer(otherPoolId);
 
         // Ensure re-entrancy attempt occurred and was blocked (flag set)
         assertTrue(bmx.reentered(), "no reentrancy attempt detected");
 
-        // Buffer cleared and gauge bucket credited
-        assertEq(fp.pendingWbltForBuyback(), 0, "buffer not cleared");
-        assertGt(gauge.collectBucket(pid), 0, "bucket not credited");
+        // Buffer cleared and gauge bucket credited for the source pool
+        assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not cleared");
+        assertGt(gauge.collectBucket(otherPoolId), 0, "bucket not credited");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -231,8 +240,11 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Step 3: Check that we have pending BMX for voter (from the 3% split)
         assertGt(fp.pendingBmxForVoter(), 0, "no BMX voter buffer");
         
+        // Set the pool ID for reentrancy attempt
+        bmx.setPoolIdToFlush(canonicalKey.toId());
+        
         // Step 4: Flush buffers - this will trigger BMX->wBLT internal swap
-        fp.flushBuffers();
+        fp.flushBuffer(canonicalKey.toId());
         
         // Verify reentrancy was attempted and blocked
         assertTrue(bmx.reentered(), "no reentrancy attempt during internal swap");

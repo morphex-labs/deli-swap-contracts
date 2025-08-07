@@ -8,6 +8,7 @@ import {MockDailyEpochGauge} from "test/mocks/MockDailyEpochGauge.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -61,7 +62,8 @@ contract FeeProcessor_ConfigTest is Test {
 
     function testFlushBuffersRevertsWithoutPoolKey() public {
         vm.expectRevert(DeliErrors.NoKey.selector);
-        fp.flushBuffers();
+        // Can use any pool ID, will revert before checking
+        fp.flushBuffer(PoolId.wrap(bytes32(0)));
     }
 
     // ------------------------------------------------------------

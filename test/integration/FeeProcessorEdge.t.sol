@@ -201,23 +201,24 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(other), swapIn));
 
         // FeeProcessor should now hold pendingWbltForBuyback > 0
-        uint256 buf = fp.pendingWbltForBuyback();
+        PoolId otherPoolId = otherKey.toId();
+        uint256 buf = fp.pendingWbltForBuyback(otherPoolId);
         assertGt(buf, 0, "buffer not populated");
 
         // Gauge bucket still zero
-        assertEq(gauge.collectBucket(pid), 0, "bucket should be zero before key set");
+        assertEq(gauge.collectBucket(otherPoolId), 0, "bucket should be zero before key set");
 
         // Now set the buyback pool key
         fp.setBuybackPoolKey(canonicalKey);
 
         // Flush buffers – should execute buyback swap and stream BMX to gauge bucket
-        fp.flushBuffers();
+        fp.flushBuffer(otherPoolId);
 
         // Buffers cleared
-        assertEq(fp.pendingWbltForBuyback(), 0, "buyback buffer not cleared");
+        assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buyback buffer not cleared");
 
-        // Gauge bucket increased by ~buf * 97% (buyback share)
-        uint256 bucket = gauge.collectBucket(pid);
+        // Gauge bucket increased by ~buf * 97% (buyback share) - rewards go to source pool
+        uint256 bucket = gauge.collectBucket(otherPoolId);
         assertGt(bucket, 0, "bucket not updated");
     }
 
@@ -229,7 +230,8 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         uint256 swapIn = 5e20; // create wBLT fee buffer first
         poolManager.unlock(abi.encode(address(other), swapIn));
 
-        uint256 pending = fp.pendingWbltForBuyback();
+        PoolId otherPoolId = otherKey.toId();
+        uint256 pending = fp.pendingWbltForBuyback(otherPoolId);
         assertGt(pending, 0, "no pending buffer");
 
         // Register buy-back pool key
@@ -240,10 +242,10 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
 
         // Expect flush to revert with "slippage" and buffer to remain
         vm.expectRevert(DeliErrors.Slippage.selector);
-        fp.flushBuffers();
+        fp.flushBuffer(otherPoolId);
 
         // Buffer should still be intact
-        assertEq(fp.pendingWbltForBuyback(), pending, "buffer incorrectly cleared after failure");
+        assertEq(fp.pendingWbltForBuyback(otherPoolId), pending, "buffer incorrectly cleared after failure");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -257,7 +259,10 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         // buybackPortion credited immediately to gauge; voterPortion stored as BMX buffer
         uint256 voterBuf = fp.pendingBmxForVoter();
         assertGt(voterBuf, 0, "voter buffer not populated");
-        assertEq(fp.pendingWbltForBuyback(), 0, "unexpected wblt buyback buffer");
+        
+        // Check no pending wBLT for any pool (can use canonicalKey as example)
+        PoolId canonicalPoolId = canonicalKey.toId();
+        assertEq(fp.pendingWbltForBuyback(canonicalPoolId), 0, "unexpected wblt buyback buffer");
 
         // 2. Set buyback pool key
         fp.setBuybackPoolKey(canonicalKey);
@@ -266,13 +271,13 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         uint256 preBal = wblt.balanceOf(VOTER_DST);
 
         // 3. Flush – should only process BMX→wBLT path
-        fp.flushBuffers();
+        fp.flushBuffer(canonicalPoolId);
 
         // 4. Assertions: voter buffer has residual from internal swap fee
         // The internal BMX->wBLT swap generates its own fee (3% goes to voter buffer)
         assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
         assertLt(fp.pendingBmxForVoter(), voterBuf / 100, "residual should be small");
-        assertEq(fp.pendingWbltForBuyback(), 0, "buyback buffer should remain zero");
+        assertEq(fp.pendingWbltForBuyback(canonicalPoolId), 0, "buyback buffer should remain zero");
 
         uint256 postBal = wblt.balanceOf(VOTER_DST);
         assertGt(postBal - preBal, 0, "wBLT not transferred to voter dst");

@@ -115,7 +115,7 @@ contract FeeProcessor_CollectTest is Test {
 
         // FeeProcessor internal counters - voter portion stays in buffer since swap failed
         assertEq(fp.pendingBmxForVoter(), voterPortion, "pendingBmxForVoter incorrect");
-        assertEq(fp.pendingWbltForBuyback(), 0, "pendingWbltForBuyback should be zero");
+        assertEq(fp.pendingWbltForBuyback(key.toId()), 0, "pendingWbltForBuyback should be zero");
         assertEq(fp.pendingWbltForVoter(), 0, "pendingWbltForVoter should be zero");
     }
 
@@ -133,7 +133,7 @@ contract FeeProcessor_CollectTest is Test {
         assertEq(gauge.rewards(key.toId()), 0, "Gauge should not receive rewards for wBLT pool");
 
         // Internal counters
-        assertEq(fp.pendingWbltForBuyback(), buybackPortion, "pendingWbltForBuyback incorrect");
+        assertEq(fp.pendingWbltForBuyback(key.toId()), buybackPortion, "pendingWbltForBuyback incorrect");
         assertEq(fp.pendingWbltForVoter(), voterPortion, "pendingWbltForVoter incorrect");
         assertEq(fp.pendingBmxForVoter(), 0, "pendingBmxForVoter should be zero");
     }
