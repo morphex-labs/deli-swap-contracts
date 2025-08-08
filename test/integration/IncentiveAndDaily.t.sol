@@ -13,6 +13,7 @@ import "src/PositionManagerAdapter.sol";
 import "src/handlers/V4PositionHandler.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -205,7 +206,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         vm.warp(block.timestamp + 3 days);
 
         // Record current incentive data
-        (uint256 rateBefore, uint256 finishBefore, uint256 remainingBefore) = inc.incentiveData(pid, rewardTok);
+        (uint256 rateBefore, uint256 finishBefore, ) = inc.incentiveData(pid, rewardTok);
         assertGt(rateBefore, 0, "stream not active");
 
         // Extend by adding more tokens than remaining (griefing protection)
@@ -278,7 +279,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         EasyPosm.burn(positionManager, tokenIncId, 0, 0, address(this), block.timestamp + 1 hours, bytes(""));
 
         // Snapshot accumulator before zero-liquidity day rolls
-        (uint256 rplBefore,, ,) = daily.poolRewards(pid);
+        (, uint256 rplBefore,) = daily.getPoolData(pid);
 
         // Warp a full day+
         uint256 end0 = TimeLibrary.dayNext(block.timestamp);
@@ -287,7 +288,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         daily.pokePool(key);
 
         // Accumulator should be unchanged because activeLiquidity was zero all day
-        (uint256 rplAfter,, ,) = daily.poolRewards(pid);
+        (, uint256 rplAfter,) = daily.getPoolData(pid);
         assertEq(rplAfter, rplBefore, "RPL should not accrue when liquidity is zero");
 
         // Stream rate is independent of liquidity; on Day2 it should be bucket/DAY
@@ -383,7 +384,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         while (daily.streamRate(pid) == 0) {
             vm.warp(block.timestamp + 1 days);
         }
-        uint256 initialRate = daily.streamRate(pid);
+        // streaming is active now
 
         // Top-up bucket with additional 500 BMX
         uint256 topUp = 500 ether;

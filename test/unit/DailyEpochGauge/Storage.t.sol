@@ -24,7 +24,7 @@ contract GaugeHarness is DailyEpochGauge {
 
     // direct mutate helpers --------------------------------------------------
     function setPoolRpl(PoolId pid, uint256 rpl) external {
-        poolRewards[pid].rewardsPerLiquidityCumulativeX128 = rpl;
+        poolRewards[pid].rewardsPerLiquidityCumulativeX128[address(BMX)] = rpl;
     }
 
     function setPositionState(bytes32 key, uint256 paidRpl, uint256 accrued, uint128 liq) external {
@@ -48,7 +48,7 @@ contract GaugeHarness is DailyEpochGauge {
         RangePool.State storage pool = poolRewards[pid];
         TickRange storage tr = positionTicks[posKey];
         RangePosition.State storage ps = positionRewards[posKey];
-        uint256 rangeRpl = pool.rangeRplX128(tr.lower, tr.upper);
+        uint256 rangeRpl = pool.rangeRplX128(address(BMX), tr.lower, tr.upper);
         uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
         return ps.rewardsAccrued + (delta * liquidity) / FixedPoint128.Q128;
     }

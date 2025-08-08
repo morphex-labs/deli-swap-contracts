@@ -135,7 +135,7 @@ contract GaugeViewHarness is DailyEpochGauge {
     }
 
     function poolRpl(PoolId pid) external view returns (uint256) {
-         return poolRewards[pid].rewardsPerLiquidityCumulativeX128;
+         return poolRewards[pid].rewardsPerLiquidityCumulativeX128[address(BMX)];
      }
 }
 

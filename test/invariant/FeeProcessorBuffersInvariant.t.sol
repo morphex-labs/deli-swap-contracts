@@ -112,7 +112,7 @@ contract FeeProcessorBuffersInvariant is Test {
                                  INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_bmxAccounting() public {
+    function invariant_bmxAccounting() public view {
         uint256 gaugeRewards = gauge.rewards(bmxPid);
         uint256 pendingBmxVoter = fp.pendingBmxForVoter();
         // buyback buffer never holds BMX (only wBLT)
@@ -120,7 +120,7 @@ contract FeeProcessorBuffersInvariant is Test {
         assertEq(gaugeRewards + pendingBmxVoter, totalBmxFees + totalInternalFees, "BMX fee mismatch");
     }
 
-    function invariant_wbltAccounting() public {
+    function invariant_wbltAccounting() public view {
         uint256 pendingBuy = fp.pendingWbltForBuyback();
         uint256 pendingVoter = fp.pendingWbltForVoter();
         assertEq(pendingBuy + pendingVoter, totalWbltFees, "wBLT fee mismatch");

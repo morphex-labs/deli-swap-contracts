@@ -10,6 +10,7 @@ contract RangePoolLibraryTest is Test {
     using RangePool for RangePool.State;
 
     RangePool.State internal pool;
+    address internal constant TOK = address(0xBEEF);
 
     uint128 internal constant LIQ = 1_000_000 ether;
     int24 internal constant TICK_SPACING = 60;
@@ -32,8 +33,8 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
         assertEq(pool.liquidity, LIQ);
         assertEq(pool.tick, 0);
     }
@@ -46,18 +47,21 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
 
         // warp forward 100 seconds
         vm.warp(block.timestamp + 100);
         uint256 streamRate = 1e18; // 1 token / sec (18 decimals)
 
         // call sync to apply accumulation (activeTick unchanged)
-        pool.sync(streamRate, TICK_SPACING, 0);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
+        pool.sync(stoks, rates, TICK_SPACING, 0);
 
         uint256 expectedRewards = streamRate * 100;
         uint256 expectedRpl = (expectedRewards << 128) / LIQ;
-        assertEq(pool.rewardsPerLiquidityCumulativeX128, expectedRpl);
+        assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], expectedRpl);
     }
 
     function testRemoveLiquidityClearsActive() public {
@@ -68,25 +72,31 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
         assertEq(pool.liquidity, LIQ);
         // remove same amount
         p.liquidityDelta = -int128(int256(uint256(LIQ)));
-        pool.modifyPositionLiquidity(p);
+        pool.modifyPositionLiquidity(p, new address[](0));
         assertEq(pool.liquidity, 0);
         // accumulate with zero liquidity – should not change RPL
         vm.warp(block.timestamp + 50);
-        pool.sync(1e18, TICK_SPACING, 0);
-        assertEq(pool.rewardsPerLiquidityCumulativeX128, 0);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = 1e18;
+        pool.sync(stoks, rates, TICK_SPACING, 0);
+        assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
     function testAccumulateGuardRails() public {
         vm.warp(block.timestamp + 30);
-        pool.sync(0, TICK_SPACING, 0); // zero rate
-        assertEq(pool.rewardsPerLiquidityCumulativeX128, 0);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = 0;
+        pool.sync(stoks, rates, TICK_SPACING, 0); // zero rate
+        assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
         vm.warp(block.timestamp + 40);
-        pool.sync(1e18, TICK_SPACING, 0); // liq still 0
-        assertEq(pool.rewardsPerLiquidityCumulativeX128, 0);
+        rates[0] = 1e18;
+        pool.sync(stoks, rates, TICK_SPACING, 0); // liq still 0
+        assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
     function testAdjustToTickOnPriceMove() public {
@@ -97,12 +107,15 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
         // move tick inside range
-        pool.sync(0, TICK_SPACING, 90);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = 0;
+        pool.sync(stoks, rates, TICK_SPACING, 90);
         assertEq(pool.tick, 90);
         // move outside upper range – liquidity should drop to zero
-        pool.sync(0, TICK_SPACING, 120);
+        pool.sync(stoks, rates, TICK_SPACING, 120);
         assertEq(pool.tick, 120);
         assertEq(pool.liquidity, 0);
     }
@@ -116,11 +129,14 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
         assertEq(pool.liquidity, LIQ);
 
         // advance price to tick 120 (inside position but across 60)
-        pool.sync(0, TICK_SPACING, 120);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = 0;
+        pool.sync(stoks, rates, TICK_SPACING, 120);
         assertEq(pool.tick, 120);
         // liquidity should stay unchanged because tick 60 uninitialised
         assertEq(pool.liquidity, LIQ);
@@ -135,15 +151,18 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
         assertEq(pool.liquidity, LIQ);
 
         // move price to 120 (outside) liquidity becomes 0
-        pool.sync(0, TICK_SPACING, 120);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = 0;
+        pool.sync(stoks, rates, TICK_SPACING, 120);
         assertEq(pool.liquidity, 0, "liquidity not dropped");
 
         // move back to -30 (inside range) – should restore
-        pool.sync(0, TICK_SPACING, -30);
+        pool.sync(stoks, rates, TICK_SPACING, -30);
         assertEq(pool.liquidity, LIQ, "liquidity not restored");
     }
 
@@ -151,8 +170,10 @@ contract RangePoolLibraryTest is Test {
     function testAccumulateHugeRateZeroLiquidity() public {
         uint256 bigRate = type(uint256).max / 10; // very large but within uint256
         vm.warp(block.timestamp + 100);
-        pool.sync(bigRate, TICK_SPACING, 0);
-        assertEq(pool.rewardsPerLiquidityCumulativeX128, 0);
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = bigRate;
+        pool.sync(stoks, rates, TICK_SPACING, 0);
+        assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
     // fuzz: RPL monotonically increasing
@@ -166,15 +187,34 @@ contract RangePoolLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
 
         uint256 start = block.timestamp;
         vm.warp(start + dt1);
-        pool.sync(rate1, TICK_SPACING, 0);
-        uint256 first = pool.cumulativeRplX128();
+        address[] memory stoks = new address[](1); stoks[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = rate1;
+        pool.sync(stoks, rates, TICK_SPACING, 0);
+        uint256 first = pool.cumulativeRplX128(TOK);
         vm.warp(start + dt1 + dt2);
-        pool.sync(rate2, TICK_SPACING, 0);
-        uint256 second = pool.cumulativeRplX128();
+        rates[0] = rate2;
+        pool.sync(stoks, rates, TICK_SPACING, 0);
+        uint256 second = pool.cumulativeRplX128(TOK);
         assertGe(second, first);
+    }
+
+    function testInitOutsideOnlyOnAdd() public {
+        RangePool.ModifyLiquidityParams memory p = RangePool.ModifyLiquidityParams({
+            tickLower: -TICK_SPACING,
+            tickUpper: TICK_SPACING,
+            liquidityDelta: int128(int256(uint256(LIQ))),
+            tickSpacing: TICK_SPACING
+        });
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
+        // remove (no tokens array) should not write per-token outsides; just clear tick
+        p.liquidityDelta = -int128(int256(uint256(LIQ)));
+        pool.modifyPositionLiquidity(p, new address[](0));
+        assertEq(pool.liquidity, 0);
     }
 } 

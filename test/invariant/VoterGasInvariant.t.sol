@@ -88,17 +88,23 @@ contract VoterGasInvariant is Test {
     function invariant_settleEventually() public {
         uint256 ep = voter.currentEpoch();
         if (ep == 0) return;
-        // ensure previous epoch settled if it should
         if (block.timestamp < voter.epochEnd(ep - 1)) return;
 
-        // attempt to finalize previous epoch in full
-        try voter.finalize(ep - 1, NUM_USERS + 10) { } catch { }
+        // Actively attempt to settle the previous epoch with bounded batches
+        uint256 maxBatches = 25; // cap to keep invariant runtime bounded
+        for (uint256 i; i < maxBatches; ++i) {
+            try voter.finalize(ep - 1, 20) {} catch {
+                break;
+            }
+            (, , bool settledNow) = voter.epochData(ep - 1);
+            if (settledNow) break;
+        }
 
         (, , bool settled) = voter.epochData(ep - 1);
         assertTrue(settled, "prev epoch not settled");
     }
 
-    function invariant_wethConservation() public {
+    function invariant_wethConservation() public view {
         uint256 balContract = weth.balanceOf(address(voter));
         uint256 balSafety = weth.balanceOf(safety);
         uint256 balDist = weth.balanceOf(address(dist));

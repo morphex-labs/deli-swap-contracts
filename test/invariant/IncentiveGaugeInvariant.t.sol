@@ -57,6 +57,9 @@ contract IncentiveGaugeInvariant is Test {
         });
         pid = key.toId();
 
+        // Initialize pool state once to satisfy gauge expectations
+        gauge.initPool(pid, 0);
+
         // ensure tokens approved
         t0.approve(address(gauge), type(uint256).max);
         t1.approve(address(gauge), type(uint256).max);
@@ -89,7 +92,7 @@ contract IncentiveGaugeInvariant is Test {
                                  INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function _checkToken(MockERC20 tok) internal {
+    function _checkToken(MockERC20 tok) internal view {
         (uint256 rate, uint256 finish, uint256 remaining) = gauge.incentiveData(pid, IERC20(address(tok)));
         uint256 bal = tok.balanceOf(address(gauge));
         // gauge balance should never drop below remaining
@@ -104,11 +107,11 @@ contract IncentiveGaugeInvariant is Test {
         }
     }
 
-    function invariant_token0() external {
+    function invariant_token0() external view {
         _checkToken(t0);
     }
 
-    function invariant_token1() external {
+    function invariant_token1() external view {
         _checkToken(t1);
     }
 } 

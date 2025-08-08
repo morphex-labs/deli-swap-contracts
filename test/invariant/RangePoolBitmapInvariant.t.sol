@@ -10,6 +10,7 @@ contract RangePoolBitmapInvariant is Test {
     using RangePool for RangePool.State;
 
     int24 internal constant SPACING = 60;
+    address internal constant TOK = address(0xBEEF);
 
     RangePool.State internal pool;
 
@@ -20,7 +21,7 @@ contract RangePoolBitmapInvariant is Test {
 
     function setUp() public {
         pool.initialize(0);
-        lastCumulative = pool.rewardsPerLiquidityCumulativeX128;
+        lastCumulative = pool.cumulativeRplX128(TOK);
         targetContract(address(this));
     }
 
@@ -44,13 +45,15 @@ contract RangePoolBitmapInvariant is Test {
         // 2. add liquidity (always positive to avoid underflow complexity)
         int128 liqDelta = SafeCast.toInt128(uint256(amount % 1e20 + 1));
 
+        address[] memory toks = new address[](1); toks[0] = TOK;
         pool.modifyPositionLiquidity(
             RangePool.ModifyLiquidityParams({
                 tickLower: tl,
                 tickUpper: tu,
                 liquidityDelta: liqDelta,
                 tickSpacing: SPACING
-            })
+            }),
+            toks
         );
 
         // track ticks
@@ -59,20 +62,21 @@ contract RangePoolBitmapInvariant is Test {
 
         // 3. advance time by 1 and sync with given streamRate
         vm.warp(block.timestamp + 1);
-        pool.sync(streamRate % 1e23, SPACING, 0);
+        address[] memory toks2 = new address[](1); toks2[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = streamRate % 1e23;
+        pool.sync(toks2, rates, SPACING, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
                                 INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_poolMonotonic() public {
-        uint256 curr = pool.rewardsPerLiquidityCumulativeX128;
+    function invariant_poolMonotonic() public view {
+        uint256 curr = pool.cumulativeRplX128(TOK);
         assertGe(curr, lastCumulative, "cumulative decreased");
-        lastCumulative = curr;
     }
 
-    function invariant_bitmapMatchesLiquidity() public {
+    function invariant_bitmapMatchesLiquidity() public view {
         uint256 len = tracked.length;
         for (uint256 i; i < len; ++i) {
             int24 tick = tracked[i];

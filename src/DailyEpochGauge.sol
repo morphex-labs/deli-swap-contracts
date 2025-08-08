@@ -14,6 +14,7 @@ import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {EfficientHashLib} from "lib/solady/src/utils/EfficientHashLib.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
@@ -187,7 +188,7 @@ contract DailyEpochGauge is Ownable2Step {
         PoolId pid = key.toId();
 
         // Reconstruct the position key
-        bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
+        bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
         // Sync pool state and accrue rewards
         _syncAndAccrue(key, pid, positionKey);
@@ -265,7 +266,7 @@ contract DailyEpochGauge is Ownable2Step {
         returns (uint256 currentStreamRate, uint256 rewardsPerLiquidityX128, uint128 activeLiquidity)
     {
         currentStreamRate = streamRate(pid);
-        rewardsPerLiquidityX128 = poolRewards[pid].cumulativeRplX128();
+        rewardsPerLiquidityX128 = poolRewards[pid].cumulativeRplX128(address(BMX));
         activeLiquidity = poolRewards[pid].liquidity;
     }
 
@@ -285,7 +286,7 @@ contract DailyEpochGauge is Ownable2Step {
         activeLiquidities = new uint128[](len);
         for (uint256 i; i < len; ++i) {
             currentStreamRates[i] = streamRate(pids[i]);
-            rewardsPerLiquidityX128s[i] = poolRewards[pids[i]].cumulativeRplX128();
+            rewardsPerLiquidityX128s[i] = poolRewards[pids[i]].cumulativeRplX128(address(BMX));
             activeLiquidities[i] = poolRewards[pids[i]].liquidity;
         }
     }
@@ -301,14 +302,15 @@ contract DailyEpochGauge is Ownable2Step {
         try positionManagerAdapter.ownerOf(tokenId) returns (address) {
             (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
             PoolId pid = key.toId();
-            bytes32 positionKey = keccak256(abi.encode(tokenId, pid));
+            bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
             RangePosition.State storage ps = positionRewards[positionKey];
             uint128 liq = positionLiquidity[positionKey];
 
             if (liq > 0) {
                 TickRange storage tr = positionTicks[positionKey];
-                uint256 delta = poolRewards[pid].rangeRplX128(tr.lower, tr.upper) - ps.rewardsPerLiquidityLastX128;
+                uint256 delta =
+                    poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper) - ps.rewardsPerLiquidityLastX128;
                 amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
             } else {
                 // Position might be unclaimed or have no rewards
@@ -350,7 +352,7 @@ contract DailyEpochGauge is Ownable2Step {
         // Accrue latest rewards
         TickRange storage tr = positionTicks[positionKey];
         uint128 liq = positionLiquidity[positionKey];
-        positionRewards[positionKey].accrue(liq, poolRewards[pid].rangeRplX128(tr.lower, tr.upper));
+        positionRewards[positionKey].accrue(liq, poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper));
     }
 
     /// @dev internal: remove a positionKey from indices (swap-pop) and delete liquidity cache
@@ -379,7 +381,7 @@ contract DailyEpochGauge is Ownable2Step {
             bytes32 k = keys[i];
             TickRange storage tr = positionTicks[k];
             RangePosition.State storage ps = positionRewards[k];
-            uint256 rangeRpl = pool.rangeRplX128(tr.lower, tr.upper);
+            uint256 rangeRpl = pool.rangeRplX128(address(BMX), tr.lower, tr.upper);
             uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
             amount += ps.rewardsAccrued + (delta * positionLiquidity[k]) / FixedPoint128.Q128;
         }
@@ -419,12 +421,15 @@ contract DailyEpochGauge is Ownable2Step {
 
         uint256 t0 = pool.lastUpdated;
         uint256 t1 = block.timestamp;
+        address[] memory toks = new address[](1);
+        toks[0] = address(BMX);
+        uint256[] memory rates = new uint256[](1);
         if (t1 > t0) {
-            uint256 avgRate = _averageRateOverWindow(pid, t0, t1);
-            pool.sync(avgRate, key.tickSpacing, tickNow);
+            rates[0] = _averageRateOverWindow(pid, t0, t1);
         } else {
-            pool.sync(0, key.tickSpacing, tickNow);
+            rates[0] = 0;
         }
+        pool.sync(toks, rates, key.tickSpacing, tickNow);
         return tickNow;
     }
 
@@ -443,17 +448,20 @@ contract DailyEpochGauge is Ownable2Step {
         _syncPoolState(key, pid);
 
         // ---- add liquidity to in-range pool accounting ----
+        address[] memory toks = new address[](1);
+        toks[0] = address(BMX);
         poolRewards[pid].modifyPositionLiquidity(
             RangePool.ModifyLiquidityParams({
                 tickLower: info.tickLower(),
                 tickUpper: info.tickUpper(),
                 liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
                 tickSpacing: key.tickSpacing
-            })
+            }),
+            toks
         );
 
         // index position
-        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
+        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
         RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, posKey, liquidity);
         positionTokenIds[posKey] = tokenId;
 
@@ -461,7 +469,9 @@ contract DailyEpochGauge is Ownable2Step {
         positionTicks[posKey] = TickRange({lower: info.tickLower(), upper: info.tickUpper()});
 
         // set snapshot
-        positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper()));
+        positionRewards[posKey].initSnapshot(
+            poolRewards[pid].rangeRplX128(address(BMX), info.tickLower(), info.tickUpper())
+        );
     }
 
     /// @notice Called by PositionManagerAdapter when a position is withdrawn or unsubscribed.
@@ -473,20 +483,25 @@ contract DailyEpochGauge is Ownable2Step {
 
         _syncPoolState(key, pid);
 
-        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
+        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
         // 1. Accrue rewards with current liquidity
-        positionRewards[posKey].accrue(liquidity, poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper()));
+        positionRewards[posKey].accrue(
+            liquidity, poolRewards[pid].rangeRplX128(address(BMX), info.tickLower(), info.tickUpper())
+        );
 
         // 2. Remove liquidity from pool accounting
-        poolRewards[pid].modifyPositionLiquidity(
-            RangePool.ModifyLiquidityParams({
-                tickLower: info.tickLower(),
-                tickUpper: info.tickUpper(),
-                liquidityDelta: -SafeCast.toInt128(uint256(liquidity)),
-                tickSpacing: key.tickSpacing
-            })
-        );
+        if (liquidity != 0) {
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    liquidityDelta: -SafeCast.toInt128(uint256(liquidity)),
+                    tickSpacing: key.tickSpacing
+                }),
+                new address[](0)
+            );
+        }
 
         // 3. Auto-claim any remaining rewards
         _claimRewards(posKey, owner);
@@ -506,22 +521,25 @@ contract DailyEpochGauge is Ownable2Step {
 
         _syncPoolState(key, pid);
 
-        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
+        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
         // 1. Accrue rewards with current liquidity
         positionRewards[posKey].accrue(
-            uint128(liquidity), poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper())
+            uint128(liquidity), poolRewards[pid].rangeRplX128(address(BMX), info.tickLower(), info.tickUpper())
         );
 
         // 2. Remove liquidity from pool accounting
-        poolRewards[pid].modifyPositionLiquidity(
-            RangePool.ModifyLiquidityParams({
-                tickLower: info.tickLower(),
-                tickUpper: info.tickUpper(),
-                liquidityDelta: -SafeCast.toInt128(liquidity),
-                tickSpacing: key.tickSpacing
-            })
-        );
+        if (liquidity != 0) {
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    liquidityDelta: -SafeCast.toInt128(liquidity),
+                    tickSpacing: key.tickSpacing
+                }),
+                new address[](0)
+            );
+        }
 
         // 3. Auto-claim any remaining rewards
         _claimRewards(posKey, ownerAddr);
@@ -543,24 +561,46 @@ contract DailyEpochGauge is Ownable2Step {
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
         address owner = positionManagerAdapter.ownerOf(tokenId);
 
-        uint128 liquidityBefore = uint128(int128(currentLiq) - int128(liquidityChange));
+        // Sign-safe liquidityBefore to avoid potential int128 overflow on casts
+        uint128 liquidityBefore;
+        if (liquidityChange >= 0) {
+            liquidityBefore = currentLiq - uint128(uint256(liquidityChange));
+        } else {
+            liquidityBefore = currentLiq + uint128(uint256(-liquidityChange));
+        }
 
-        bytes32 posKey = keccak256(abi.encode(tokenId, pid));
+        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
         // 1. Accrue rewards with liquidity before change
         positionRewards[posKey].accrue(
-            liquidityBefore, poolRewards[pid].rangeRplX128(info.tickLower(), info.tickUpper())
+            liquidityBefore, poolRewards[pid].rangeRplX128(address(BMX), info.tickLower(), info.tickUpper())
         );
 
         // 2. Update pool liquidity delta
-        poolRewards[pid].modifyPositionLiquidity(
-            RangePool.ModifyLiquidityParams({
-                tickLower: info.tickLower(),
-                tickUpper: info.tickUpper(),
-                liquidityDelta: SafeCast.toInt128(liquidityChange),
-                tickSpacing: key.tickSpacing
-            })
-        );
+        // Pass BMX token on positive adds to initialize per-token outside; empty list for removals/zero
+        if (liquidityChange > 0) {
+            address[] memory toks2 = new address[](1);
+            toks2[0] = address(BMX);
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    liquidityDelta: SafeCast.toInt128(liquidityChange),
+                    tickSpacing: key.tickSpacing
+                }),
+                toks2
+            );
+        } else {
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: info.tickLower(),
+                    tickUpper: info.tickUpper(),
+                    liquidityDelta: SafeCast.toInt128(liquidityChange),
+                    tickSpacing: key.tickSpacing
+                }),
+                new address[](0)
+            );
+        }
 
         // Always update cached liquidity (keep position tracked even at 0)
         positionLiquidity[posKey] = currentLiq;

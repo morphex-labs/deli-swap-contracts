@@ -17,6 +17,8 @@ import {RangePool} from "src/libraries/RangePool.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {MockPoolKeysProvider} from "test/mocks/MockPoolKeysProvider.sol";
+import {MockAdapterForKeys} from "test/mocks/MockAdapterForKeys.sol";
 
 contract ERC20Mock is ERC20 {
     constructor(string memory n) ERC20(n, n) { _mint(msg.sender, 1e24); }
@@ -36,12 +38,16 @@ contract GaugeHarnessEdge is IncentiveGauge {
         positionLiquidity[k] = liq;
     }
 
-    function setPoolLiquidity(PoolId pid, IERC20 tok, uint128 liq) external {
-        poolRewards[pid][tok].liquidity = liq;
+    function setPoolLiquidity(PoolId pid, IERC20 /*tok*/, uint128 liq) external {
+        // Shared liquidity across all tokens in the pool
+        poolRewards[pid].liquidity = liq;
     }
     
-    function initializePool(PoolId pid, IERC20 tok, int24 tick) external {
-        poolRewards[pid][tok].initialize(tick);
+    function initializePool(PoolId pid, IERC20 /*tok*/, int24 tick) external {
+        // Initialize once per pool; token argument is ignored in shared topology
+        if (poolRewards[pid].lastUpdated == 0) {
+            poolRewards[pid].initialize(tick);
+        }
     }
     function pushOwnerPos(PoolId pid, address o, bytes32 k) external { ownerPositions[pid][o].push(k); }
     
@@ -51,20 +57,14 @@ contract GaugeHarnessEdge is IncentiveGauge {
 
     // expose pool update wrapper to trigger stream bookkeeping
     function forceUpdate(PoolKey calldata k) external {
-        PoolId pid = k.toId();
-        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        IERC20[] storage arr = poolTokens[pid];
-        uint len = arr.length;
-        for (uint i; i < len; ++i) {
-            _updatePool(k, pid, arr[i], tick);
-        }
+        _updatePoolByPid(k.toId());
     }
     
     function getPositionRewardsAccrued(bytes32 k, IERC20 tok) external view returns (uint256) {
         return positionRewards[k][tok].rewardsAccrued;
     }
 }
+
 
 contract IncentiveGauge_EdgeTest is Test {
     MockPoolManager pm;
@@ -96,6 +96,13 @@ contract IncentiveGauge_EdgeTest is Test {
         pm.setLiquidity(PoolId.unwrap(pid), 1_000_000);
         // Set slot0 with a valid sqrtPriceX96 at tick 0
         pm.setSlot0(PoolId.unwrap(pid), TickMath.getSqrtPriceAtTick(0), 0, 0, 0);
+        // Wire adapter for tickSpacing lookups
+        MockPoolKeysProvider pk = new MockPoolKeysProvider();
+        MockAdapterForKeys ad = new MockAdapterForKeys(address(pk));
+        gauge.setPositionManagerAdapter(address(ad));
+        // Initialize pool state in gauge (as hook)
+        vm.prank(hook);
+        gauge.initPool(pid, 0);
     }
 
     /* multiple token incentives + claim */

@@ -7,6 +7,7 @@ import {PositionInfo, PositionInfoLibrary} from "v4-periphery/src/libraries/Posi
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {EfficientHashLib} from "lib/solady/src/utils/EfficientHashLib.sol";
 
 import {IPositionHandler} from "./interfaces/IPositionHandler.sol";
 import {DeliErrors} from "./libraries/DeliErrors.sol";
@@ -92,7 +93,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         // Check if handler type already exists
         if (
             handlerIndex[handlerType] != 0
-                || (handlers.length > 0 && keccak256(bytes(handlers[0].handlerType())) == keccak256(bytes(handlerType)))
+                || (handlers.length > 0 && EfficientHashLib.hash(bytes(handlers[0].handlerType())) == EfficientHashLib.hash(bytes(handlerType)))
         ) {
             revert DeliErrors.HandlerAlreadyExists();
         }
@@ -208,7 +209,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
             uint256 length = handlers.length;
             for (uint256 i = 0; i < length; i++) {
                 // Check if this is the V2 handler
-                if (keccak256(bytes(handlers[i].handlerType())) == keccak256(bytes("V2_CONSTANT_PRODUCT"))) {
+                if (EfficientHashLib.hash(bytes(handlers[i].handlerType())) == EfficientHashLib.hash(bytes("V2_CONSTANT_PRODUCT"))) {
                     // Cast to IV2PositionHandler and get poolKey using truncated poolId
                     IV2PositionHandler v2Handler = IV2PositionHandler(address(handlers[i]));
                     poolKey = v2Handler.getPoolKeyByTruncatedId(truncatedPoolId);

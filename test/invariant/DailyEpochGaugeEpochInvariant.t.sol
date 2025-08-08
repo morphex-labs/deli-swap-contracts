@@ -57,7 +57,7 @@ contract DailyEpochGaugeEpochInvariant is Test {
                                INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_epochWindow() public {
+    function invariant_epochWindow() public view {
         uint256 start = TimeLibrary.dayStart(block.timestamp);
         uint256 end = TimeLibrary.dayNext(block.timestamp);
         assertEq(end - start, TimeLibrary.DAY, "epoch duration != 1 day");

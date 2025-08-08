@@ -33,6 +33,7 @@ contract RewardAccountingInvariant is Test {
 
     uint128 internal liquidity;      // current position liquidity
     uint256 internal lastRplX128;    // previous cumulative value for monotonic check
+    address internal constant TOK = address(0xBEEF);
 
     /*//////////////////////////////////////////////////////////////
                                    SET-UP
@@ -44,18 +45,20 @@ contract RewardAccountingInvariant is Test {
 
         // Seed with 1e18 liquidity inside the target range
         liquidity = 1e18;
+        address[] memory toks = new address[](1); toks[0] = TOK;
         pool.modifyPositionLiquidity(
             RangePool.ModifyLiquidityParams({
                 tickLower: TICK_LOWER,
                 tickUpper: TICK_UPPER,
                 liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
                 tickSpacing: TICK_SPACING
-            })
+            }),
+            toks
         );
 
         // Set initial snapshot for our single position
-        pos.initSnapshot(pool.rangeRplX128(TICK_LOWER, TICK_UPPER));
-        lastRplX128 = pool.rewardsPerLiquidityCumulativeX128;
+        pos.initSnapshot(pool.rangeRplX128(TOK, TICK_LOWER, TICK_UPPER));
+        lastRplX128 = pool.cumulativeRplX128(TOK);
 
         // Make every public/external function in this contract eligible for fuzzing
         targetContract(address(this));
@@ -87,7 +90,9 @@ contract RewardAccountingInvariant is Test {
         }
 
         // 3. Apply pool sync (accumulate + maybe move price)
-        pool.sync(streamRate, TICK_SPACING, activeTick);
+        address[] memory toks2 = new address[](1); toks2[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
+        pool.sync(toks2, rates, TICK_SPACING, activeTick);
 
         // 4. Optionally modify liquidity
         if (liqDelta != 0) {
@@ -97,7 +102,8 @@ contract RewardAccountingInvariant is Test {
                     tickUpper: TICK_UPPER,
                     liquidityDelta: liqDelta,
                     tickSpacing: TICK_SPACING
-                })
+                }),
+                toks2
             );
             // safe cast: result is guaranteed >= 0 after earlier bound
             int256 newLiq = int256(uint256(liquidity)) + int256(liqDelta);
@@ -105,7 +111,7 @@ contract RewardAccountingInvariant is Test {
         }
 
         // 5. Accrue rewards for our position based on current pool state
-        pos.accrue(liquidity, pool.rangeRplX128(TICK_LOWER, TICK_UPPER));
+        pos.accrue(liquidity, pool.rangeRplX128(TOK, TICK_LOWER, TICK_UPPER));
 
         // 6. Optionally claim (resets rewardsAccrued to 0)
         if (doClaim) {
@@ -119,16 +125,15 @@ contract RewardAccountingInvariant is Test {
 
     /// @notice Global accumulator should never decrease across any sequence
     ///         of operations.
-    function invariant_poolAccumulatorMonotonic() public {
-        uint256 curr = pool.rewardsPerLiquidityCumulativeX128;
+    function invariant_poolAccumulatorMonotonic() public view {
+        uint256 curr = pool.cumulativeRplX128(TOK);
         assertGe(curr, lastRplX128, "rewardsPerLiquidityCumulativeX128 decreased");
-        lastRplX128 = curr; // update for next iteration
     }
 
     /// @notice Position snapshot value should never exceed pool’s in-range
     ///         cumulative rewards (cannot predict the future).
-    function invariant_positionSnapshotNotAhead() public {
-        uint256 poolRpl = pool.rangeRplX128(TICK_LOWER, TICK_UPPER);
+    function invariant_positionSnapshotNotAhead() public view {
+        uint256 poolRpl = pool.rangeRplX128(TOK, TICK_LOWER, TICK_UPPER);
         assertLe(pos.rewardsPerLiquidityLastX128, poolRpl);
     }
 } 

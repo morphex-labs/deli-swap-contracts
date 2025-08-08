@@ -41,6 +41,7 @@ contract RangePoolTwoPosInvariant is Test {
     PosState internal p2;
 
     uint256 internal lastRplX128;
+    address internal constant TOK = address(0xBEEF);
 
     /*//////////////////////////////////////////////////////////////
                                    SET-UP
@@ -54,13 +55,15 @@ contract RangePoolTwoPosInvariant is Test {
         p1.liquidity = 1e18;
         p2.liquidity = 1e18;
 
+        address[] memory toks = new address[](1); toks[0] = TOK;
         pool.modifyPositionLiquidity(
             RangePool.ModifyLiquidityParams({
                 tickLower: L1,
                 tickUpper: U1,
                 liquidityDelta: SafeCast.toInt128(uint256(p1.liquidity)),
                 tickSpacing: TICK_SPACING
-            })
+            }),
+            toks
         );
         pool.modifyPositionLiquidity(
             RangePool.ModifyLiquidityParams({
@@ -68,12 +71,13 @@ contract RangePoolTwoPosInvariant is Test {
                 tickUpper: U2,
                 liquidityDelta: SafeCast.toInt128(uint256(p2.liquidity)),
                 tickSpacing: TICK_SPACING
-            })
+            }),
+            toks
         );
 
-        p1.rp.initSnapshot(pool.rangeRplX128(L1, U1));
-        p2.rp.initSnapshot(pool.rangeRplX128(L2, U2));
-        lastRplX128 = pool.rewardsPerLiquidityCumulativeX128;
+        p1.rp.initSnapshot(pool.rangeRplX128(TOK, L1, U1));
+        p2.rp.initSnapshot(pool.rangeRplX128(TOK, L2, U2));
+        lastRplX128 = pool.cumulativeRplX128(TOK);
 
         targetContract(address(this));
     }
@@ -104,7 +108,9 @@ contract RangePoolTwoPosInvariant is Test {
             liqDelta = -SafeCast.toInt128(uint256(ps.liquidity));
         }
 
-        pool.sync(streamRate, TICK_SPACING, activeTick);
+        address[] memory toks2 = new address[](1); toks2[0] = TOK;
+        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
+        pool.sync(toks2, rates, TICK_SPACING, activeTick);
 
         if (liqDelta != 0) {
             pool.modifyPositionLiquidity(
@@ -113,15 +119,16 @@ contract RangePoolTwoPosInvariant is Test {
                     tickUpper: tu,
                     liquidityDelta: liqDelta,
                     tickSpacing: TICK_SPACING
-                })
+                }),
+                toks2
             );
             int256 newLiq = int256(uint256(ps.liquidity)) + int256(liqDelta);
             ps.liquidity = uint128(uint256(newLiq));
         }
 
         // accrue both positions every step
-        p1.rp.accrue(p1.liquidity, pool.rangeRplX128(L1, U1));
-        p2.rp.accrue(p2.liquidity, pool.rangeRplX128(L2, U2));
+        p1.rp.accrue(p1.liquidity, pool.rangeRplX128(TOK, L1, U1));
+        p2.rp.accrue(p2.liquidity, pool.rangeRplX128(TOK, L2, U2));
 
         if (doClaim) {
             p1.rp.claim();
@@ -133,15 +140,14 @@ contract RangePoolTwoPosInvariant is Test {
                                INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_poolMonotonic() public {
-        uint256 curr = pool.rewardsPerLiquidityCumulativeX128;
+    function invariant_poolMonotonic() public view {
+        uint256 curr = pool.cumulativeRplX128(TOK);
         assertGe(curr, lastRplX128, "pool accumulator decreased");
-        lastRplX128 = curr;
     }
 
-    function invariant_snapshotsNotAhead() public {
-        uint256 poolLeft = pool.rangeRplX128(L1, U1);
-        uint256 poolRight = pool.rangeRplX128(L2, U2);
+    function invariant_snapshotsNotAhead() public view {
+        uint256 poolLeft = pool.rangeRplX128(TOK, L1, U1);
+        uint256 poolRight = pool.rangeRplX128(TOK, L2, U2);
         assertLe(p1.rp.rewardsPerLiquidityLastX128, poolLeft);
         assertLe(p2.rp.rewardsPerLiquidityLastX128, poolRight);
     }

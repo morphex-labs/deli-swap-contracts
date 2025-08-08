@@ -97,14 +97,14 @@ contract VoterInvariant is Test {
                                  INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_wethConservation() public {
+    function invariant_wethConservation() public view {
         uint256 balContract = weth.balanceOf(address(voter));
         uint256 balSafety   = weth.balanceOf(safety);
         uint256 balDist     = weth.balanceOf(address(dist));
         assertEq(balContract + balSafety + balDist, totalDeposited, "WETH conservation failed");
     }
 
-    function invariant_weightConsistency() public {
+    function invariant_weightConsistency() public view {
         uint256 ep = voter.currentEpoch();
         (, uint256[3] memory weights, ) = voter.epochData(ep);
 

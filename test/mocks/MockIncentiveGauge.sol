@@ -16,6 +16,9 @@ contract MockIncentiveGauge is IIncentiveGauge {
         pokeCount += 1;
     }
 
+    // hook-based pool initialization (no-op in mock)
+    function initPool(PoolId /* pid */, int24 /* initialTick */) external override {}
+
     // View helper
     function poolTokensOf(PoolId) external pure returns (IERC20[] memory arr) {
         arr = new IERC20[](0);

@@ -12,6 +12,8 @@ import {RangePosition} from "src/libraries/RangePosition.sol";
 import {RangePool} from "src/libraries/RangePool.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {MockPoolKeysProvider} from "test/mocks/MockPoolKeysProvider.sol";
+import {MockAdapterForKeys} from "test/mocks/MockAdapterForKeys.sol";
 
 // Mocks
 import {MockPoolManager} from "test/mocks/MockPoolManager.sol";
@@ -40,7 +42,7 @@ contract GaugeHarness is IncentiveGauge {
     }
 
     function setPoolRpl(PoolId pid, IERC20 tok, uint256 rpl) external {
-        poolRewards[pid][tok].rewardsPerLiquidityCumulativeX128 = rpl;
+        poolRewards[pid].rewardsPerLiquidityCumulativeX128[address(tok)] = rpl;
     }
 
     function setPositionState(bytes32 k, IERC20 tok, uint256 paid, uint256 acc, uint128 liq) external {
@@ -50,8 +52,8 @@ contract GaugeHarness is IncentiveGauge {
         positionLiquidity[k] = liq;
     }
 
-    function setPoolLiquidity(PoolId pid, IERC20 tok, uint128 liq) external {
-        poolRewards[pid][tok].liquidity = liq;
+    function setPoolLiquidity(PoolId pid, IERC20 /*tok*/, uint128 liq) external {
+        poolRewards[pid].liquidity = liq;
     }
 
     function pushOwnerPos(PoolId pid, address owner, bytes32 k) external {
@@ -62,8 +64,10 @@ contract GaugeHarness is IncentiveGauge {
         _addTokenToPool(pid, token);
     }
     
-    function initializePool(PoolId pid, IERC20 tok, int24 tick) external {
-        poolRewards[pid][tok].initialize(tick);
+    function initializePool(PoolId pid, IERC20 /*tok*/, int24 tick) external {
+        if (poolRewards[pid].lastUpdated == 0) {
+            poolRewards[pid].initialize(tick);
+        }
     }
     
 
@@ -76,11 +80,12 @@ contract GaugeHarness is IncentiveGauge {
     {
         TickRange storage tr = positionTicks[posKey];
         RangePosition.State storage ps = positionRewards[posKey][token];
-        uint256 rangeRpl = poolRewards[pid][token].rangeRplX128(tr.lower, tr.upper);
+        uint256 rangeRpl = poolRewards[pid].rangeRplX128(address(token), tr.lower, tr.upper);
         uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
         amount = ps.rewardsAccrued + (delta * currentLiquidity) / FixedPoint128.Q128;
     }
 }
+
 
 contract IncentiveGauge_StreamTest is Test {
     GaugeHarness gauge;
@@ -111,6 +116,12 @@ contract IncentiveGauge_StreamTest is Test {
         pm.setLiquidity(PoolId.unwrap(pid), 1_000_000);
         // Set slot0 with a valid sqrtPriceX96 at tick 0
         pm.setSlot0(PoolId.unwrap(pid), TickMath.getSqrtPriceAtTick(0), 0, 0, 0);
+        // Wire adapter for tickSpacing and init via hook
+        MockPoolKeysProvider pk = new MockPoolKeysProvider();
+        MockAdapterForKeys ad = new MockAdapterForKeys(address(pk));
+        gauge.setPositionManagerAdapter(address(ad));
+        vm.prank(hook);
+        gauge.initPool(pid, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -155,7 +166,7 @@ contract IncentiveGauge_StreamTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         _updatePool accrual
+                         _updatePoolByPid accrual
     //////////////////////////////////////////////////////////////*/
 
     function testUpdatePoolStreamsRewards() public {

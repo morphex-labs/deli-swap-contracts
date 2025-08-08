@@ -183,12 +183,13 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         return super._beforeInitialize(sender, key, sqrtPriceX96);
     }
 
-    /// @notice Bootstraps the DailyEpochGauge pool state.
+    /// @notice Bootstraps the DailyEpochGauge and IncentiveGauge pool state.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24) internal override returns (bytes4) {
         // Bootstrap DailyEpochGauge pool state
         PoolId pid = key.toId();
         // V2 pools always use tick 0 for gauge tracking
         dailyEpochGauge.initPool(pid, 0);
+        incentiveGauge.initPool(pid, 0);
 
         return this.afterInitialize.selector;
     }

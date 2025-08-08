@@ -231,7 +231,10 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         assertGt(pendingBefore, 0, "no pending before unsubscribe");
 
         // 4. Unsubscribe position – should trigger accumulator accrual & removal
+        // Capture gas for the unsubscribe path (adapter.notifyUnsubscribe) via section snapshot
+        vm.startSnapshotGas("adapter_unsubscribe_notify");
         positionManager.unsubscribe(tokenId);
+        vm.stopSnapshotGas();
 
         // 5. After unsubscribe owner aggregate should be zero (index cleaned)
         uint256 pendingAfter = gauge.pendingRewardsOwner(pid, address(this));
