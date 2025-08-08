@@ -19,6 +19,7 @@ import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol
 import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
 import {IPositionManagerAdapter} from "./interfaces/IPositionManagerAdapter.sol";
@@ -484,20 +485,33 @@ contract IncentiveGauge is Ownable2Step {
     function _updatePool(PoolKey memory key, PoolId pid, IERC20 token, int24 currentTick) internal {
         IncentiveInfo storage info = incentives[pid][token];
 
-        // Calculate effective reward rate (0 after period ends)
-        uint256 effectiveRate = block.timestamp > info.periodFinish ? 0 : info.rewardRate;
+        // Compute averaged per-second rate over [pool.lastUpdated, now],
+        // clamped to periodFinish so we credit the segment up to finish even if now > finish.
+        RangePool.State storage pool = poolRewards[pid][token];
+        uint256 poolLast = pool.lastUpdated;
+        uint256 nowTs = block.timestamp;
 
-        // Always sync pool state to keep tick and lastUpdate current
-        poolRewards[pid][token].sync(effectiveRate, key.tickSpacing, currentTick);
+        uint256 avgRate = 0;
+        if (poolLast > 0 && nowTs > poolLast && info.rewardRate > 0) {
+            uint256 dtPool = nowTs - poolLast;
+            uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
+            if (endTs > poolLast) {
+                uint256 activeSeconds = endTs - poolLast; // seconds within the still-active portion
+                // avgRate = rewardRate * activeSeconds / dtPool
+                avgRate = FullMath.mulDiv(uint256(info.rewardRate), activeSeconds, dtPool);
+            }
+        }
 
-        // Early exit if no rewards to distribute
+        // Sync pool accumulator with averaged rate and adjust to current tick
+        pool.sync(avgRate, key.tickSpacing, currentTick);
+
+        // Early exit if no rewards to distribute in bookkeeping
         if (info.rewardRate == 0) return;
 
-        // Update incentive streaming bookkeeping
-        uint256 dt = block.timestamp - info.lastUpdate;
+        // Update incentive streaming bookkeeping (cap at periodFinish)
+        uint256 dt = nowTs - info.lastUpdate;
         if (dt > 0) {
-            // Cap time delta at periodFinish to prevent over-streaming
-            uint256 cappedTimestamp = block.timestamp > info.periodFinish ? info.periodFinish : block.timestamp;
+            uint256 cappedTimestamp = nowTs > info.periodFinish ? info.periodFinish : nowTs;
             if (cappedTimestamp > info.lastUpdate) {
                 dt = cappedTimestamp - info.lastUpdate;
                 uint256 streamed = dt * info.rewardRate;
@@ -505,8 +519,8 @@ contract IncentiveGauge is Ownable2Step {
                 info.remaining -= uint128(streamed);
             }
 
-            info.lastUpdate = uint64(block.timestamp);
-            if (info.remaining == 0 || block.timestamp >= info.periodFinish) {
+            info.lastUpdate = uint64(nowTs);
+            if (info.remaining == 0 || nowTs >= info.periodFinish) {
                 info.rewardRate = 0;
             }
         }
