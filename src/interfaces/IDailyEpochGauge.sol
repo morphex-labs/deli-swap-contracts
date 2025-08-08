@@ -9,7 +9,6 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 /// @title IDailyEpochGauge
 interface IDailyEpochGauge {
     function addRewards(PoolId poolId, uint256 amount) external;
-    function rollIfNeeded(PoolId poolId) external;
     function initPool(PoolId pid, int24 initialTick) external;
     function pokePool(PoolKey calldata key) external;
     function claim(uint256 tokenId, address to) external returns (uint256);

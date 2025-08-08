@@ -14,6 +14,7 @@ import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "./interfaces/IPositionManagerAdapter.sol";
@@ -25,12 +26,12 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
 
 /**
  * @title DailyEpochGauge
- * @notice Streams buy-back BMX to Uniswap v4 LP positions on fixed 24-hour
- *         epochs.  Fees collected on day N are queued on day N+1, become the
- *         active stream on day N+2, and are fully distributed over that day.
- *         Accounting is range-aware so out-of-range positions do not accrue
- *         rewards.  The contract is designed to be called lazily—state stays
- *         consistent even if no interaction occurs for multiple days.
+ * @notice Time-derived daily streaming of BMX to Uniswap v4 LP positions.
+ *         Fees collected on day N are scheduled to stream on day N+2. The effective
+ *         stream rate for a UTC day is bucket[day]/DAY, and reward accumulation is
+ *         integrated piecewise across day boundaries on each update (swap, claim,
+ *         or liquidity event) before adjusting to the current tick. Accounting is
+ *         range-aware via `RangePool`, so only in-range liquidity accrues rewards.
  */
 contract DailyEpochGauge is Ownable2Step {
     using TimeLibrary for uint256;
@@ -43,14 +44,6 @@ contract DailyEpochGauge is Ownable2Step {
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    struct EpochInfo {
-        uint64 start; // inclusive
-        uint64 end; // exclusive
-        uint128 streamRate; // tokens/s streamed during current day (Day N)
-        uint128 nextStreamRate; // tokens/s to stream NEXT day (Day N+1)
-        uint128 queuedStreamRate; // tokens/s prepared for Day N+2 (derived from bucket just finished)
-    }
-
     // cache the tick range for every position key so we can compute in-range
     // reward growth later (needed to stop accrual once price leaves the
     // position span)
@@ -59,14 +52,14 @@ contract DailyEpochGauge is Ownable2Step {
         int24 upper;
     }
 
-    mapping(PoolId => EpochInfo) public epochInfo;
-    mapping(PoolId => uint256) public collectBucket;
+    // Time-derived daily scheduling: PoolId -> dayIndex -> tokens to stream on that UTC day
+    mapping(PoolId => mapping(uint32 => uint256)) public dayBuckets;
 
     // Reward math (tick-aware)
     mapping(PoolId => RangePool.State) public poolRewards;
     mapping(bytes32 => RangePosition.State) public positionRewards;
 
-    // owner → list of position keys per pool (for batched claims)
+    // owner -> list of position keys per pool (for batched claims)
     mapping(PoolId => mapping(address => bytes32[])) internal ownerPositions;
     // cached latest liquidity for each position key (needed by view helpers)
     mapping(bytes32 => uint128) internal positionLiquidity;
@@ -166,31 +159,12 @@ contract DailyEpochGauge is Ownable2Step {
         pool.initialize(initialTick);
     }
 
-    /// @notice Lazily rolls the epoch if we've crossed midnight UTC.
-    function rollIfNeeded(PoolId poolId) external {
-        EpochInfo storage e = epochInfo[poolId];
-
-        // Initialise epoch if first ever call for this pool.
-        if (e.end == 0) {
-            uint256 start = block.timestamp.dayStart();
-            e.start = uint64(start);
-            e.end = uint64(start + TimeLibrary.DAY);
-            e.streamRate = 0;
-            e.nextStreamRate = 0;
-            e.queuedStreamRate = 0;
-            return;
-        }
-
-        // Fast-forward until current timestamp is within [start, end).
-        while (block.timestamp >= e.end) {
-            _rollOnce(poolId, e);
-        }
-    }
-
-    /// @notice Adds freshly bought-back BMX to the pool's collect bucket.
-    ///         Called directly by FeeProcessor in the same transaction.
+    /// @notice Adds freshly bought-back BMX to the pool's day bucket
+    /// @dev Streams on Day N+2.
     function addRewards(PoolId poolId, uint256 amount) external onlyFeeProcessor {
-        collectBucket[poolId] += amount;
+        uint32 dayNow = TimeLibrary.dayCurrent();
+        uint32 targetDay = dayNow + 2;
+        dayBuckets[poolId][targetDay] += amount;
         emit RewardsAdded(poolId, amount);
     }
 
@@ -277,9 +251,11 @@ contract DailyEpochGauge is Ownable2Step {
                             VIEW HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Helper to fetch current streamRate.
+    /// @notice Effective stream rate for the current UTC day.
     function streamRate(PoolId pid) public view returns (uint256) {
-        return epochInfo[pid].streamRate;
+        uint32 dayNow = TimeLibrary.dayCurrent();
+        uint256 amt = dayBuckets[pid][dayNow];
+        return amt == 0 ? 0 : amt / TimeLibrary.DAY;
     }
 
     /// @notice Returns core pool reward data.
@@ -288,7 +264,7 @@ contract DailyEpochGauge is Ownable2Step {
         view
         returns (uint256 currentStreamRate, uint256 rewardsPerLiquidityX128, uint128 activeLiquidity)
     {
-        currentStreamRate = epochInfo[pid].streamRate;
+        currentStreamRate = streamRate(pid);
         rewardsPerLiquidityX128 = poolRewards[pid].cumulativeRplX128();
         activeLiquidity = poolRewards[pid].liquidity;
     }
@@ -308,15 +284,15 @@ contract DailyEpochGauge is Ownable2Step {
         rewardsPerLiquidityX128s = new uint256[](len);
         activeLiquidities = new uint128[](len);
         for (uint256 i; i < len; ++i) {
-            currentStreamRates[i] = epochInfo[pids[i]].streamRate;
+            currentStreamRates[i] = streamRate(pids[i]);
             rewardsPerLiquidityX128s[i] = poolRewards[pids[i]].cumulativeRplX128();
             activeLiquidities[i] = poolRewards[pids[i]].liquidity;
         }
     }
 
     /// @notice Returns the number of seconds until the next epoch ends.
-    function nextEpochEndsIn(PoolId pid) external view returns (uint256 secondsLeft) {
-        uint64 end = epochInfo[pid].end;
+    function nextEpochEndsIn(PoolId) external view returns (uint256 secondsLeft) {
+        uint256 end = TimeLibrary.dayNext(block.timestamp);
         secondsLeft = end > block.timestamp ? end - block.timestamp : 0;
     }
 
@@ -377,42 +353,6 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[positionKey].accrue(liq, poolRewards[pid].rangeRplX128(tr.lower, tr.upper));
     }
 
-    /// @dev internal: perform a single 24-hour roll.
-    function _rollOnce(PoolId poolId, EpochInfo storage e) internal {
-        // 1) Accrue the remainder of the ending epoch at the ending day's streamRate, so no rewards are skipped when rolling.
-        RangePool.State storage pool = poolRewards[poolId];
-        if (pool.lastUpdated == 0) {
-            // Uninitialized pool: anchor to the boundary so future syncs don't backdate
-            pool.lastUpdated = e.end;
-        } else {
-            uint256 fromTs = pool.lastUpdated < e.start ? uint256(e.start) : uint256(pool.lastUpdated);
-            if (fromTs < e.end) {
-                uint256 dt = uint256(e.end) - fromTs;
-                uint128 liq = pool.liquidity;
-                uint128 rate = e.streamRate;
-                if (liq > 0 && rate > 0) {
-                    pool.rewardsPerLiquidityCumulativeX128 += ((uint256(rate) * dt) << 128) / liq;
-                }
-                // Cap the accumulator timestamp at the epoch boundary
-                pool.lastUpdated = e.end;
-            }
-        }
-
-        // 2) Roll epoch parameters (prepare next/queued rates and clear bucket)
-        e.streamRate = e.nextStreamRate;
-        e.nextStreamRate = e.queuedStreamRate;
-        uint256 bucket = collectBucket[poolId];
-        collectBucket[poolId] = 0;
-        e.queuedStreamRate = uint128(bucket / TimeLibrary.DAY);
-
-        // 3) Advance the epoch window by 1 day
-        uint256 nextStart = uint256(e.end);
-        e.start = uint64(nextStart);
-        e.end = uint64(nextStart + TimeLibrary.DAY);
-
-        emit EpochRolled(poolId, e.streamRate, nextStart);
-    }
-
     /// @dev internal: remove a positionKey from indices (swap-pop) and delete liquidity cache
     function _removePosition(PoolId pid, address owner, bytes32 posKey) internal {
         RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
@@ -445,42 +385,46 @@ contract DailyEpochGauge is Ownable2Step {
         }
     }
 
-    /// @dev Ensures that the epoch window for `pid` is current. If the pool
-    ///      has never been initialised or we have crossed midnight UTC since
-    ///      the last interaction this will fast-forward by calling
-    ///      `rollIfNeeded`.
-    function _ensureEpoch(PoolId pid) internal {
-        EpochInfo storage e = epochInfo[pid];
-        if (e.end == 0) {
-            uint256 start = block.timestamp.dayStart();
-            e.start = uint64(start);
-            e.end = uint64(start + TimeLibrary.DAY);
-            e.streamRate = 0;
-            e.nextStreamRate = 0;
-            e.queuedStreamRate = 0;
-            return;
+    /// @dev Integrate day-bucket rates over [t0, t1) and return the average per-second rate.
+    function _averageRateOverWindow(PoolId pid, uint256 t0, uint256 t1) internal view returns (uint256 avgRate) {
+        if (t1 <= t0) return 0;
+        uint256 total;
+        uint256 t = t0;
+        while (true) {
+            uint256 dayStart = TimeLibrary.dayStart(t);
+            uint32 dayIndex = TimeLibrary.dayIndex(dayStart);
+            uint256 dayEnd = dayStart + TimeLibrary.DAY;
+            uint256 segEnd = t1 < dayEnd ? t1 : dayEnd;
+            uint256 dt = segEnd - t;
+            if (dt > 0) {
+                uint256 amt = dayBuckets[pid][dayIndex];
+                if (amt > 0) total += FullMath.mulDiv(amt, dt, TimeLibrary.DAY);
+            }
+            if (segEnd == t1) break;
+            t = segEnd;
         }
-
-        // Fast-forward until the current timestamp fits in [start, end).
-        while (block.timestamp >= e.end) {
-            _rollOnce(pid, e);
-        }
+        avgRate = total == 0 ? 0 : total / (t1 - t0);
     }
 
-    /// @dev Synchronise epoch, accumulator, tick, and pool initialisation in one call.
-    /// @return currentTick The tick after adjustments, used by caller if needed.
+    /// @dev Piecewise integrate daily rates over elapsed time and sync pool accumulator; then adjust to current tick.
     function _syncPoolState(PoolKey memory key, PoolId pid) internal returns (int24 currentTick) {
-        // Ensure epoch window current.
-        _ensureEpoch(pid);
-
-        // Get current active tick from poolManager
-        // Calculate tick from sqrtPriceX96 to handle edge case where slot0.tick may be off by 1
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 tickNow = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
-        // One-liner: initialise (if needed), accumulate streamRate, adjust tick.
-        poolRewards[pid].sync(streamRate(pid), key.tickSpacing, tickNow);
+        RangePool.State storage pool = poolRewards[pid];
+        if (pool.lastUpdated == 0) {
+            pool.initialize(tickNow);
+            return tickNow;
+        }
 
+        uint256 t0 = pool.lastUpdated;
+        uint256 t1 = block.timestamp;
+        if (t1 > t0) {
+            uint256 avgRate = _averageRateOverWindow(pid, t0, t1);
+            pool.sync(avgRate, key.tickSpacing, tickNow);
+        } else {
+            pool.sync(0, key.tickSpacing, tickNow);
+        }
         return tickNow;
     }
 

@@ -80,8 +80,7 @@ contract DeliHook_SwapFeeTest is Test {
         assertEq(fp.lastAmount(), expected);
         // fee currency should be wBLT
         // no further asserts
-        // gauge side-effects
-        assertEq(daily.rollCalls(), 1);
+        // gauge side-effects (keeperless: only poke is required)
         assertEq(daily.pokeCalls(), 1);
         assertEq(inc.pokeCount(), 1);
     }

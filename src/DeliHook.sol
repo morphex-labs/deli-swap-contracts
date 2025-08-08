@@ -251,8 +251,7 @@ contract DeliHook is Ownable2Step, BaseHook {
 
         // Skip gauge updates for internal swaps but still collect fees
         if (!isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
-            dailyEpochGauge.rollIfNeeded(key.toId());
+            // Checkpoint pool **before** fee handling so that any deltas they create are cleared first.
             dailyEpochGauge.pokePool(key);
             incentiveGauge.pokePool(key);
         }

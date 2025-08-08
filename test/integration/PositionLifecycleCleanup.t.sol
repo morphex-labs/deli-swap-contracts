@@ -176,13 +176,11 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         vm.prank(address(this));
         inc.createIncentive(key, IERC20(address(wblt)), incAmt);
 
-        // Day 0 initialise
-        gauge.rollIfNeeded(pid);
-        (, uint64 day0End,,, ) = gauge.epochInfo(pid);
+        // Day 0 info
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
 
-        // Fast-forward two days so streamRate becomes active (one-day queue + current day)
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // Fast-forward to Day2 so streamRate becomes active (N+2)
+        vm.warp(uint256(day0End) + 1 days + 1);
 
         // Sanity: streamRate should now be > 0
         require(gauge.streamRate(pid) > 0, "stream not active");

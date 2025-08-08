@@ -175,8 +175,9 @@ contract DailyEpochGauge_UpdateTest is Test {
         vm.warp(1704067200);
         pm.setLiquidity(PoolId.unwrap(pid), 1_000_000);
 
-        // initialise epoch
-        gauge.rollIfNeeded(pid);
+        // initialise pool so accumulator timestamps exist before time warps
+        vm.prank(hookAddr);
+        gauge.initPool(pid, 0);
     }
 
     function _callUpdate(uint128 liq) internal returns (bytes32 posKey) {
@@ -207,21 +208,15 @@ contract DailyEpochGauge_UpdateTest is Test {
         vm.prank(address(0xFEE));
         gauge.addRewards(pid, 1e20 * 1 days);
 
-        // Roll to Day1 (streamRate still 0, nextStreamRate set)
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
+        // Day1 boundary (streamRate still 0)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
         vm.warp(end0);
-        gauge.rollIfNeeded(pid);
 
-        // Roll to Day2 (stream not yet active)
+        // Day2: active streaming day
         vm.warp(end0 + 1 days);
-        gauge.rollIfNeeded(pid);
-
-        // Roll to Day3 to activate streamRate
-        vm.warp(end0 + 2 days);
-        gauge.rollIfNeeded(pid);
 
         uint256 beforeRpl = gauge.poolRpl(pid);
-        // advance 1h into streaming day
+        // advance 1h into streaming day and poke
         vm.warp(block.timestamp + 3600);
         vm.prank(hookAddr);
         gauge.pokePool(key);
@@ -235,21 +230,13 @@ contract DailyEpochGauge_UpdateTest is Test {
         vm.prank(address(0xFEE));
         gauge.addRewards(pid, bucket);
 
-        // Roll to Day1
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        vm.warp(end0);
-        gauge.rollIfNeeded(pid);
-
-        // Roll to Day2 (still no stream)
-        vm.warp(end0 + 1 days);
-        gauge.rollIfNeeded(pid);
-
-        // Roll to Day3 where stream becomes active
-        vm.warp(end0 + 2 days);
-        gauge.rollIfNeeded(pid);
-
-        // add position before accumulator starts
+        // ensure liquidity is active during the streaming day
         _callUpdate(1_000_000);
+
+        // Day1 boundary, then Day2 active streaming day
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(end0);
+        vm.warp(end0 + 1 days);
 
         // advance 1h into streaming day and poke
         vm.warp(block.timestamp + 3600);

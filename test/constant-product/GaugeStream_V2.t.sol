@@ -36,6 +36,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 
 contract Token is ERC20 {
     constructor(string memory s) ERC20(s, s) {
@@ -242,13 +243,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
                        Helper to activate stream
     //////////////////////////////////////////////////////////////*/
     function _activateStream() internal {
-        // Day 0 initialise (bucket queued, streamRate 0)
-        gauge.rollIfNeeded(pid);
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        // fast-forward two days so streamRate becomes active
-        vm.warp(uint256(end0) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // Day 0 info (bucket queued, streamRate 0)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        // fast-forward to Day2 so streamRate becomes active
+        vm.warp(uint256(end0) + 1 days + 1);
         require(gauge.streamRate(pid) > 0, "stream inactive");
+        // Anchor accumulator at activation to avoid drift in expectations
+        vm.prank(address(hook));
+        gauge.pokePool(key);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -294,42 +296,27 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
 
     /// @notice Verifies correct streamRate pipeline and accrual over multiple epoch rolls.
     function testMultiDayStreaming() public {
-        // Day0 – initialise epoch (bucket queued, streamRate = 0)
-        gauge.rollIfNeeded(pid);
-
-        (, uint64 day0End,,,) = gauge.epochInfo(pid);
+        // Day0 – epoch (bucket queued, streamRate = 0)
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
 
         // --------------------------------------------------
-        // Day1: streamRate still 0, queuedStreamRate populated
+        // Day1: streamRate still 0
         // --------------------------------------------------
         vm.warp(uint256(day0End) + 1); // just into Day1
-        gauge.rollIfNeeded(pid);
 
-        (,, uint128 srDay1, uint128 nextSrDay1, uint128 queuedSrDay1) = gauge.epochInfo(pid);
-        assertEq(srDay1, 0, "Day1 streamRate should be zero");
-        assertEq(nextSrDay1, 0, "Day1 nextStreamRate should be zero");
-        assertGt(queuedSrDay1, 0, "queuedStreamRate not set");
+        // On Day1, stream rate still 0
+        assertEq(gauge.streamRate(pid), 0, "Day1 streamRate should be zero");
 
-        uint256 expectedRate = uint256(queuedSrDay1);
+        // Expected per-second rate is bucket/86400 which will activate on Day2
+        uint256 expectedRate = (1000 ether) / uint256(1 days);
 
         // --------------------------------------------------
-        // Day2: still no streaming, nextStreamRate equals queued
+        // Day2: streaming becomes active
         // --------------------------------------------------
         vm.warp(uint256(day0End) + 1 days + 1);
-        gauge.rollIfNeeded(pid);
 
-        (,, uint128 srDay2, uint128 nextSrDay2,) = gauge.epochInfo(pid);
-        assertEq(srDay2, 0, "Day2 streamRate should be zero");
-        assertApproxEqAbs(nextSrDay2, expectedRate, 1, "Day2 nextStreamRate mismatch");
-
-        // --------------------------------------------------
-        // Day3: streaming becomes active
-        // --------------------------------------------------
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
-
-        uint256 srDay3 = gauge.streamRate(pid);
-        assertApproxEqAbs(srDay3, expectedRate, 1, "Day3 streamRate mismatch");
+        uint256 srDay2 = gauge.streamRate(pid);
+        assertApproxEqAbs(srDay2, expectedRate, 1, "Day2 streamRate mismatch");
     }
 
     /*//////////////////////////////////////////////////////////////

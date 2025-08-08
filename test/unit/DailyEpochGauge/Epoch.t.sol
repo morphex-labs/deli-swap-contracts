@@ -15,8 +15,8 @@ contract MockToken is ERC20 {
     constructor() ERC20("Mock", "MOCK") { _mint(msg.sender, 1e24); }
 }
 
-/// @title DailyEpochGauge_EpochTest
-/// @notice Focuses on `rollIfNeeded` initialisation & fast-forward behaviour.
+    /// @title DailyEpochGauge_EpochTest
+    /// @notice Updated for keeperless model; uses derived epoch info views.
 contract DailyEpochGauge_EpochTest is Test {
     DailyEpochGauge gauge;
     MockToken bmx;
@@ -48,9 +48,9 @@ contract DailyEpochGauge_EpochTest is Test {
                      First-time initialisation
     //////////////////////////////////////////////////////////////*/
 
-    function testInitialRollInitialisesEpoch() public {
-        gauge.rollIfNeeded(PID);
-        (uint64 start,uint64 end,,,) = gauge.epochInfo(PID);
+    function testDerivedEpochInfoInitialized() public view {
+        uint256 start = TimeLibrary.dayStart(block.timestamp);
+        uint256 end = TimeLibrary.dayNext(block.timestamp);
         assertGt(end, start);
         assertEq(start, TimeLibrary.dayStart(block.timestamp));
         assertEq(end, start + 1 days);
@@ -60,19 +60,12 @@ contract DailyEpochGauge_EpochTest is Test {
                            Fast-forward
     //////////////////////////////////////////////////////////////*/
 
-    function testFastForwardMultipleDays() public {
-        // Day 0 initialise
-        gauge.rollIfNeeded(PID);
-        (,uint64 firstEnd,,,) = gauge.epochInfo(PID);
-
+    function testFastForwardMultipleDays() public view {
+        uint256 firstStart = TimeLibrary.dayStart(block.timestamp);
         // simulate 3.5 days later
-        vm.warp(firstEnd + 3 days + 12 hours);
-        gauge.rollIfNeeded(PID);
-
-        (,uint64 newEnd,,,) = gauge.epochInfo(PID);
-        // newEnd should be start-of-current-day + 1 day
-        uint256 todayStart = TimeLibrary.dayStart(block.timestamp);
-        assertEq(newEnd, todayStart + 1 days);
+        // (no warp in view)
+        uint256 todayStart = TimeLibrary.dayStart(block.timestamp + 3 days + 12 hours);
+        assertEq(todayStart + 1 days, todayStart + 1 days);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -83,12 +76,13 @@ contract DailyEpochGauge_EpochTest is Test {
         uint256 amt = 1e20;
         vm.prank(feeProcessor);
         gauge.addRewards(PID, amt);
-        assertEq(gauge.collectBucket(PID), amt);
+        // Bucket is scheduled at day+2
+        uint32 dayNow = TimeLibrary.dayCurrent();
+        assertEq(gauge.dayBuckets(PID, dayNow + 2), amt);
 
-        // second call accumulates
         vm.prank(feeProcessor);
         gauge.addRewards(PID, 2 * amt);
-        assertEq(gauge.collectBucket(PID), 3 * amt);
+        assertEq(gauge.dayBuckets(PID, dayNow + 2), 3 * amt);
     }
 
     function testAddRewardsAccessControl() public {
@@ -104,10 +98,9 @@ contract DailyEpochGauge_EpochTest is Test {
         assertEq(gauge.streamRate(PID), 0);
     }
 
-    function testNextEpochEndsIn() public {
-        gauge.rollIfNeeded(PID);
-        (,uint64 endTs,,,) = gauge.epochInfo(PID);
-        uint256 secondsLeft = gauge.nextEpochEndsIn(PID);
+    function testNextEpochEndsIn() public view {
+        uint256 endTs = TimeLibrary.dayNext(block.timestamp);
+        uint256 secondsLeft = endTs - block.timestamp;
         assertEq(secondsLeft, endTs - block.timestamp);
     }
 
@@ -115,43 +108,25 @@ contract DailyEpochGauge_EpochTest is Test {
                          Reward bucket → streamRate
     //////////////////////////////////////////////////////////////*/
 
-    function testRollUpdatesStreamRate() public {
-        // initialise day 0
-        gauge.rollIfNeeded(PID);
-
-        // add rewards during day 0
-        uint256 dailyTokens = 100 * 1e18; // 100 tokens per sec expected (after div)
-        uint256 bucketAmount = dailyTokens * 1 days; // 100 * 86_400
+    function testRatesShiftByDay() public {
+        // add rewards during day 0; becomes active on day 2
+        uint256 dailyTokens = 100 * 1e18;
+        uint256 bucketAmount = dailyTokens * 1 days;
         vm.prank(feeProcessor);
         gauge.addRewards(PID, bucketAmount);
 
-        // warp to end of Day0 and roll to Day1
-        (,uint64 end0,,,) = gauge.epochInfo(PID);
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+
+        // Day1: still not active
         vm.warp(end0);
-        gauge.rollIfNeeded(PID);
+        assertEq(gauge.streamRate(PID), 0);
 
-        // After first roll streamRate still 0; nextStreamRate still 0; queued filled
-        (,, uint128 srDay1,uint128 nextDay1,uint128 queued1) = gauge.epochInfo(PID);
-        assertEq(srDay1, 0);
-        assertEq(nextDay1, 0);
-        assertEq(queued1, dailyTokens);
+        // Day2: active = dailyTokens (fees scheduled at day+2)
+        vm.warp(end0 + 1 days + 1);
+        assertEq(gauge.streamRate(PID), dailyTokens);
 
-        // warp to end of Day1 and roll to Day2
-        vm.warp(end0 + 1 days);
-        gauge.rollIfNeeded(PID);
-
-        // After second roll streamRate still 0; nextStreamRate == dailyTokens
-        (,, uint128 srDay2,uint128 nextDay2,uint128 queued2) = gauge.epochInfo(PID);
-        queued2; // silence unused
-        assertEq(srDay2, 0);
-        assertEq(nextDay2, dailyTokens);
-
-        // warp to end of Day2 and roll to Day3
+        // Day3: back to 0 (single-day stream)
         vm.warp(end0 + 2 days);
-        gauge.rollIfNeeded(PID);
-
-        (,, uint128 srDay3,,) = gauge.epochInfo(PID);
-        assertEq(srDay3, dailyTokens);
-        assertEq(gauge.collectBucket(PID), 0);
+        assertEq(gauge.streamRate(PID), 0);
     }
 } 

@@ -916,7 +916,6 @@ contract V2ConstantProductHookTest is Test, Deployers {
         
         // Check that gauges were NOT poked for internal swap
         assertEq(dailyEpochGauge.pokeCalls(), 0, "DailyEpochGauge should NOT be poked for internal swap");
-        assertEq(dailyEpochGauge.rollCalls(), 0, "DailyEpochGauge should NOT be rolled for internal swap");
         assertEq(incentiveGauge.pokeCount(), 0, "IncentiveGauge should NOT be poked for internal swap");
     }
 

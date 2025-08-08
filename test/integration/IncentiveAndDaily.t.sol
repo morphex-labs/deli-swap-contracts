@@ -160,7 +160,6 @@ contract IncentiveAndDaily_IT is Test, Deployers {
 
     function testClaimBothRewards() public {
         // Fast-forward 3 days so both daily.streamRate and incentive stream accrue
-        daily.rollIfNeeded(pid);
         vm.warp(block.timestamp + 3 days);
 
         // Hook-triggered pokes to update pool accumulators
@@ -251,24 +250,15 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testDailyMultiDayRoll() public {
-        // Initialise Day0
-        daily.rollIfNeeded(pid);
-        (uint64 start0,, , ,) = daily.epochInfo(pid);
+        // Day0
+        uint256 start0 = TimeLibrary.dayStart(block.timestamp);
 
-        // Warp forward 3 full days without any swaps / pokes
-        vm.warp(uint256(start0) + 3 days + 1);
+        // Warp forward to Day2 (activation day for Day0 bucket)
+        vm.warp(uint256(start0) + 2 days + 1);
 
-        // Single pokePool should fast-forward three _rollOnce iterations
-        vm.prank(address(hook));
-        daily.pokePool(key);
-
-        // Expect epoch start advanced by exactly 3 days
-        (uint64 startAfter, uint64 endAfter, uint128 streamRate, uint128 nextSr, uint128 queuedSr) = daily.epochInfo(pid);
-        assertEq(startAfter, start0 + 3 days, "epoch did not fast-forward 3 days");
-
-        // After 3 rolls streamRate should equal queuedRate = bucket / DAY
+        // On Day2, streamRate should be bucket/86400
         uint256 expectedRate = uint256(1000 ether) / uint256(1 days);
-        assertApproxEqAbs(uint256(streamRate), expectedRate, 1, "streamRate mismatch after multi-day roll");
+        assertApproxEqAbs(daily.streamRate(pid), expectedRate, 1, "streamRate mismatch on Day2");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -276,8 +266,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testEpochRollWithZeroLiquidity() public {
-        // Day0 initialise
-        daily.rollIfNeeded(pid);
+        // Day0 info
 
         // Burn BOTH positions so activeLiquidity drops to zero
         uint128 liqDaily = positionManager.getPositionLiquidity(tokenDailyId);
@@ -291,9 +280,9 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         // Snapshot accumulator before zero-liquidity day rolls
         (uint256 rplBefore,, ,) = daily.poolRewards(pid);
 
-        // Warp a full day+ & poke once
-        (, uint64 end0,, ,) = daily.epochInfo(pid);
-        vm.warp(uint256(end0) + 1 days + 1);
+        // Warp a full day+
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(end0 + 1 days + 1);
         vm.prank(address(hook));
         daily.pokePool(key);
 
@@ -301,10 +290,9 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         (uint256 rplAfter,, ,) = daily.poolRewards(pid);
         assertEq(rplAfter, rplBefore, "RPL should not accrue when liquidity is zero");
 
-        // Stream pipeline should still progress (queued -> next) even with zero liquidity
-        (, , uint128 sr, uint128 nextSr, ) = daily.epochInfo(pid);
-        assertEq(sr, 0, "streamRate should remain zero until next day active");
-        assertGt(nextSr, 0, "nextStreamRate should be set even with zero liquidity");
+        // Stream rate is independent of liquidity; on Day2 it should be bucket/DAY
+        uint256 expectedRate = uint256(1000 ether) / uint256(1 days);
+        assertApproxEqAbs(daily.streamRate(pid), expectedRate, 1, "streamRate should reflect Day2 bucket");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -392,10 +380,8 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
     function testDailyBucketTopUpMidStream() public {
         // Ensure streaming is active
-        daily.rollIfNeeded(pid);
         while (daily.streamRate(pid) == 0) {
             vm.warp(block.timestamp + 1 days);
-            daily.rollIfNeeded(pid);
         }
         uint256 initialRate = daily.streamRate(pid);
 
@@ -404,10 +390,9 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         bmx.transfer(address(daily), topUp);
         daily.addRewards(pid, topUp);
 
-        // Advance 2 days from current epoch end to allow queued rate to activate
-        (, uint64 endNow,, ,) = daily.epochInfo(pid);
-        vm.warp(uint256(endNow) + 2 days + 1);
-        daily.rollIfNeeded(pid);
+        // Advance 1 day from current epoch end to allow N+2 bucket to activate
+        uint256 endNow = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(endNow + 1 days + 1);
 
         uint256 newRate = daily.streamRate(pid);
         uint256 expectedRate = topUp / uint256(1 days);
@@ -449,13 +434,10 @@ contract IncentiveAndDaily_IT is Test, Deployers {
 
         // -------------------------------------------------------------
         // Advance enough days for rewards to move through the pipeline.
-        // Day 1: bucket → queued
-        // Day 2: queued → next  
-        // Day 3: next → current (active streaming)
+        // Day 1: idle (no streaming)
+        // Day 2: current (active streaming of Day0 bucket)
         // -------------------------------------------------------------
-        daily.rollIfNeeded(pid);
-        vm.warp(block.timestamp + 3 days + 1);
-        daily.rollIfNeeded(pid);
+        vm.warp(block.timestamp + 2 days + 1);
 
         vm.prank(address(hook));
         daily.pokePool(key);

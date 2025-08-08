@@ -50,7 +50,7 @@ contract DailyEpochGaugeEpochInvariant is Test {
         }
 
         // 3. Call rollIfNeeded to advance epoch if day boundary crossed
-        gauge.rollIfNeeded(PID);
+        // keeperless: no explicit roll needed
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -58,12 +58,8 @@ contract DailyEpochGaugeEpochInvariant is Test {
     //////////////////////////////////////////////////////////////*/
 
     function invariant_epochWindow() public {
-        (
-            uint64 start,
-            uint64 end,
-            ,  ,
-        ) = gauge.epochInfo(PID);
-        if (end == 0) return; // not initialised yet
+        uint256 start = TimeLibrary.dayStart(block.timestamp);
+        uint256 end = TimeLibrary.dayNext(block.timestamp);
         assertEq(end - start, TimeLibrary.DAY, "epoch duration != 1 day");
         assertTrue(uint256(start) <= block.timestamp && block.timestamp < uint256(end), "timestamp outside epoch window");
     }

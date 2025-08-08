@@ -209,7 +209,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
 
         // Buffer cleared and gauge bucket credited
         assertEq(fp.pendingWbltForBuyback(), 0, "buffer not cleared");
-        assertGt(gauge.collectBucket(pid), 0, "bucket not credited");
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        assertGt(gauge.dayBuckets(pid, dayNow + 2), 0, "bucket not credited");
     }
 
     /*//////////////////////////////////////////////////////////////

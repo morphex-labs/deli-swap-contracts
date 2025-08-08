@@ -163,12 +163,10 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.prank(address(this));
         gauge.addRewards(pid, bucket);
 
-        // Roll Day0 epoch so queuedRate set
-        gauge.rollIfNeeded(pid);
-        (, uint64 day0End,,, ) = gauge.epochInfo(pid);
-        // Warp two days to activate streamRate
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // Day0 info
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
+        // Warp to Day2 to activate streamRate
+        vm.warp(uint256(day0End) + 1 days + 1);
         require(gauge.streamRate(pid) > 0, "stream inactive");
     }
 
@@ -295,10 +293,9 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         (, int24 tickNow,,) = StateLibrary.getSlot0(poolManager, pid);
         require(tickNow > 600, "price not above");
 
-        // warp to epoch end + 1 and roll gauge
-        (, uint64 epochEnd,,,) = gauge.epochInfo(pid);
-        vm.warp(uint256(epochEnd) + 1);
-        gauge.rollIfNeeded(pid);
+        // warp to epoch end + 1
+        uint256 epochEnd = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(epochEnd + 1);
 
         // poke pool after roll – should still be out-of-range
         vm.prank(address(hook));

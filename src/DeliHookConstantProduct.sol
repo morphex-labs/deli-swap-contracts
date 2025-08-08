@@ -232,8 +232,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         // Skip gauge updates for internal swaps but still collect fees
         if (!_isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool
-            dailyEpochGauge.rollIfNeeded(poolId);
+            // Checkpoint pool
             dailyEpochGauge.pokePool(key);
             incentiveGauge.pokePool(key);
         }

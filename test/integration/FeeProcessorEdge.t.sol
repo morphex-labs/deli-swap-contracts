@@ -204,8 +204,8 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         uint256 buf = fp.pendingWbltForBuyback();
         assertGt(buf, 0, "buffer not populated");
 
-        // Gauge bucket still zero
-        assertEq(gauge.collectBucket(pid), 0, "bucket should be zero before key set");
+        // Gauge bucket (day+2) still zero
+        assertEq(gauge.dayBuckets(pid, uint32(block.timestamp / 1 days) + 2), 0, "bucket should be zero before key set");
 
         // Now set the buyback pool key
         fp.setBuybackPoolKey(canonicalKey);
@@ -217,7 +217,7 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         assertEq(fp.pendingWbltForBuyback(), 0, "buyback buffer not cleared");
 
         // Gauge bucket increased by ~buf * 97% (buyback share)
-        uint256 bucket = gauge.collectBucket(pid);
+        uint256 bucket = gauge.dayBuckets(pid, uint32(block.timestamp / 1 days) + 2);
         assertGt(bucket, 0, "bucket not updated");
     }
 

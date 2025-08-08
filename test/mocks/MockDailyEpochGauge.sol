@@ -11,7 +11,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 contract MockDailyEpochGauge is IDailyEpochGauge {
     mapping(PoolId => uint256) public rewards;
 
-    uint256 public rollCalls;
+    uint256 public rollCalls; // kept for backward compat assertions in some tests
     uint256 public pokeCalls;
 
     // ---------------------------------------------------------------------
@@ -25,7 +25,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     // Unused interface functions – empty implementations
     // ---------------------------------------------------------------------
 
-    function rollIfNeeded(PoolId /* poolId */ ) external override { rollCalls += 1; }
+    function rollIfNeeded(PoolId /* poolId */ ) external { rollCalls += 1; }
 
     function pokePool(PoolKey calldata /* key */ ) external override { pokeCalls += 1; }
 

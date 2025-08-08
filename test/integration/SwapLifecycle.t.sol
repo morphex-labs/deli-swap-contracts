@@ -286,21 +286,21 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         uint256 expectedBuyTotal = expectedBuy; // only BMX pool credited immediately
         PoolId pid = PoolId.wrap(bytes25(uint200(0))); // convert key later
         pid = (PoolKey({currency0:Currency.wrap(address(bmx)),currency1:Currency.wrap(address(wblt)),fee:3000,tickSpacing:60,hooks:IHooks(address(hook))})).toId();
-        // Verify 97% buy-back bucket registered
-        assertEq(gauge.collectBucket(pid), expectedBuyTotal);
+        // Verify 97% buy-back bucket registered (credited to day+2 bucket)
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        assertEq(gauge.dayBuckets(pid, dayNow + 2), expectedBuyTotal);
 
         // Voter portion (3%) is kept in FeeProcessor buffers until a flush.
         uint256 voterShare = feeAmt - expectedBuy;
         assertEq(fp.pendingBmxForVoter(), voterShare);
 
-        // first roll brings epoch current but streamRate should still be zero (bucket queued)
-        gauge.rollIfNeeded(pid);
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        assertEq(gauge.streamRate(pid), 0, "stream should start after one-day delay");
+        // keeperless: derive day boundary; streamRate should be zero until activation day (N+2)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        assertEq(gauge.streamRate(pid), 0, "stream should start on Day2");
 
-        // warp two days (one-day queue + one-day streaming window)
-        vm.warp(uint256(end0) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // warp to Day2 activation
+        vm.warp(uint256(end0) + 1 days);
+        // derived model: rate is bucket/86400
         assertEq(gauge.streamRate(pid), expectedBuy / 1 days);
     }
 
@@ -317,7 +317,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         PoolId pid = bmxKey.toId();
         
         // Check gauge balance before
-        uint256 gaugeBefore = gauge.collectBucket(pid);
+        uint32 dayNow2 = uint32(block.timestamp / 1 days);
+        uint256 gaugeBefore = gauge.dayBuckets(pid, dayNow2 + 2);
         
         // 1) Generate wBLT fees in OTHER pool
         // With buyback pool configured, this will trigger automatic flush
@@ -336,7 +337,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         assertEq(wbltVoterAfter, 90000000000000, "wBLT voter should have 3% of original fee");
         
         // Verify gauge received BMX from automatic buyback
-        uint256 gaugeAfter = gauge.collectBucket(pid);
+        uint256 gaugeAfter = gauge.dayBuckets(pid, dayNow2 + 2);
         assertGt(gaugeAfter, gaugeBefore, "gauge should receive BMX from auto buyback");
         
         // The internal swaps generated their own fees
