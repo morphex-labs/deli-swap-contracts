@@ -859,6 +859,102 @@ contract V2ConstantProductHookTest is Test, Deployers {
         vm.stopPrank();
     }
 
+    /*//////////////////////////////////////////////////////////////
+                        FEE ORIENTATION TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    // wBLT -> token2, exact input: fee in wBLT (input side)
+    function test_fee_wbltToToken2_exactInput() public {
+        // Add liquidity so reserves are known
+        addLiquidityToPool1(100 ether, 200 ether);
+
+        uint256 amountIn = 10 ether; // wBLT in
+        uint256 feePips = 3000; // 0.3%
+
+        // Expected fee is percentage of input since fee currency = wBLT = input
+        uint256 expectedFee = (amountIn * feePips) / 1_000_000;
+
+        // Perform swap: token0 (wBLT) -> token1 (token2), exact input
+        swapRouter.swap(key1, SwapParams({
+            zeroForOne: true,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: MIN_PRICE_LIMIT
+        }), PoolSwapTest.TestSettings({ takeClaims: false, settleUsingBurn: false }), "");
+
+        // FeeProcessor should have received the expected wBLT amount
+        assertEq(feeProcessor.lastAmount(), expectedFee, "fee mismatch (wBLT->x exact in)");
+        assertEq(feeProcessor.calls(), 1, "collectFee not called");
+    }
+
+    // wBLT -> token2, exact output: fee in wBLT (input side)
+    function test_fee_wbltToToken2_exactOutput() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+
+        uint256 amountOut = 20 ether; // token2 out
+        uint256 feePips = 3000; // 0.3%
+
+        // Compute inputs at pre-swap reserves
+        // With fee (actual input)
+        uint256 inputWithFee = calculateExactOutputSwap(amountOut, 100 ether, 200 ether, feePips);
+        // Without fee
+        uint256 inputNoFee = calculateExactOutputSwap(amountOut, 100 ether, 200 ether, 0);
+        uint256 expectedFee = inputWithFee > inputNoFee ? inputWithFee - inputNoFee : 0;
+
+        // Perform swap: token0 (wBLT) -> token1 (token2), exact output
+        swapRouter.swap(key1, SwapParams({
+            zeroForOne: true,
+            amountSpecified: int256(amountOut),
+            sqrtPriceLimitX96: MIN_PRICE_LIMIT
+        }), PoolSwapTest.TestSettings({ takeClaims: false, settleUsingBurn: false }), "");
+
+        assertEq(feeProcessor.lastAmount(), expectedFee, "fee mismatch (wBLT->x exact out)");
+        assertEq(feeProcessor.calls(), 1, "collectFee not called");
+    }
+
+    // token2 -> wBLT, exact input: fee in wBLT (output side)
+    function test_fee_token2ToWblt_exactInput() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+
+        uint256 amountIn = 10 ether; // token2 in
+        uint256 feePips = 3000; // 0.3%
+
+        // Compute output with and without fee from pre-swap reserves
+        uint256 outWithFee = calculateExactInputSwap(amountIn, 200 ether, 100 ether, feePips);
+        uint256 outNoFee = calculateExactInputSwap(amountIn, 200 ether, 100 ether, 0);
+        uint256 expectedFee = outNoFee > outWithFee ? outNoFee - outWithFee : 0; // fee in wBLT (output)
+
+        // Perform swap: token1 (token2) -> token0 (wBLT), exact input
+        swapRouter.swap(key1, SwapParams({
+            zeroForOne: false,
+            amountSpecified: -int256(amountIn),
+            sqrtPriceLimitX96: MAX_PRICE_LIMIT
+        }), PoolSwapTest.TestSettings({ takeClaims: false, settleUsingBurn: false }), "");
+
+        assertEq(feeProcessor.lastAmount(), expectedFee, "fee mismatch (x->wBLT exact in)");
+        assertEq(feeProcessor.calls(), 1, "collectFee not called");
+    }
+
+    // token2 -> wBLT, exact output: fee in wBLT (output side)
+    function test_fee_token2ToWblt_exactOutput() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+
+        uint256 amountOut = 15 ether; // wBLT out
+        uint256 feePips = 3000; // 0.3%
+
+        // Fee is percentage of specified output since fee currency = wBLT = specified
+        uint256 expectedFee = (amountOut * feePips) / 1_000_000;
+
+        // Perform swap: token1 (token2) -> token0 (wBLT), exact output
+        swapRouter.swap(key1, SwapParams({
+            zeroForOne: false,
+            amountSpecified: int256(amountOut),
+            sqrtPriceLimitX96: MAX_PRICE_LIMIT
+        }), PoolSwapTest.TestSettings({ takeClaims: false, settleUsingBurn: false }), "");
+
+        assertEq(feeProcessor.lastAmount(), expectedFee, "fee mismatch (x->wBLT exact out)");
+        assertEq(feeProcessor.calls(), 1, "collectFee not called");
+    }
+
     function test_fuzz_constantProductMath(
         uint128 reserve0,
         uint128 reserve1,

@@ -23,6 +23,8 @@ contract MockHookPoolManager {
     
     // Store pool fees for testing
     mapping(bytes32 => uint24) public poolFees;
+    // Optional override for sqrtPriceX96 (global for tests)
+    uint160 public sqrtPriceX96Override;
     
     // Pools slot from StateLibrary
     bytes32 constant POOLS_SLOT = bytes32(uint256(6));
@@ -48,6 +50,11 @@ contract MockHookPoolManager {
             }
             IERC20(token).transfer(to, amount);
         }
+    }
+
+    /// @notice Test helper to override the simulated sqrtPriceX96 returned by extsload
+    function setSqrtPriceX96(uint160 v) external {
+        sqrtPriceX96Override = v;
     }
 
     // ------------------------------------------------------------------
@@ -110,8 +117,8 @@ contract MockHookPoolManager {
         // Bits 208-231: lpFee (24 bits)
         // Bits 232-255: empty (24 bits)
         
-        // Return a default slot0 with fee of 3000 (0.3%)
-        uint256 sqrtPriceX96 = 1 << 96; // price = 1
+        // Return a slot0 with fee of 3000 (0.3%) and configurable sqrtPriceX96
+        uint256 sqrtPriceX96 = sqrtPriceX96Override != 0 ? sqrtPriceX96Override : (1 << 96); // price = 1 by default
         int256 tick = 0;
         uint256 protocolFee = 0;
         uint256 lpFee = 3000; // 0.3%

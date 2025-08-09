@@ -19,6 +19,8 @@ import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {CurrencyDelta} from "@uniswap/v4-core/src/libraries/CurrencyDelta.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {FixedPoint96} from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
 
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
 import {IFeeProcessor} from "./interfaces/IFeeProcessor.sol";
@@ -235,54 +237,69 @@ contract DeliHook is Ownable2Step, BaseHook {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Check if this is an internal buy-back swap
-        bool isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG
+        _isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG
             && sender == address(feeProcessor);
 
         // Determine swap metadata
         bool exactInput = params.amountSpecified < 0;
-        bool zeroForOne = params.zeroForOne;
 
-        // Identify specified currency to compute absolute amount
+        // Identify specified token index
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+
+        // Determine absolute amount of the specified token (v4 deltas are keyed to the specified token)
         uint256 absAmountSpecified = exactInput
             ? uint256(uint128(uint256(-params.amountSpecified)))
             : uint256(uint128(uint256(params.amountSpecified)));
 
-        // Get the actual fee for this pool from PoolManager
-        (,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
+        // Get the current sqrt price and LP fee for this pool from PoolManager
+        (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
 
-        // Compute fee amount based on actual pool fee
-        uint256 feeAmount = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
+        // Compute base fee in specified-token units
+        // We first denominate the fee in the specified token, then convert to the
+        // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
+        uint256 baseFeeSpecified = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
 
-        // Identify whether this is BMX/wBLT pool (different logic)
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX) || (Currency.unwrap(key.currency1) == BMX);
+        // Identify fee token (BMX on BMX pools, otherwise wBLT) and persist immediately
+        bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX)
+            ? (Currency.unwrap(key.currency0) == BMX)
+            : (Currency.unwrap(key.currency0) == WBLT);
+        _pendingCurrency = feeCurrencyIs0 ? key.currency0 : key.currency1;
 
-        // Identify fee token
-        Currency feeCurrency = isBmxPool
-            ? (key.currency0 == Currency.wrap(BMX) ? key.currency0 : key.currency1)
-            : (key.currency0 == Currency.wrap(WBLT) ? key.currency0 : key.currency1);
-
-        // Identify input currency
-        Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
+        // Convert fee to feeCurrency units if it differs from specified token
+        // Price p = (sqrtPriceX96^2) / 2^192 (token1 per token0).
+        // Conversions follow v4 rounding conventions:
+        //  - token0 -> token1: floor(base * p)
+        //  - token1 -> token0: ceil(base / p)
+        if (feeCurrencyIs0 == specifiedIs0) {
+            _pendingFee = baseFeeSpecified;
+        } else {
+            if (specifiedIs0) {
+                // specified = token0, feeCurrency = token1
+                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+            } else {
+                // specified = token1, feeCurrency = token0
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
+                _pendingFee = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
+            }
+        }
 
         // For non-BMX pools: use BeforeSwapDelta when fee is on input side (exact input swaps)
         // Never pull tokens from sender for internal swaps (fees still apply but are handled differently)
-        _pullFromSender = (!isInternalSwap && !isBmxPool && feeCurrency == inputCurrency && exactInput);
-
-        // Persist info for _afterSwap
-        _pendingFee = feeAmount;
-        _pendingCurrency = feeCurrency;
-        _isInternalSwap = isInternalSwap;
+        bool feeMatchesSpecified = (feeCurrencyIs0 == specifiedIs0);
+        bool isFeeBmx = Currency.unwrap(_pendingCurrency) == BMX;
+        _pullFromSender = (!_isInternalSwap && !isFeeBmx && feeMatchesSpecified && exactInput);
 
         // Calculate BeforeSwapDelta
         int128 specifiedDelta = 0;
 
-        if (_pullFromSender && feeAmount > 0) {
+        if (_pullFromSender && _pendingFee > 0) {
             // For exact input with fee on input side:
             // Reduce the swap input by the fee amount by returning a positive delta
-            specifiedDelta = SafeCast.toInt128(int256(feeAmount));
-        } else if (isBmxPool && feeCurrency == inputCurrency && feeAmount > 0) {
+            specifiedDelta = SafeCast.toInt128(int256(_pendingFee));
+        } else if (isFeeBmx && feeMatchesSpecified && _pendingFee > 0) {
             // BMX pool: pre-credit to offset later take()
-            specifiedDelta = SafeCast.toInt128(int256(feeAmount));
+            specifiedDelta = SafeCast.toInt128(int256(_pendingFee));
         }
 
         return (
@@ -334,12 +351,14 @@ contract DeliHook is Ownable2Step, BaseHook {
                 feeProcessor.collectFee(key, feeOwed);
             }
 
-            // Only return positive delta when fee is on OUTPUT side
-            Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
-
-            // If fee was NOT handled by BeforeSwapDelta (i.e., fee is on output side)
-            if (Currency.unwrap(feeCurrency) != Currency.unwrap(inputCurrency)) {
-                // Return positive delta to offset the negative delta created by take()
+            // Only return positive delta when fee is on the unspecified side (relative to specified token)
+            // After-swap delta must be expressed in the unspecified token per v4.
+            bool exactInput = params.amountSpecified < 0;
+            bool zeroForOne = params.zeroForOne;
+            Currency specifiedCurrency =
+                zeroForOne ? (exactInput ? key.currency0 : key.currency1) : (exactInput ? key.currency1 : key.currency0);
+            if (Currency.unwrap(feeCurrency) != Currency.unwrap(specifiedCurrency)) {
+                // Return positive delta in the unspecified token equal to the fee taken
                 hookDeltaUnspecified = SafeCast.toInt128(int256(feeOwed));
             }
         }
