@@ -28,6 +28,7 @@ import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.so
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiPoolCustomCurve} from "src/base/MultiPoolCustomCurve.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
 
 /// @notice Fee pipeline integration tests for constant-product DeliHookConstantProduct
 contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
@@ -40,6 +41,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     DailyEpochGauge gauge;
     DeliHookConstantProduct hook;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -117,6 +119,10 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
 
         // V2 hook doesn't need approvals - fees are implicit in swap math
 
@@ -243,6 +249,22 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     function _feeAmt(uint256 amtIn) internal pure returns (uint256) {
         return (amtIn * 3000) / 1e6; // 0.3 %
     }
+    
+    // Helper to calculate fee when taken from output (for exact input swaps)
+    function _feeAmtFromOutput(uint256 amtIn, uint256 reserveIn, uint256 reserveOut, uint256 feeBps) internal pure returns (uint256) {
+        // Calculate output with fee
+        uint256 feeBasis = 1000000 - feeBps;
+        uint256 amountInWithFee = amtIn * feeBasis;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1000000 + amountInWithFee;
+        uint256 outputWithFee = numerator / denominator;
+        
+        // Calculate theoretical output without fee
+        uint256 outputWithoutFee = (amtIn * reserveOut) / (reserveIn + amtIn);
+        
+        // Fee is the difference
+        return outputWithoutFee > outputWithFee ? outputWithoutFee - outputWithFee : 0;
+    }
 
     /*//////////////////////////////////////////////////////////////
                        TESTS – pull-from-sender path
@@ -315,10 +337,15 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     function testWbltToBmxCanonical() public {
         uint256 input = 1e17;
 
+        // Get reserves before swap
+        (uint128 r0, uint128 r1) = hook.getReserves(canonicalKey.toId());
+
         // wBLT (token1) -> BMX swap on canonical pool
         poolManager.unlock(abi.encode(address(wblt), input, true)); // true = use canonical
 
-        uint256 feeAmt = _feeAmt(input);
+        // For wBLT -> BMX swap on BMX pool, fee is in BMX (output), so use output-based calculation
+        // Since zeroForOne = false, reserveIn = r1 (wBLT), reserveOut = r0 (BMX)
+        uint256 feeAmt = _feeAmtFromOutput(input, r1, r0, 3000);
         uint256 buybackPortion = (feeAmt * fp.buybackBps()) / 1e4;
         uint256 voterPortion = feeAmt - buybackPortion;
 
@@ -365,9 +392,14 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     //////////////////////////////////////////////////////////////*/
     function testClaimVoterFees() public {
         uint256 input = 2e17;
+        
+        // Get reserves before swap to calculate fee correctly
+        (uint128 r0, uint128 r1) = hook.getReserves(otherKey.toId());
+        
         poolManager.unlock(abi.encode(address(other), input));
 
-        uint256 feeAmt = _feeAmt(input);
+        // For OTHER -> wBLT swap, fee is in wBLT (output), so use output-based calculation
+        uint256 feeAmt = _feeAmtFromOutput(input, r0, r1, 3000);
         uint256 voterPortion = feeAmt - (feeAmt * fp.buybackBps()) / 1e4;
         assertEq(fp.pendingWbltForVoter(), voterPortion, "voter buf");
 
