@@ -3,6 +3,10 @@ pragma solidity ^0.8.26;
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {PositionInfo, PositionInfoLibrary} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
@@ -14,18 +18,26 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
 import {IPoolKeys} from "./interfaces/IPoolKeys.sol";
 import {IV2PositionHandler} from "./interfaces/IV2PositionHandler.sol";
 
+/// @dev Lightweight interface to support optimized unsubscribe with context
+interface IUnsubscribeWithContext {
+    function notifyUnsubscribeWithContext(uint256 tokenId, bytes calldata data) external;
+}
+
 /**
  * @title PositionManagerAdapter
  * @notice Modular adapter that routes position management calls to appropriate handlers
  * @dev Implements ISubscriber to receive notifications and forwards them to gauges
  */
 contract PositionManagerAdapter is ISubscriber, Ownable2Step {
+    using PoolIdLibrary for PoolKey;
     /*//////////////////////////////////////////////////////////////
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
 
     // V4 PositionManager address for poolKeys lookup
-    address public immutable positionManager;
+    address public immutable POSITION_MANAGER;
+    // Uniswap V4 PoolManager for slot0 reads (tick)
+    IPoolManager public immutable POOL_MANAGER;
 
     // Array of registered position handlers
     IPositionHandler[] public handlers;
@@ -53,14 +65,15 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
                                 CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(address _dailyEpochGauge, address _incentiveGauge, address _positionManager) Ownable(msg.sender) {
-        if (_dailyEpochGauge == address(0) || _incentiveGauge == address(0) || _positionManager == address(0)) {
+    constructor(address _dailyEpochGauge, address _incentiveGauge, address _positionManager, address _poolManager) Ownable(msg.sender) {
+        if (_dailyEpochGauge == address(0) || _incentiveGauge == address(0) || _positionManager == address(0) || _poolManager == address(0)) {
             revert DeliErrors.ZeroAddress();
         }
 
         dailyEpochGauge = ISubscriber(_dailyEpochGauge);
         incentiveGauge = ISubscriber(_incentiveGauge);
-        positionManager = _positionManager;
+        POOL_MANAGER = IPoolManager(_poolManager);
+        POSITION_MANAGER = _positionManager;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -70,7 +83,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @dev Only allow calls from PositionManager, handlers, or hooks
     modifier onlyAuthorizedCaller() {
         if (
-            !(msg.sender == positionManager)
+            !(msg.sender == POSITION_MANAGER)
             && !isAuthorizedCaller[msg.sender]
         ) {
             revert DeliErrors.NotAuthorized();
@@ -198,10 +211,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @dev Internal helper to get PoolKey from truncated poolId with V2 fallback
     function _getPoolKeyFromTruncatedId(bytes25 truncatedPoolId) internal view returns (PoolKey memory) {
-        if (positionManager == address(0)) revert DeliErrors.ZeroAddress();
+        if (POSITION_MANAGER == address(0)) revert DeliErrors.ZeroAddress();
         
         // First try to get from V4 PositionManager
-        PoolKey memory poolKey = IPoolKeys(positionManager).poolKeys(truncatedPoolId);
+        PoolKey memory poolKey = IPoolKeys(POSITION_MANAGER).poolKeys(truncatedPoolId);
         
         // If not found (tickSpacing = 0), check V2 pools
         if (poolKey.tickSpacing == 0) {
@@ -239,9 +252,36 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external override onlyAuthorizedCaller {
-        // Forward to both gauges
-        dailyEpochGauge.notifyUnsubscribe(tokenId);
-        incentiveGauge.notifyUnsubscribe(tokenId);
+        // Pre-fetch shared context once via direct handler to avoid extra external self-calls
+        IPositionHandler handler = getHandler(tokenId);
+        (PoolKey memory key, PositionInfo info) = handler.getPoolAndPositionInfo(tokenId);
+        uint128 liquidity = handler.getPositionLiquidity(tokenId);
+
+        PoolId pid = key.toId();
+        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+
+        // Encode payloads
+        // Daily gauge expects: (pid, tickLower, tickUpper, liquidity, currentTick)
+        bytes memory dailyData = abi.encode(
+            bytes32(PoolId.unwrap(pid)),
+            info.tickLower(),
+            info.tickUpper(),
+            liquidity,
+            currentTick
+        );
+        // Incentive gauge expects: (pid, tickLower, tickUpper, liquidity, currentTick)
+        bytes memory incData = abi.encode(
+            bytes32(PoolId.unwrap(pid)),
+            info.tickLower(),
+            info.tickUpper(),
+            liquidity,
+            currentTick
+        );
+
+        // Optimized path (with fallback)
+        IUnsubscribeWithContext(address(dailyEpochGauge)).notifyUnsubscribeWithContext(tokenId, dailyData);
+        IUnsubscribeWithContext(address(incentiveGauge)).notifyUnsubscribeWithContext(tokenId, incData);
     }
 
     /// @inheritdoc ISubscriber

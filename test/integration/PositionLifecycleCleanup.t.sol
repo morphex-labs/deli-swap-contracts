@@ -119,7 +119,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // just needs to be non-zero & authorised
         // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
@@ -129,6 +129,9 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));
         inc.setPositionManagerAdapter(address(adapter));
+
+        // Authorize hook after deployment
+        adapter.setAuthorizedCaller(address(hook), true);
 
         // 8. Prepare reward token allowance for incentive creation
         wblt.approve(address(inc), type(uint256).max);
@@ -200,6 +203,52 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        GAS: unsubscribe with multi-token incentives
+    //////////////////////////////////////////////////////////////*/
+    function testGasUnsubscribeMultiToken() public {
+        // 1) Mint a fresh position and subscribe
+        uint256 tokenId;
+        (tokenId,) = EasyPosm.mint(
+            positionManager,
+            key,
+            -1800,
+            1800,
+            1e22,
+            type(uint256).max,
+            type(uint256).max,
+            address(this),
+            block.timestamp + 1 hours,
+            bytes("")
+        );
+        positionManager.subscribe(tokenId, address(adapter), bytes(""));
+
+        // 2) Activate daily stream and baseline incentive
+        _activateStream();
+
+        // 3) Add multiple concurrent incentive tokens
+        uint256 NUM = 10;
+        for (uint256 i; i < NUM; ++i) {
+            MockERC20 t = new MockERC20(string(abi.encodePacked("INC", i)), string(abi.encodePacked("I", i)), 18);
+            t.mint(address(this), 1e24);
+            IERC20 it = IERC20(address(t));
+            inc.setWhitelist(it, true);
+            uint256 amt = 200 ether;
+            t.approve(address(inc), amt);
+            inc.createIncentive(key, it, amt);
+        }
+
+        // 4) Move some time forward and poke so accumulators reflect incentives
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(address(hook));
+        inc.pokePool(key);
+
+        // 5) Snapshot gas specifically for unsubscribe path (adapter.notifyUnsubscribe)
+        vm.startSnapshotGas("adapter_unsubscribe_notify_multi");
+        positionManager.unsubscribe(tokenId);
+        vm.stopSnapshotGas();
+    }
+
+    /*//////////////////////////////////////////////////////////////
                     TEST: unsubscribe cleans indices
     //////////////////////////////////////////////////////////////*/
     function testUnsubscribeCleansOwnerIndices() public {
@@ -238,15 +287,18 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         // 5. After unsubscribe owner aggregate should be zero (index cleaned)
         uint256 pendingAfter = gauge.pendingRewardsOwner(pid, address(this));
-        assertEq(pendingAfter, 0, "owner index not cleaned after unsubscribe");
+        // With deferred claims, pending should still exist immediately after unsubscribe
+        assertGt(pendingAfter, 0, "no pending after unsubscribe");
 
-        // Additional safety: claimAllForOwner should transfer zero tokens
+        // Claim should now transfer BMX and prune indices
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
         uint256 balBefore = bmx.balanceOf(address(this));
         gauge.claimAllForOwner(arr, address(this));
         uint256 balAfter = bmx.balanceOf(address(this));
-        assertEq(balAfter - balBefore, 0, "unexpected claim after unsubscribe");
+        assertGt(balAfter - balBefore, 0, "expected BMX claimed after deferred unsubscribe");
+        // Pending should now be zero and indices pruned
+        assertEq(gauge.pendingRewardsOwner(pid, address(this)), 0, "pending not cleaned after claim");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -375,14 +427,17 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         positionManager.unsubscribe(tokenId);
 
+        // Deferred claims: still pending until claimed
         uint256 pendingAfter = _totalPendingInc();
-        assertEq(pendingAfter, 0, "inc index not cleaned");
+        assertGt(pendingAfter, 0, "inc pending unexpectedly zero after unsubscribe");
 
+        // Claim and expect payout, then cleanup
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
         uint256 balBefore = wblt.balanceOf(address(this));
         inc.claimAllForOwner(arr, address(this));
-        assertEq(wblt.balanceOf(address(this)) - balBefore, 0, "inc claim non-zero post-cleanup");
+        assertGt(wblt.balanceOf(address(this)) - balBefore, 0, "no inc payout after claim");
+        assertEq(_totalPendingInc(), 0, "inc pending not zero after claim");
     }
 
     function testIncBurnCleansOwnerIndices() public {
@@ -452,7 +507,10 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             uint128 liq = positionManager.getPositionLiquidity(tokenId);
             EasyPosm.decreaseLiquidity(positionManager, tokenId, uint256(liq), 0, 0, address(this), block.timestamp + 1 hours, bytes(""));
         }
-
+        // After action, claim to finalize and prune if needed
+        PoolId[] memory arr = new PoolId[](1);
+        arr[0] = pid;
+        inc.claimAllForOwner(arr, address(this));
         assertEq(_totalPendingInc(), 0, "inc pending not zero after cleanup");
     }
 } 

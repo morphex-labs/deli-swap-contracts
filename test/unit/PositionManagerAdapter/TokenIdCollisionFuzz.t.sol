@@ -17,6 +17,7 @@ import {V2PositionHandler} from "../../../src/handlers/V2PositionHandler.sol";
 import {V4PositionHandler} from "../../../src/handlers/V4PositionHandler.sol";
 import {IPositionHandler} from "../../../src/interfaces/IPositionHandler.sol";
 import {MockPositionManager} from "../../mocks/MockPositionManager.sol";
+import {MockPoolManager} from "../../mocks/MockPoolManager.sol";
 import {MockV2Hook} from "../../mocks/MockV2Hook.sol";
 import {MockDailyEpochGauge} from "../../mocks/MockDailyEpochGauge.sol";
 import {MockIncentiveGauge} from "../../mocks/MockIncentiveGauge.sol";
@@ -33,6 +34,7 @@ contract TokenIdCollisionFuzzTest is Test {
     V2PositionHandler v2Handler;
     V4PositionHandler v4Handler;
     MockPositionManager mockPositionManager;
+    MockPoolManager mockPoolManager;
     MockV2Hook mockV2Hook;
     MockDailyEpochGauge mockDailyGauge;
     MockIncentiveGauge mockIncentiveGauge;
@@ -44,6 +46,7 @@ contract TokenIdCollisionFuzzTest is Test {
     function setUp() public {
         // Deploy mocks
         mockPositionManager = new MockPositionManager();
+        mockPoolManager = new MockPoolManager();
         mockV2Hook = new MockV2Hook();
         mockDailyGauge = new MockDailyEpochGauge();
         mockIncentiveGauge = new MockIncentiveGauge();
@@ -53,7 +56,7 @@ contract TokenIdCollisionFuzzTest is Test {
         v4Handler = new V4PositionHandler(address(mockPositionManager));
         
         // Deploy adapter
-        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager));
+        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager), address(mockPoolManager));
         
         // Set up v2Handler
         v2Handler.setPositionManagerAdapter(address(adapter));

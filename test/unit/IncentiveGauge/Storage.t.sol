@@ -141,7 +141,7 @@ contract IncentiveGauge_StorageTest is Test {
         MockAdapterForKeys ad = new MockAdapterForKeys(address(pk));
         gauge.setPositionManagerAdapter(address(ad));
         vm.prank(hookAddr);
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
     }
 
     /* createIncentive basic */

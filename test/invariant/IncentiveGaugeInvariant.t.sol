@@ -58,7 +58,7 @@ contract IncentiveGaugeInvariant is Test {
         pid = key.toId();
 
         // Initialize pool state once to satisfy gauge expectations
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
 
         // ensure tokens approved
         t0.approve(address(gauge), type(uint256).max);

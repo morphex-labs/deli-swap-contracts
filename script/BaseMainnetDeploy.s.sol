@@ -238,7 +238,8 @@ contract BaseMainnetDeploy is Script {
         positionManagerAdapter = new PositionManagerAdapter(
             address(dailyEpochGauge),
             address(incentiveGauge),
-            address(positionManager)
+            address(positionManager),
+            address(poolManager)
         );
         console.log("PositionManagerAdapter deployed:", address(positionManagerAdapter));
     }

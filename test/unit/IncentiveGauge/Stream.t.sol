@@ -121,7 +121,7 @@ contract IncentiveGauge_StreamTest is Test {
         MockAdapterForKeys ad = new MockAdapterForKeys(address(pk));
         gauge.setPositionManagerAdapter(address(ad));
         vm.prank(hook);
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
     }
 
     /*//////////////////////////////////////////////////////////////

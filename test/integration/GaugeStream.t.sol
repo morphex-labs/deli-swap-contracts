@@ -88,7 +88,7 @@ contract GaugeStream_IT is Test, Deployers {
         fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
 
         // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
@@ -98,6 +98,8 @@ contract GaugeStream_IT is Test, Deployers {
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));
         inc.setPositionManagerAdapter(address(adapter));
+        // Authorize position manager now; authorize hook AFTER hook is deployed below
+        adapter.setAuthorizedCaller(address(positionManager), true);
 
         // 6. Deploy hook
         hook = new DeliHook{salt: salt}(
@@ -116,6 +118,9 @@ contract GaugeStream_IT is Test, Deployers {
         // Configure dummy incentive gauge so hook beforeInitialize passes.
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Authorize hook as an adapter caller now that it exists
+        adapter.setAuthorizedCaller(address(hook), true);
 
         // 7. Initialise pool
         key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))});

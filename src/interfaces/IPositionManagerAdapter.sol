@@ -14,5 +14,4 @@ interface IPositionManagerAdapter is ISubscriber {
     function getPoolKeyFromPositionInfo(PositionInfo info) external view returns (PoolKey memory);
     function getPoolKeyFromPoolId(PoolId poolId) external view returns (PoolKey memory);
     function getHandler(uint256 tokenId) external view returns (IPositionHandler);
-    function positionManager() external view returns (address);
 }

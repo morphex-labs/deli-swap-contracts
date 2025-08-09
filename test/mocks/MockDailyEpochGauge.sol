@@ -56,7 +56,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         return 0;
     }
 
-    function initPool(PoolId pid, int24 initialTick) external override {
+    function initPool(PoolKey memory key, int24 initialTick) external override {
         // No-op
     }
     

@@ -62,7 +62,7 @@ contract IncentiveGauge_ViewTest is Test {
         MockAdapterForKeys ad = new MockAdapterForKeys(address(pk));
         gauge.setPositionManagerAdapter(address(ad));
         vm.prank(hookAddr);
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
     }
 
     function _fund(IERC20 tok,uint256 amt) internal { tok.approve(address(gauge),amt); gauge.createIncentive(key,tok,amt);}    

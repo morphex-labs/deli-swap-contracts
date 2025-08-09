@@ -134,13 +134,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         gauge.setFeeProcessor(address(fp));
         
         // Deploy PositionManagerAdapter and V2PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v2Handler = new V2PositionHandler(address(hook));
         
         // Register V2 handler and wire up the adapter
         adapter.addHandler(address(v2Handler));
         adapter.setAuthorizedCaller(address(hook), true);
         adapter.setAuthorizedCaller(address(v2Handler), true); // V2Handler needs to call adapter
+        adapter.setAuthorizedCaller(address(positionManager), true); // allow PM calls if any
         
         // Set the V2 handler in the hook
         hook.setV2PositionHandler(address(v2Handler));

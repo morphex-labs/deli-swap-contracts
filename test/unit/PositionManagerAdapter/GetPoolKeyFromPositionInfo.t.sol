@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {PositionManagerAdapter} from "../../../src/PositionManagerAdapter.sol";
 import {V2PositionHandler} from "../../../src/handlers/V2PositionHandler.sol";
 import {V4PositionHandler} from "../../../src/handlers/V4PositionHandler.sol";
+import {MockPoolManager} from "../../mocks/MockPoolManager.sol";
 import {MockPositionManager} from "../../mocks/MockPositionManager.sol";
 import {MockV2Hook} from "../../mocks/MockV2Hook.sol";
 import {MockDailyEpochGauge} from "../../mocks/MockDailyEpochGauge.sol";
@@ -26,12 +27,14 @@ contract GetPoolKeyFromPositionInfoTest is Test {
     V4PositionHandler v4Handler;
     MockPositionManager mockPositionManager;
     MockV2Hook mockV2Hook;
-    
+    MockPoolManager mockPoolManager;
+
     address alice = makeAddr("alice");
     
     function setUp() public {
         // Deploy mocks
         mockPositionManager = new MockPositionManager();
+        mockPoolManager = new MockPoolManager();
         mockV2Hook = new MockV2Hook();
         MockDailyEpochGauge mockDailyGauge = new MockDailyEpochGauge();
         MockIncentiveGauge mockIncentiveGauge = new MockIncentiveGauge();
@@ -41,7 +44,7 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         v4Handler = new V4PositionHandler(address(mockPositionManager));
         
         // Deploy adapter
-        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager));
+        adapter = new PositionManagerAdapter(address(mockDailyGauge), address(mockIncentiveGauge), address(mockPositionManager), address(mockPoolManager));
         
         // Set up v2Handler
         v2Handler.setPositionManagerAdapter(address(adapter));

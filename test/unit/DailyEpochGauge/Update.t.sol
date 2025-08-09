@@ -177,7 +177,7 @@ contract DailyEpochGauge_UpdateTest is Test {
 
         // initialise pool so accumulator timestamps exist before time warps
         vm.prank(hookAddr);
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
     }
 
     function _callUpdate(uint128 liq) internal returns (bytes32 posKey) {

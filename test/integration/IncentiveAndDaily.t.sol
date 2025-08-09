@@ -117,6 +117,20 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         /***************************************************
          * 4. Pool setup & liquidity                      *
          ***************************************************/
+
+        // Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(daily), address(inc), address(positionManager), address(poolManager));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setAuthorizedCaller(address(hook), true);
+        
+        // Update gauges to use the adapter
+        daily.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
+
         key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
@@ -130,18 +144,6 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         // Mint two positions: one for DailyGauge, one for IncentiveGauge
         (tokenDailyId,) = EasyPosm.mint(positionManager, key, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
         (tokenIncId,)   = EasyPosm.mint(positionManager, key, -30000, 30000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
-
-        // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(daily), address(inc), address(positionManager));
-        v4Handler = new V4PositionHandler(address(positionManager));
-        
-        // Register V4 handler and wire up the adapter
-        adapter.addHandler(address(v4Handler));
-        adapter.setAuthorizedCaller(address(positionManager), true);
-        
-        // Update gauges to use the adapter
-        daily.setPositionManagerAdapter(address(adapter));
-        inc.setPositionManagerAdapter(address(adapter));
 
         // Subscribe positions via PositionManagerAdapter
         positionManager.subscribe(tokenDailyId, address(adapter), bytes(""));

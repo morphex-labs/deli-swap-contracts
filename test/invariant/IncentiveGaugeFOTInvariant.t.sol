@@ -50,7 +50,7 @@ contract IncentiveGaugeFOTInvariant is Test {
         pid = key.toId();
 
         // Initialize pool state in the gauge once (hook-gated init)
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
 
         fot.approve(address(gauge), type(uint256).max);
 

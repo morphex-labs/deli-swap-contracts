@@ -159,9 +159,8 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     /// @notice Bootstraps the DailyEpochGauge and IncentiveGauge pool state.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
-        PoolId pid = key.toId();
-        dailyEpochGauge.initPool(pid, tick);
-        incentiveGauge.initPool(pid, tick);
+        dailyEpochGauge.initPool(key, tick);
+        incentiveGauge.initPool(key, tick);
 
         return BaseHook.afterInitialize.selector;
     }

@@ -98,6 +98,9 @@ contract IncentiveGauge is Ownable2Step {
     // whitelist of reward tokens
     mapping(IERC20 => bool) public whitelist;
 
+    // cache tickSpacing per pool
+    mapping(PoolId => int24) internal poolTickSpacing;
+
     /*//////////////////////////////////////////////////////////////
                             EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -160,10 +163,14 @@ contract IncentiveGauge is Ownable2Step {
 
     /// @notice One-time pool bootstrap called by hooks after pool initialization.
     /// @dev Prevents user-driven initialization at incorrect ticks.
-    function initPool(PoolId pid, int24 initialTick) external onlyHook {
+    function initPool(PoolKey memory key, int24 initialTick) external onlyHook {
+        PoolId pid = key.toId();
         RangePool.State storage pool = poolRewards[pid];
         if (pool.lastUpdated != 0) revert DeliErrors.AlreadySet();
         pool.initialize(initialTick);
+        // Cache tickSpacing once using
+        int24 ts = key.tickSpacing;
+        poolTickSpacing[pid] = ts;
     }
 
     /// @notice Called by DeliHook to update pool state
@@ -247,6 +254,10 @@ contract IncentiveGauge is Ownable2Step {
 
         // Claim and transfer
         amount = _claimRewards(positionKey, token, to);
+        // If this position was unsubscribed (liq=0) and fully settled across tokens, prune indices
+        if (positionLiquidity[positionKey] == 0) {
+            _prunePositionIfSettled(pid, positionKey, owner);
+        }
     }
 
     /// @notice Claim all token rewards for an owner across multiple pools.
@@ -284,6 +295,7 @@ contract IncentiveGauge is Ownable2Step {
                 }
 
                 _accrueAndClaimForPosition(pid, posKey, owner);
+                _prunePositionIfSettled(pid, posKey, owner);
             }
         }
     }
@@ -409,6 +421,25 @@ contract IncentiveGauge is Ownable2Step {
         }
     }
 
+    /// @dev Remove position indices and clear per-token state if fully settled and zero-liquidity
+    function _prunePositionIfSettled(PoolId pid, bytes32 posKey, address ownerAddr) internal {
+        if (positionLiquidity[posKey] != 0) return;
+        IERC20[] storage toks = poolTokens[pid];
+        for (uint256 i; i < toks.length; ++i) {
+            if (positionRewards[posKey][toks[i]].rewardsAccrued != 0) {
+                return;
+            }
+        }
+        // Remove indices and clean tick/tokenId mapping
+        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, posKey);
+        delete positionTicks[posKey];
+        delete positionTokenIds[posKey];
+        // Clear per-token state
+        for (uint256 i; i < toks.length; ++i) {
+            delete positionRewards[posKey][toks[i]];
+        }
+    }
+
     /// @dev Apply liquidity delta using only pid; positiveAdd indicates whether to pass token list for outside init
     function _applyLiquidityDeltaByPid(PoolId pid, int24 lower, int24 upper, int128 liquidityDelta, bool positiveAdd)
         internal
@@ -428,8 +459,7 @@ contract IncentiveGauge is Ownable2Step {
                 tickLower: lower,
                 tickUpper: upper,
                 liquidityDelta: liquidityDelta,
-                tickSpacing: IPoolKeys(positionManagerAdapter.positionManager()).poolKeys(bytes25(PoolId.unwrap(pid)))
-                    .tickSpacing
+                tickSpacing: poolTickSpacing[pid]
             }),
             addrs
         );
@@ -501,14 +531,13 @@ contract IncentiveGauge is Ownable2Step {
 
     /// @dev internal helper to update pool state by pid
     function _updatePoolByPid(PoolId pid) internal {
-        PoolKey memory key = IPoolKeys(positionManagerAdapter.positionManager()).poolKeys(bytes25(PoolId.unwrap(pid)));
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        _updatePool(key, pid, currentTick);
+        _updatePool(pid, currentTick);
     }
 
     /// @dev internal helper to update pool state
-    function _updatePool(PoolKey memory key, PoolId pid, int24 currentTick) internal {
+    function _updatePool(PoolId pid, int24 currentTick) internal {
         IERC20[] storage toks = poolTokens[pid];
         uint256 len = toks.length;
         if (len == 0) return;
@@ -540,7 +569,7 @@ contract IncentiveGauge is Ownable2Step {
                 rates[i] = avgRate;
             }
             // Always call sync when initialized so tick adjusts even if dt == 0
-            pool.sync(addrs, rates, key.tickSpacing, currentTick);
+            pool.sync(addrs, rates, poolTickSpacing[pid], currentTick);
         }
 
         // Bookkeeping for all tokens
@@ -569,6 +598,7 @@ contract IncentiveGauge is Ownable2Step {
             }
         }
     }
+
 
     /// @dev internal: claim rewards for a position and transfer to recipient
     function _claimRewards(bytes32 posKey, IERC20 token, address recipient) internal returns (uint256 amount) {
@@ -629,42 +659,41 @@ contract IncentiveGauge is Ownable2Step {
         }
     }
 
-    /// @notice Called by PositionManagerAdapter when a position is removed.
-    function notifyUnsubscribe(uint256 tokenId) external onlyPositionManagerAdapter {
-        (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
-        uint128 liquidity = positionManagerAdapter.getPositionLiquidity(tokenId);
-        address owner = positionManagerAdapter.ownerOf(tokenId);
-        PoolId pid = key.toId();
+    /// @notice Optimized unsubscribe path with pre-fetched context from the adapter
+    /// @dev Context layout: (bytes32 poolIdRaw, int24 tickLower, int24 tickUpper, uint128 liquidity, int24 currentTick)
+    function notifyUnsubscribeWithContext(uint256 tokenId, bytes calldata data) external onlyPositionManagerAdapter {
+        (
+            bytes32 poolIdRaw,
+            int24 tickLower,
+            int24 tickUpper,
+            uint128 liquidity,
+            int24 currentTick
+        ) = abi.decode(data, (bytes32, int24, int24, uint128, int24));
+
+        PoolId pid = PoolId.wrap(poolIdRaw);
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
-        // Early exit if no active incentive tokens; clean indices only
+        // Early exit if no active incentive tokens; clean indices immediately
         if (poolTokens[pid].length == 0) {
-            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
+            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, positionManagerAdapter.ownerOf(tokenId), positionKey);
             delete positionTicks[positionKey];
             delete positionTokenIds[positionKey];
             return;
         }
 
-        // Update pool state once (batched)
-        _updatePoolByPid(pid);
+        // Update pool state (use provided tick and cached spacing)
+        _updatePool(pid, currentTick);
 
-        // Accrue across all pool tokens (supports newly added incentives without resubscribe)
-        _accrueAcrossTokens(pid, positionKey, info.tickLower(), info.tickUpper(), liquidity);
+        // Accrue across all pool tokens
+        _accrueAcrossTokens(pid, positionKey, tickLower, tickUpper, liquidity);
 
         // Apply removal of liquidity in pool accounting
         if (liquidity != 0) {
-            _applyLiquidityDeltaByPid(
-                pid, info.tickLower(), info.tickUpper(), -SafeCast.toInt128(uint256(liquidity)), false
-            );
+            _applyLiquidityDeltaByPid(pid, tickLower, tickUpper, -SafeCast.toInt128(uint256(liquidity)), false);
         }
 
-        // Claim and clear per-token position state
-        _claimAcrossTokens(pid, positionKey, owner, true);
-
-        // Clean up position tracking
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
-        delete positionTicks[positionKey];
-        delete positionTokenIds[positionKey];
+        // Defer all claims for consistency; keep per-token state for later claim and prune
+        positionLiquidity[positionKey] = 0;
     }
 
     /// @notice Called by PositionManagerAdapter when a position is burned.

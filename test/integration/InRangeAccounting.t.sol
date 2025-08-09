@@ -90,7 +90,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, bmx, address(inc));
 
         // 5. Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
@@ -111,6 +111,8 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         hook.setFeeProcessor(address(this)); // prevent zero-address take
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // dummy authorised sender for addRewards
+        // Now authorize hook after it exists
+        adapter.setAuthorizedCaller(address(hook), true);
 
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));

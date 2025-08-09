@@ -102,7 +102,7 @@ contract IncentiveGauge_EdgeTest is Test {
         gauge.setPositionManagerAdapter(address(ad));
         // Initialize pool state in gauge (as hook)
         vm.prank(hook);
-        gauge.initPool(pid, 0);
+        gauge.initPool(key, 0);
     }
 
     /* multiple token incentives + claim */
