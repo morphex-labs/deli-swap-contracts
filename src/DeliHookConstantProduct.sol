@@ -27,6 +27,8 @@ import {IV2PositionHandler} from "./interfaces/IV2PositionHandler.sol";
 import {Math} from "./libraries/Math.sol";
 import {DeliErrors} from "./libraries/DeliErrors.sol";
 import {InternalSwapFlag} from "./libraries/InternalSwapFlag.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /**
  * @title DeliHookConstantProduct
@@ -211,6 +213,11 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         // Calculate the implicit fee amount for V2 swaps
         _calculateImplicitFee(key, params);
+
+        // Enforce slippage using sqrtPriceLimitX96 against the virtual V2 price after this swap (including fee removal).
+        if (params.sqrtPriceLimitX96 != 0) {
+            _enforceVirtualPriceLimit(key, params);
+        }
 
         // Store parameters for afterSwap calculation
         _swapAmountSpecified = params.amountSpecified;
@@ -519,6 +526,60 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                            INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Helper to enforce sqrtPriceLimitX96 slippage against virtual V2 price after applying swap and fee removal.
+    function _enforceVirtualPriceLimit(PoolKey calldata key, SwapParams calldata params) private view {
+        PoolId poolId = key.toId();
+        V2Pool storage pool = pools[poolId];
+
+        bool exactInput = params.amountSpecified < 0;
+        bool zeroForOne = params.zeroForOne;
+        uint256 specifiedAmount = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        uint256 otherAmount = _getUnspecifiedAmount(key, params); // out if exact in, in if exact out
+
+        uint256 r0 = uint256(pool.reserve0);
+        uint256 r1 = uint256(pool.reserve1);
+        uint256 r0p;
+        uint256 r1p;
+
+        if (exactInput) {
+            if (zeroForOne) {
+                r0p = r0 + specifiedAmount;
+                r1p = r1 - otherAmount;
+            } else {
+                r0p = r0 - otherAmount;
+                r1p = r1 + specifiedAmount;
+            }
+        } else {
+            if (zeroForOne) {
+                r0p = r0 + otherAmount;
+                r1p = r1 - specifiedAmount;
+            } else {
+                r0p = r0 - specifiedAmount;
+                r1p = r1 + otherAmount;
+            }
+        }
+
+        // Apply fee removal as done in _updateReservesAfterSwap
+        if (_pendingFeeAmount > 0) {
+            if (_pendingFeeCurrency == key.currency0) {
+                r0p -= _pendingFeeAmount;
+            } else {
+                r1p -= _pendingFeeAmount;
+            }
+        }
+
+        uint256 priceAfterX192 = FullMath.mulDiv(r1p, uint256(1) << 192, r0p);
+        uint160 sqrtAfterX96 = uint160(Math.sqrt(priceAfterX192));
+        uint160 limit = params.sqrtPriceLimitX96;
+
+        if (zeroForOne) {
+            if (sqrtAfterX96 < limit) revert DeliErrors.Slippage();
+        } else {
+            if (sqrtAfterX96 > limit) revert DeliErrors.Slippage();
+        }
+    }
+
+    /// @dev Update the reserves of a pool
     function _update(PoolId poolId, uint256 balance0, uint256 balance1) private {
         if (balance0 > type(uint128).max || balance1 > type(uint128).max) revert DeliErrors.BalanceOverflow();
         V2Pool storage pool = pools[poolId];
@@ -748,16 +809,46 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                            VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Get the reserves of a pool
+    /// @param poolId The pool ID to query
     function getReserves(PoolId poolId) external view returns (uint128, uint128) {
         V2Pool storage pool = pools[poolId];
         return (pool.reserve0, pool.reserve1);
     }
 
+    /// @notice Get the total supply of a pool
+    /// @param poolId The pool ID to query
     function getTotalSupply(PoolId poolId) external view returns (uint256) {
         return pools[poolId].totalSupply;
     }
 
+    /// @notice Get the balance of a user in a pool
+    /// @param poolId The pool ID to query
+    /// @param account The address of the user to query
     function balanceOf(PoolId poolId, address account) external view returns (uint256) {
         return liquidityShares[poolId][account];
+    }
+
+    /// @notice External getSlot0-style view for constant-product pools.
+    /// @dev    Returns virtual sqrtPriceX96 derived from reserves; protocolFee and tick are always 0 for V2 pools;
+    ///         lpFee is the per-pool LP fee.
+    /// @param poolId The pool ID to query
+    function getSlot0(IPoolManager, /*manager*/ PoolId poolId)
+        external
+        view
+        returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)
+    {
+        V2Pool storage pool = pools[poolId];
+        // Fetch fees and tick=0 from core PoolManager; we expose virtual price only
+        (, tick, protocolFee, lpFee) = StateLibrary.getSlot0(poolManager, poolId);
+
+        if (pool.reserve0 == 0 || pool.reserve1 == 0) {
+            // Uninitialized/empty: return zeros
+            return (0, tick, protocolFee, lpFee);
+        }
+
+        // priceX192 = (reserve1 / reserve0) in Q192
+        uint256 priceX192 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 192, uint256(pool.reserve0));
+        sqrtPriceX96 = uint160(Math.sqrt(priceX192));
     }
 }

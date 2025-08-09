@@ -597,6 +597,101 @@ contract V2ConstantProductHookTest is Test, Deployers {
         }), "");
     }
 
+    /*//////////////////////////////////////////////////////////////
+                              SLIPPAGE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_slippage_exactInput_zeroForOne_revertWithLimitAboveCurrent() public {
+        // Add liquidity
+        addLiquidityToPool1(100 ether, 200 ether);
+
+        // Use virtual price from hook (derived from reserves)
+        (uint160 sqrt0,,,) = hook.getSlot0(manager, id1);
+
+        // zeroForOne, exact input, limit just above virtual current -> expect revert (wrapped)
+        vm.expectRevert();
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: sqrt0 + 1}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_exactInput_zeroForOne_succeedsWithMinLimit() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        // MIN price limit should allow any zeroForOne move
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: MIN_PRICE_LIMIT}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_exactInput_oneForZero_revertWithLimitBelowCurrent() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        (uint160 sqrt0,,,) = hook.getSlot0(manager, id1);
+
+        // oneForZero increases price, so a limit just below virtual current should fail (wrapped)
+        vm.expectRevert();
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: false, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: sqrt0 - 1}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_exactInput_oneForZero_succeedsWithMaxLimit() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        // MAX price limit should allow any oneForZero move
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: false, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: MAX_PRICE_LIMIT}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_exactOutput_zeroForOne_revertWithLimitAboveCurrent() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        (uint160 sqrt0,,,) = hook.getSlot0(manager, id1);
+
+        // zeroForOne decreases price; setting limit above virtual current should fail even for exact output (wrapped)
+        vm.expectRevert();
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: true, amountSpecified: int256(1 ether), sqrtPriceLimitX96: sqrt0 + 1}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_exactOutput_oneForZero_revertWithLimitBelowCurrent() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        (uint160 sqrt0,,,) = hook.getSlot0(manager, id1);
+
+        vm.expectRevert();
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: false, amountSpecified: int256(1 ether), sqrtPriceLimitX96: sqrt0 - 1}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
+    function test_slippage_noLimit_allowsSwap() public {
+        addLiquidityToPool1(100 ether, 200 ether);
+        // sqrtPriceLimitX96 = 0 disables hook-level slippage check
+        swapRouter.swap(
+            key1,
+            SwapParams({zeroForOne: true, amountSpecified: -int256(1 ether), sqrtPriceLimitX96: 0}),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+
     function test_swap_multipleSwapsInSameBlock() public {
         // Add liquidity
         addLiquidityToPool1(1000 ether, 1000 ether);
