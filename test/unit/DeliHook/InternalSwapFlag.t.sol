@@ -88,12 +88,12 @@ contract DeliHook_InternalSwapFlagTest is Test {
         uint256 expectedFee = 1e18 * 3000 / 1_000_000; // 0.3% of 1e18
         assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
         
-        // 2. No epoch roll or pool poke (gauges should be skipped)
-        assertEq(daily.rollCalls(), 0, "daily gauge should not be rolled");
-        assertEq(daily.pokeCalls(), 0, "daily gauge should not be poked");
+        // 2. Epoch roll and pool poke (gauges should be updated)
+        assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
+        assertEq(daily.pokeCalls(), 1, "daily gauge should be poked");
         
-        // 3. IncentiveGauge not poked
-        assertEq(inc.pokeCount(), 0, "incentive gauge should not be poked");
+        // 3. IncentiveGauge poked
+        assertEq(inc.pokeCount(), 1, "incentive gauge should be poked");
     }
 
     function testNormalSwapStillUpdatesGauges() public {

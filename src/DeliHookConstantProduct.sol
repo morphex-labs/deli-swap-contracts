@@ -234,13 +234,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Calculate and update reserves
         _updateReservesAfterSwap(poolId, pool, key);
 
-        // Skip gauge updates for internal swaps but still collect fees
-        if (!_isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool
-            dailyEpochGauge.rollIfNeeded(poolId);
-            dailyEpochGauge.pokePool(key);
-            incentiveGauge.pokePool(key);
-        }
+        // Lazy-roll daily epoch & checkpoint pool
+        dailyEpochGauge.rollIfNeeded(poolId);
+        dailyEpochGauge.pokePool(key);
+        incentiveGauge.pokePool(key);
 
         // For exact input swaps where fee is from output, we need special handling
         // Check this condition before we reset the storage variables

@@ -327,13 +327,10 @@ contract DeliHook is Ownable2Step, BaseHook {
         _pendingCurrency = Currency.wrap(address(0));
         _isInternalSwap = false;
 
-        // Skip gauge updates for internal swaps but still collect fees
-        if (!isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
-            dailyEpochGauge.rollIfNeeded(key.toId());
-            dailyEpochGauge.pokePool(key);
-            incentiveGauge.pokePool(key);
-        }
+        // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
+        dailyEpochGauge.rollIfNeeded(key.toId());
+        dailyEpochGauge.pokePool(key);
+        incentiveGauge.pokePool(key);
 
         // Forward the swap fee to FeeProcessor
         int128 hookDeltaUnspecified = 0;
