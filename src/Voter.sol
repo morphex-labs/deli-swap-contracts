@@ -132,8 +132,8 @@ contract Voter is Ownable2Step {
         }
 
         // Not tallied yet – check for potential live auto-vote
-        uint8 opt = autoOption[user];
-        if (opt < 3) {
+        (uint8 opt, bool enabled) = autoVoteOf(user);
+        if (enabled) {
             option = opt;
             weight = SBF_BMX.balanceOf(user);
         } else {
@@ -173,7 +173,7 @@ contract Voter is Ownable2Step {
     /// @notice Returns a user’s auto-vote setting.
     /// @return option 0-2 chosen option; 3 when disabled
     /// @return enabled True if auto-vote is currently active
-    function autoVoteOf(address user) external view returns (uint8 option, bool enabled) {
+    function autoVoteOf(address user) public view returns (uint8 option, bool enabled) {
         uint8 opt = autoOption[user];
 
         // Check if user ever enabled auto-vote using autoIndex
