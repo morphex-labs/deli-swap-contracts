@@ -292,21 +292,21 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         PoolId poolId = key.toId();
         if (!poolInitialized[poolId]) revert DeliErrors.PoolNotInitialized();
         V2Pool storage pool = pools[poolId];
-        
+
         bool zeroForOne = params.zeroForOne;
         uint128 reserveIn = zeroForOne ? pool.reserve0 : pool.reserve1;
         uint128 reserveOut = zeroForOne ? pool.reserve1 : pool.reserve0;
 
         if (reserveIn == 0 || reserveOut == 0) revert DeliErrors.NoLiquidity();
 
-        uint256 amountSpecified = params.amountSpecified < 0 
-            ? uint256(-params.amountSpecified)
-            : uint256(params.amountSpecified);
+        uint256 amountSpecified =
+            params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
 
         // Determine whether the fee is taken from the output currency
-        bool feeFromOutput = _isFeeFromOutput(key, zeroForOne);
+        (bool feeFromOutput,) = _isFeeFromOutput(key, zeroForOne);
 
-        if (params.amountSpecified < 0) { // exact input
+        if (params.amountSpecified < 0) {
+            // exact input
             // For exact input swaps where fee is from output, we need to make the fee explicit
             // by returning the full theoretical output (without fee deduction)
             // This allows the hook to receive the fee tokens and forward them to FeeProcessor
@@ -317,7 +317,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                 // Standard V2 calculation with fee
                 return _getAmountOut(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
             }
-        } else { // exact output
+        } else {
+            // exact output
             // Calculate input for exact output
             // Target the gross output leaving the pool when fee is from output; otherwise target the user amount
             uint256 targetOut = feeFromOutput
@@ -513,14 +514,14 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Helper to determine if the fee is taken from the output currency
-    function _isFeeFromOutput(PoolKey memory key, bool zeroForOne) private view returns (bool) {
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-        Currency feeCurrency = isBmxPool
+    function _isFeeFromOutput(PoolKey memory key, bool zeroForOne) private view returns (bool feeFromOutput, Currency feeCurrency) {
+        bool _isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
+        Currency _feeCurrency = _isBmxPool
             ? ((Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1)
             : ((Currency.unwrap(key.currency0) == WBLT) ? key.currency0 : key.currency1);
-        Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
+        Currency _outputCurrency = zeroForOne ? key.currency1 : key.currency0;
 
-        return feeCurrency == outputCurrency;
+        return (_feeCurrency == _outputCurrency, _feeCurrency);
     }
 
     /// @dev Helper to enforce sqrtPriceLimitX96 slippage against virtual V2 price after applying swap and fee removal.
@@ -699,8 +700,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Calculate actual output with fee
         uint256 outputWithFee = _getAmountOut(zeroForOne, amountIn, reserve0, reserve1, fee);
         // Calculate theoretical output without fee
-        uint256 outputWithoutFee =
-            (amountIn * (zeroForOne ? reserve1 : reserve0)) / ((zeroForOne ? reserve0 : reserve1) + amountIn);
+        uint256 outputWithoutFee = _getAmountOut(zeroForOne, amountIn, reserve0, reserve1, 0);
         // Fee is the difference
         return outputWithoutFee > outputWithFee ? outputWithoutFee - outputWithFee : 0;
     }
@@ -713,27 +713,12 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         bool exactInput = params.amountSpecified < 0;
         bool zeroForOne = params.zeroForOne;
 
-        // Identify fee currency (always wBLT for non-BMX pools, BMX for BMX pools)
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-        Currency feeCurrency;
-        if (isBmxPool) {
-            // For BMX pools, fee is always in BMX
-            feeCurrency = (Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1;
-        } else {
-            // For non-BMX pools, fee is always in wBLT
-            feeCurrency = (Currency.unwrap(key.currency0) == WBLT) ? key.currency0 : key.currency1;
-        }
-
-        // Determine which currency is output
-        Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
-
-        // Set flag for whether fee is taken from output
-        _feeFromOutput = (feeCurrency == outputCurrency);
+        // Set flag for whether fee is taken from output and identify fee currency
+        (_feeFromOutput, _pendingFeeCurrency) = _isFeeFromOutput(key, zeroForOne);
 
         uint256 amountSpecified = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
 
         uint256 feeAmount;
-
         if (exactInput) {
             if (_feeFromOutput) {
                 // EXACT INPUT + FEE FROM OUTPUT (e.g., swap 1 WETH for WBLT, fee in WBLT)
@@ -755,18 +740,13 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             } else {
                 // EXACT OUTPUT + FEE FROM INPUT (e.g., get exactly 1 WETH, fee in WBLT)
                 // Fee is the extra input required beyond theoretical amount
-                // User receives exact output, provides calculated input including fee
-                uint256 inputWithFee = _getUnspecifiedAmount(key, params);
-                // Calculate input without fee (as if fee was 0)
-                uint128 rIn = zeroForOne ? pool.reserve0 : pool.reserve1;
-                uint128 rOut = zeroForOne ? pool.reserve1 : pool.reserve0;
-                uint256 inputWithoutFee = (rIn * amountSpecified) / (rOut - amountSpecified) + 1;
+                uint256 inputWithFee = _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
+                uint256 inputWithoutFee = _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, 0);
                 feeAmount = inputWithFee > inputWithoutFee ? inputWithFee - inputWithoutFee : 0;
             }
         }
 
         _pendingFeeAmount = feeAmount;
-        _pendingFeeCurrency = feeCurrency;
     }
 
     /// @dev Forward the implicit fee to FeeProcessor
