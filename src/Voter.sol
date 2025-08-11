@@ -34,6 +34,7 @@ contract Voter is Ownable2Step {
     address public admin;
     address public safetyModule;
     IRewardDistributor public distributor;
+    uint256 public nextEpochToFinalize;
 
     IERC20 public immutable WETH;
     IERC20 public immutable SBF_BMX;
@@ -247,6 +248,14 @@ contract Voter is Ownable2Step {
                 WETH.safeTransfer(address(distributor), toRewards);
                 distributor.setTokensPerInterval(toRewards / TimeLibrary.WEEK);
             }
+            // Advance pointer to the earliest unsettled epoch. This handles
+            // out-of-order finalizations by skipping already-settled epochs.
+            while (epochInfo[nextEpochToFinalize].settled) {
+                unchecked {
+                    nextEpochToFinalize++;
+                }
+            }
+
             emit Finalize(ep, win, toSafety, toRewards);
         }
     }
@@ -268,8 +277,8 @@ contract Voter is Ownable2Step {
             }
             emit AutoVoteUpdated(msg.sender, true, option);
         } else {
-            // Prevent disabling auto-vote during any finalization
-            if (finalizationInProgress) {
+            // Prevent disabling auto-vote during any finalization or when any epoch has ended but remains unfinalized
+            if (finalizationInProgress || _hasEndedUnfinalizedEpoch()) {
                 revert DeliErrors.FinalizationInProgress();
             }
             // Disable auto-vote if currently enabled
@@ -369,6 +378,16 @@ contract Voter is Ownable2Step {
             }
         }
         delete pendingRemovals[ep];
+    }
+
+    /// @dev Returns true if there exists at least one epoch that has ended but is not yet finalized.
+    function _hasEndedUnfinalizedEpoch() internal view returns (bool) {
+        uint256 ep = nextEpochToFinalize;
+        // If already settled (or no epochs yet), no blocking needed
+        if (epochInfo[ep].settled) return false;
+        // Check if this epoch has ended
+        uint256 endTs = EPOCH_ZERO + (ep + 1) * TimeLibrary.WEEK;
+        return block.timestamp >= endTs;
     }
 
     /// @dev Validates manual voters for `ep`.
