@@ -52,6 +52,7 @@ contract Voter is Ownable2Step {
     mapping(uint256 => uint256) private batchCursor;
     mapping(uint256 => address[]) private manualVoters;
     mapping(uint256 => bool) private autoVotingComplete;
+    mapping(uint256 => mapping(address => bool)) private isManualVoter;
 
     /// @notice userChoice[epoch][address] = option per epoch per user (0-2, 3 = none)
     mapping(uint256 => mapping(address => uint8)) public userChoice;
@@ -312,9 +313,10 @@ contract Voter is Ownable2Step {
         userChoice[ep][voter] = option;
         userVoteWeight[ep][voter] = newWeight;
 
-        // Track manual voter (only on first vote)
-        if (prevWeight == 0) {
+        // Track manual voter once per epoch
+        if (!isManualVoter[ep][voter]) {
             manualVoters[ep].push(voter);
+            isManualVoter[ep][voter] = true;
         }
 
         emit Vote(ep, voter, option, newWeight);
