@@ -501,6 +501,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     }
 
     /// @dev Helper to enforce sqrtPriceLimitX96 slippage against virtual V2 price after applying swap and fee removal.
+    ///      In contrast to Uniswap v4 and like v2, swaps will revert if price reaches the limit.
     function _enforceVirtualPriceLimit(PoolKey calldata key, SwapParams calldata params) private view {
         PoolId poolId = key.toId();
         V2Pool storage pool = pools[poolId];
