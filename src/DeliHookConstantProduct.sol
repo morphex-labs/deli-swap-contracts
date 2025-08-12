@@ -246,19 +246,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         dailyEpochGauge.pokePool(key);
         incentiveGauge.pokePool(key);
 
-        // For exact input swaps where fee is from output, we need special handling
-        // Check this condition before we reset the storage variables
-        bool needsDeltaAdjustment = (_swapAmountSpecified < 0) && _feeFromOutput && (_pendingFeeAmount > 0);
-        int128 deltaAdjustment = 0;
-
-        if (needsDeltaAdjustment) {
-            // Take the fee amount from the pool manager to the hook's balance
-            // This is necessary because the fee is part of what was settled to the hook
-            _pendingFeeCurrency.take(poolManager, address(this), _pendingFeeAmount, true);
-            // Set delta adjustment to take the fee back from the swap
-            deltaAdjustment = int128(uint128(_pendingFeeAmount));
-        }
-
         // Forward the fee to FeeProcessor
         if (_pendingFeeAmount > 0) {
             if (_isInternalSwap) {
@@ -276,7 +263,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         _swapZeroForOne = false;
         _isInternalSwap = false;
 
-        return (this.afterSwap.selector, deltaAdjustment);
+        return (this.afterSwap.selector, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -307,16 +294,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         if (params.amountSpecified < 0) {
             // exact input
-            // For exact input swaps where fee is from output, we need to make the fee explicit
-            // by returning the full theoretical output (without fee deduction)
-            // This allows the hook to receive the fee tokens and forward them to FeeProcessor
-            if (feeFromOutput) {
-                // Return theoretical output without fee deduction
-                return _getAmountOut(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, 0);
-            } else {
-                // Standard V2 calculation with fee
-                return _getAmountOut(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
-            }
+            // Always use fee-inclusive output
+            return _getAmountOut(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
         } else {
             // exact output
             // Calculate input for exact output
@@ -631,17 +610,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         uint24 effectiveFee = key.fee;
 
         if (exactInput) {
-            // For exact input swaps
-            uint256 amountOut;
-
-            // Check if fee is from output (must match logic in _getUnspecifiedAmount)
-            if (_feeFromOutput) {
-                // For fee from output, compute theoretical output without fee
-                amountOut = _getAmountOut(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, 0);
-            } else {
-                // Standard calculation with fee
-                amountOut = _getAmountOut(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, effectiveFee);
-            }
+            // For exact input swaps, always compute fee-inclusive output
+            uint256 amountOut =
+                _getAmountOut(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, effectiveFee);
 
             if (_swapZeroForOne) {
                 delta0 = int256(specifiedAmount);
