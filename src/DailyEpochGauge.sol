@@ -365,16 +365,10 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @dev internal helper to accrue and remove liquidity with provided params
-    function _accrueAndRemove(
-        PoolId pid,
-        bytes32 posKey,
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity
-    ) internal {
-        positionRewards[posKey].accrue(
-            liquidity, poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper)
-        );
+    function _accrueAndRemove(PoolId pid, bytes32 posKey, int24 tickLower, int24 tickUpper, uint128 liquidity)
+        internal
+    {
+        positionRewards[posKey].accrue(liquidity, poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper));
         if (liquidity != 0) {
             PoolKey memory key = positionManagerAdapter.getPoolKeyFromPoolId(pid);
             poolRewards[pid].modifyPositionLiquidity(
@@ -421,10 +415,9 @@ contract DailyEpochGauge is Ownable2Step {
         }
     }
 
-    /// @dev Integrate day-bucket rates over [t0, t1) and return the average per-second rate.
-    function _averageRateOverWindow(PoolId pid, uint256 t0, uint256 t1) internal view returns (uint256 avgRate) {
+    /// @dev Integrate day-bucket rates over [t0, t1) and return the total amount accrued.
+    function _amountOverWindow(PoolId pid, uint256 t0, uint256 t1) internal view returns (uint256 total) {
         if (t1 <= t0) return 0;
-        uint256 total;
         uint256 t = t0;
         while (true) {
             uint256 dayStart = TimeLibrary.dayStart(t);
@@ -439,7 +432,6 @@ contract DailyEpochGauge is Ownable2Step {
             if (segEnd == t1) break;
             t = segEnd;
         }
-        avgRate = total == 0 ? 0 : total / (t1 - t0);
     }
 
     /// @dev Piecewise integrate daily rates over elapsed time and sync pool accumulator; then adjust to current tick.
@@ -466,13 +458,13 @@ contract DailyEpochGauge is Ownable2Step {
         uint256 t1 = block.timestamp;
         address[] memory toks = new address[](1);
         toks[0] = address(BMX);
-        uint256[] memory rates = new uint256[](1);
+        uint256[] memory amts = new uint256[](1);
         if (t1 > t0) {
-            rates[0] = _averageRateOverWindow(pid, t0, t1);
+            amts[0] = _amountOverWindow(pid, t0, t1);
         } else {
-            rates[0] = 0;
+            amts[0] = 0;
         }
-        pool.sync(toks, rates, tickSpacing, activeTick);
+        pool.sync(toks, amts, tickSpacing, activeTick);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -519,13 +511,8 @@ contract DailyEpochGauge is Ownable2Step {
     /// @notice Optimized unsubscribe with pre-fetched context from adapter
     /// @dev Context layout: (bytes32 poolIdRaw, int24 tickLower, int24 tickUpper, uint128 liquidity, int24 currentTick)
     function notifyUnsubscribeWithContext(uint256 tokenId, bytes calldata data) external onlyPositionManagerAdapter {
-        (
-            bytes32 poolIdRaw,
-            int24 tickLower,
-            int24 tickUpper,
-            uint128 liquidity,
-            int24 currentTick
-        ) = abi.decode(data, (bytes32, int24, int24, uint128, int24));
+        (bytes32 poolIdRaw, int24 tickLower, int24 tickUpper, uint128 liquidity, int24 currentTick) =
+            abi.decode(data, (bytes32, int24, int24, uint128, int24));
 
         PoolId pid = PoolId.wrap(poolIdRaw);
         bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));

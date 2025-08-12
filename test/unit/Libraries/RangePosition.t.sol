@@ -36,8 +36,8 @@ contract RangePositionLibraryTest is Test {
     function _advance(uint256 secondsForward, uint256 streamRate) internal {
         vm.warp(block.timestamp + secondsForward);
         address[] memory toks = new address[](1); toks[0] = TOK;
-        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
-        pool.sync(toks, rates, TICK_SPACING, 0);
+        uint256[] memory amts = new uint256[](1); amts[0] = streamRate * secondsForward;
+        pool.sync(toks, amts, TICK_SPACING, 0);
     }
 
     /*//////////////////////////////////////////////////////////////

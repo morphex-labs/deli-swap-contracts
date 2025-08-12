@@ -92,13 +92,11 @@ library RangePool {
                           REWARD STREAM UPDATE
     //////////////////////////////////////////////////////////////*/
 
-    function _accumulateToken(State storage self, address token, uint256 streamRate, uint256 dt) private {
-        if (streamRate == 0) return;
-        if (dt == 0) return;
+    function _accumulateToken(State storage self, address token, uint256 amount) private {
+        if (amount == 0) return;
         if (self.liquidity == 0) return;
-        uint256 rewards = streamRate * dt;
         unchecked {
-            self.rewardsPerLiquidityCumulativeX128[token] += (rewards << 128) / self.liquidity;
+            self.rewardsPerLiquidityCumulativeX128[token] += (amount << 128) / self.liquidity;
         }
     }
 
@@ -264,13 +262,13 @@ library RangePool {
 
     /// @notice High-level helper used by gauges: initialise (if needed), accumulate rewards and adjust to new tick.
     /// @param self        Pool state storage pointer.
-    /// @param perTokenRates  Tokens per second to credit (0 allowed).
+    /// @param perTokenAmounts  Token amounts accrued over the window since last update (0 allowed).
     /// @param tickSpacing Pool tick spacing (passed to adjustToTick).
     /// @param activeTick  Current active tick from PoolManager.slot0.
     function sync(
         State storage self,
         address[] memory tokens,
-        uint256[] memory perTokenRates,
+        uint256[] memory perTokenAmounts,
         int24 tickSpacing,
         int24 activeTick
     ) internal {
@@ -280,13 +278,13 @@ library RangePool {
             // no need to accumulate or adjust because lastUpdated = now and tick == activeTick
             return;
         }
-        // 1. Credit per-token rewards for elapsed time
-        uint256 dt = block.timestamp - uint256(self.lastUpdated);
+        // 1. Update lastUpdated and credit per-token amounts
         self.lastUpdated = uint64(block.timestamp);
-        if (dt > 0 && self.liquidity > 0) {
+
+        if (self.liquidity > 0) {
             uint256 len = tokens.length;
             for (uint256 i; i < len; ++i) {
-                _accumulateToken(self, tokens[i], perTokenRates[i], dt);
+                _accumulateToken(self, tokens[i], perTokenAmounts[i]);
             }
         }
         // 2. If price moved out of current range adjust liquidity & tick, flipping per-token outside

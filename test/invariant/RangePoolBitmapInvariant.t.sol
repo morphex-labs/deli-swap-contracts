@@ -60,11 +60,11 @@ contract RangePoolBitmapInvariant is Test {
         if (!already[tl]) { already[tl] = true; tracked.push(tl);} 
         if (!already[tu]) { already[tu] = true; tracked.push(tu);} 
 
-        // 3. advance time by 1 and sync with given streamRate
+        // 3. advance time by 1 and sync with given amount (rate * dt)
         vm.warp(block.timestamp + 1);
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
-        uint256[] memory rates = new uint256[](1); rates[0] = streamRate % 1e23;
-        pool.sync(toks2, rates, SPACING, 0);
+        uint256[] memory amts = new uint256[](1); amts[0] = (streamRate % 1e23); // dt=1
+        pool.sync(toks2, amts, SPACING, 0);
     }
 
     /*//////////////////////////////////////////////////////////////

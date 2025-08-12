@@ -547,29 +547,28 @@ contract IncentiveGauge is Ownable2Step {
         uint256 nowTs = block.timestamp;
 
         address[] memory addrs = new address[](len);
-        uint256[] memory rates = new uint256[](len);
+        uint256[] memory amounts = new uint256[](len);
 
         if (poolLast == 0) {
             pool.initialize(currentTick);
         } else {
-            uint256 dtPool = nowTs - poolLast; // may be 0 in same block
             for (uint256 i; i < len; ++i) {
                 IERC20 tok = toks[i];
                 addrs[i] = address(tok);
 
-                uint256 avgRate = 0;
+                uint256 amt = 0;
                 IncentiveInfo storage info = incentives[pid][tok];
-                if (info.rewardRate > 0 && dtPool > 0) {
+                if (info.rewardRate > 0) {
                     uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
                     if (endTs > poolLast) {
                         uint256 activeSeconds = endTs - poolLast;
-                        avgRate = FullMath.mulDiv(uint256(info.rewardRate), activeSeconds, dtPool);
+                        amt = uint256(info.rewardRate) * activeSeconds;
                     }
                 }
-                rates[i] = avgRate;
+                amounts[i] = amt;
             }
             // Always call sync when initialized so tick adjusts even if dt == 0
-            pool.sync(addrs, rates, poolTickSpacing[pid], currentTick);
+            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick);
         }
 
         // Bookkeeping for all tokens
@@ -598,7 +597,6 @@ contract IncentiveGauge is Ownable2Step {
             }
         }
     }
-
 
     /// @dev internal: claim rewards for a position and transfer to recipient
     function _claimRewards(bytes32 posKey, IERC20 token, address recipient) internal returns (uint256 amount) {
@@ -662,20 +660,17 @@ contract IncentiveGauge is Ownable2Step {
     /// @notice Optimized unsubscribe path with pre-fetched context from the adapter
     /// @dev Context layout: (bytes32 poolIdRaw, int24 tickLower, int24 tickUpper, uint128 liquidity, int24 currentTick)
     function notifyUnsubscribeWithContext(uint256 tokenId, bytes calldata data) external onlyPositionManagerAdapter {
-        (
-            bytes32 poolIdRaw,
-            int24 tickLower,
-            int24 tickUpper,
-            uint128 liquidity,
-            int24 currentTick
-        ) = abi.decode(data, (bytes32, int24, int24, uint128, int24));
+        (bytes32 poolIdRaw, int24 tickLower, int24 tickUpper, uint128 liquidity, int24 currentTick) =
+            abi.decode(data, (bytes32, int24, int24, uint128, int24));
 
         PoolId pid = PoolId.wrap(poolIdRaw);
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
         // Early exit if no active incentive tokens; clean indices immediately
         if (poolTokens[pid].length == 0) {
-            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, positionManagerAdapter.ownerOf(tokenId), positionKey);
+            RangePosition.removePosition(
+                ownerPositions, positionLiquidity, pid, positionManagerAdapter.ownerOf(tokenId), positionKey
+            );
             delete positionTicks[positionKey];
             delete positionTokenIds[positionKey];
             return;

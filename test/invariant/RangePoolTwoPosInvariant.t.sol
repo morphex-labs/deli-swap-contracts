@@ -109,8 +109,8 @@ contract RangePoolTwoPosInvariant is Test {
         }
 
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
-        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
-        pool.sync(toks2, rates, TICK_SPACING, activeTick);
+        uint256[] memory amts = new uint256[](1); amts[0] = streamRate; // dt=1
+        pool.sync(toks2, amts, TICK_SPACING, activeTick);
 
         if (liqDelta != 0) {
             pool.modifyPositionLiquidity(

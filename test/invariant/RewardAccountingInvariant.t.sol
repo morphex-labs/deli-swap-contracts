@@ -65,7 +65,7 @@ contract RewardAccountingInvariant is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          FUZZ ENTRYPOINT (to be fuzzed by Foundry)
+                          FUZZ ENTRYPOINT 
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Fuzzed entry.  Foundry will call this with random inputs and
@@ -91,8 +91,8 @@ contract RewardAccountingInvariant is Test {
 
         // 3. Apply pool sync (accumulate + maybe move price)
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
-        uint256[] memory rates = new uint256[](1); rates[0] = streamRate;
-        pool.sync(toks2, rates, TICK_SPACING, activeTick);
+        uint256[] memory amts = new uint256[](1); amts[0] = streamRate; // dt=1
+        pool.sync(toks2, amts, TICK_SPACING, activeTick);
 
         // 4. Optionally modify liquidity
         if (liqDelta != 0) {
