@@ -450,10 +450,6 @@ contract DailyEpochGauge is Ownable2Step {
     /// @dev Core sync logic shared by both wrappers
     function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing) internal {
         RangePool.State storage pool = poolRewards[pid];
-        if (pool.lastUpdated == 0) {
-            pool.initialize(activeTick);
-            return;
-        }
         uint256 t0 = pool.lastUpdated;
         uint256 t1 = block.timestamp;
         address[] memory toks = new address[](1);

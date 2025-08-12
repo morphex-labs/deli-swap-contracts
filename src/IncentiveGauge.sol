@@ -549,27 +549,23 @@ contract IncentiveGauge is Ownable2Step {
         address[] memory addrs = new address[](len);
         uint256[] memory amounts = new uint256[](len);
 
-        if (poolLast == 0) {
-            pool.initialize(currentTick);
-        } else {
-            for (uint256 i; i < len; ++i) {
-                IERC20 tok = toks[i];
-                addrs[i] = address(tok);
+        for (uint256 i; i < len; ++i) {
+            IERC20 tok = toks[i];
+            addrs[i] = address(tok);
 
-                uint256 amt = 0;
-                IncentiveInfo storage info = incentives[pid][tok];
-                if (info.rewardRate > 0) {
-                    uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
-                    if (endTs > poolLast) {
-                        uint256 activeSeconds = endTs - poolLast;
-                        amt = uint256(info.rewardRate) * activeSeconds;
-                    }
+            uint256 amt = 0;
+            IncentiveInfo storage info = incentives[pid][tok];
+            if (info.rewardRate > 0) {
+                uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
+                if (endTs > poolLast) {
+                    uint256 activeSeconds = endTs - poolLast;
+                    amt = uint256(info.rewardRate) * activeSeconds;
                 }
-                amounts[i] = amt;
             }
-            // Always call sync when initialized so tick adjusts even if dt == 0
-            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick);
+            amounts[i] = amt;
         }
+        // Always call sync when initialized so tick adjusts even if dt == 0
+        pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick);
 
         // Bookkeeping for all tokens
         for (uint256 i; i < len; ++i) {
