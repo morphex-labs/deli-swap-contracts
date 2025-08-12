@@ -293,12 +293,9 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Calculate BeforeSwapDelta
         int128 specifiedDelta = 0;
 
-        if (_pullFromSender && _pendingFee > 0) {
-            // For exact input with fee on input side:
-            // Reduce the swap input by the fee amount by returning a positive delta
-            specifiedDelta = SafeCast.toInt128(int256(_pendingFee));
-        } else if (isFeeBmx && feeMatchesSpecified && _pendingFee > 0) {
-            // BMX pool: pre-credit to offset later take()
+        // Pre-credit the specified side by the fee whenever the fee currency matches the specified token.
+        // This handles both exact input (fee on input) and exact output (fee on output) uniformly.
+        if (feeMatchesSpecified) {
             specifiedDelta = SafeCast.toInt128(int256(_pendingFee));
         }
 
