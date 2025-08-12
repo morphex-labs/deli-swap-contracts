@@ -254,10 +254,6 @@ contract IncentiveGauge is Ownable2Step {
 
         // Claim and transfer
         amount = _claimRewards(positionKey, token, to);
-        // If this position was unsubscribed (liq=0) and fully settled across tokens, prune indices
-        if (positionLiquidity[positionKey] == 0) {
-            _prunePositionIfSettled(pid, positionKey, owner);
-        }
     }
 
     /// @notice Claim all token rewards for an owner across multiple pools.
@@ -295,7 +291,6 @@ contract IncentiveGauge is Ownable2Step {
                 }
 
                 _accrueAndClaimForPosition(pid, posKey, owner);
-                _prunePositionIfSettled(pid, posKey, owner);
             }
         }
     }

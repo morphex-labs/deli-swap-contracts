@@ -196,10 +196,6 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Claim and transfer
         amount = _claimRewards(positionKey, to);
-        // If unsubscribed and now settled, clean indices
-        if (positionLiquidity[positionKey] == 0 && positionRewards[positionKey].rewardsAccrued == 0) {
-            _removePosition(pid, owner, positionKey);
-        }
     }
 
     /// @notice Claim all accrued BMX (and incentive tokens) for every position an owner holds across multiple pools.
@@ -239,10 +235,6 @@ contract DailyEpochGauge is Ownable2Step {
 
                 uint256 amt = positionRewards[posKey].claim();
                 if (amt > 0) totalBmx += amt;
-                // If unsubscribed and settled, prune
-                if (positionLiquidity[posKey] == 0 && positionRewards[posKey].rewardsAccrued == 0) {
-                    _removePosition(pid, owner, posKey);
-                }
             }
         }
 
