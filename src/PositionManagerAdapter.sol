@@ -103,13 +103,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         IPositionHandler posHandler = IPositionHandler(handler);
         string memory handlerType = posHandler.handlerType();
 
-        // Check if handler type already exists
-        if (
-            handlerIndex[handlerType] != 0
-                || (handlers.length > 0 && EfficientHashLib.hash(bytes(handlers[0].handlerType())) == EfficientHashLib.hash(bytes(handlerType)))
-        ) {
-            revert DeliErrors.HandlerAlreadyExists();
-        }
+        // Check if handler type already exists (1-based index mapping)
+        if (handlerIndex[handlerType] != 0) revert DeliErrors.HandlerAlreadyExists();
 
         handlers.push(posHandler);
         handlerIndex[handlerType] = handlers.length; // 1-indexed
