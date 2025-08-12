@@ -320,16 +320,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         } else {
             // exact output
             // Calculate input for exact output
-            // Target the gross output leaving the pool when fee is from output; otherwise target the user amount
-            uint256 targetOut = feeFromOutput
-                ? amountSpecified
-                // grossOut = amountSpecified * (1 + fee) with fee measured in 1e6
-                : FullMath.mulDiv(amountSpecified, 1_000_000 + uint256(key.fee), 1_000_000);
-
-            if (targetOut >= reserveOut) revert DeliErrors.InsufficientLiquidity();
-
             if (feeFromOutput) {
                 // Compute input for gross output with zero LP fee to preserve K
+                uint256 targetOut = FullMath.mulDiv(amountSpecified, 1_000_000 + uint256(key.fee), 1_000_000);
                 return _getAmountIn(zeroForOne, targetOut, pool.reserve0, pool.reserve1, 0);
             } else {
                 // Standard V2 exact-output calc with fee in input
@@ -514,7 +507,11 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Helper to determine if the fee is taken from the output currency
-    function _isFeeFromOutput(PoolKey memory key, bool zeroForOne) private view returns (bool feeFromOutput, Currency feeCurrency) {
+    function _isFeeFromOutput(PoolKey memory key, bool zeroForOne)
+        private
+        view
+        returns (bool feeFromOutput, Currency feeCurrency)
+    {
         bool _isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
         Currency _feeCurrency = _isBmxPool
             ? ((Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1)
