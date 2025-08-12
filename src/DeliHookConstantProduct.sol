@@ -424,7 +424,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         liquidityShares[poolId][msg.sender] += shares;
 
         // Notify V2 position handler
-        v2PositionHandler.notifyAddLiquidity(key, msg.sender, uint128(shares));
+        v2PositionHandler.notifyAddLiquidity(key, msg.sender, shares.toUint128());
 
         emit MintShares(poolId, msg.sender, shares);
     }
@@ -450,7 +450,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         liquidityShares[poolId][msg.sender] -= shares;
 
         // Notify V2 position handler
-        v2PositionHandler.notifyRemoveLiquidity(key, msg.sender, uint128(shares));
+        v2PositionHandler.notifyRemoveLiquidity(key, msg.sender, shares.toUint128());
 
         // Update reserves by subtracting removed amounts
         _update(poolId, pool.reserve0 - amount0, pool.reserve1 - amount1);
