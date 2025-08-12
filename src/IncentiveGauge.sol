@@ -728,7 +728,6 @@ contract IncentiveGauge is Ownable2Step {
     {
         (PoolKey memory key, PositionInfo info) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
         PoolId pid = key.toId();
-        address owner = positionManagerAdapter.ownerOf(tokenId);
 
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
@@ -744,23 +743,17 @@ contract IncentiveGauge is Ownable2Step {
         // Batch update pool once
         _updatePoolByPid(pid);
 
-        // Accrue rewards with liquidity before change across all tokens
-        uint128 liquidityBefore;
-        if (liquidityChange >= 0) {
-            liquidityBefore = currentLiq - uint128(uint256(liquidityChange));
-        } else {
-            liquidityBefore = currentLiq + uint128(uint256(-liquidityChange));
-        }
+        // Accrue rewards with liquidity before change across all tokens (cast-safe)
+        int128 delta128 = SafeCast.toInt128(liquidityChange);
+        uint128 liquidityBefore = delta128 >= 0
+            ? currentLiq - uint128(uint128(delta128))
+            : currentLiq + uint128(uint128(-delta128));
+
         _accrueAcrossTokens(pid, positionKey, info.tickLower(), info.tickUpper(), liquidityBefore);
 
         // Apply user-requested delta once; on positive adds pass all tokens to ensure per-token outside init on first flips. On removals (and zero) pass empty list to avoid unnecessary writes.
         _applyLiquidityDeltaByPid(
             pid, info.tickLower(), info.tickUpper(), SafeCast.toInt128(liquidityChange), liquidityChange > 0
         );
-
-        // Auto-claim if liquidity is now zero
-        if (currentLiq == 0) {
-            _claimAcrossTokens(pid, positionKey, owner, false);
-        }
     }
 }

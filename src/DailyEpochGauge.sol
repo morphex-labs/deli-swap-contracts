@@ -561,15 +561,12 @@ contract DailyEpochGauge is Ownable2Step {
         _syncPoolState(key, pid);
 
         uint128 currentLiq = positionManagerAdapter.getPositionLiquidity(tokenId);
-        address owner = positionManagerAdapter.ownerOf(tokenId);
 
-        // Sign-safe liquidityBefore to avoid potential int128 overflow on casts
-        uint128 liquidityBefore;
-        if (liquidityChange >= 0) {
-            liquidityBefore = currentLiq - uint128(uint256(liquidityChange));
-        } else {
-            liquidityBefore = currentLiq + uint128(uint256(-liquidityChange));
-        }
+        // Compute liquidity before the change using a cast-safe path
+        int128 delta128 = SafeCast.toInt128(liquidityChange);
+        uint128 liquidityBefore = delta128 >= 0
+            ? currentLiq - uint128(uint128(delta128))
+            : currentLiq + uint128(uint128(-delta128));
 
         bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
@@ -606,10 +603,5 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Always update cached liquidity (keep position tracked even at 0)
         positionLiquidity[posKey] = currentLiq;
-
-        // Auto-claim if liquidity is now zero
-        if (currentLiq == 0) {
-            _claimRewards(posKey, owner);
-        }
     }
 }

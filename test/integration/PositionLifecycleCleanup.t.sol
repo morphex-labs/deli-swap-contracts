@@ -393,19 +393,21 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             bytes("")
         );
 
-        // 5. Position liquidity should now be zero and owner index cleaned
+        // 5. Position liquidity should now be zero
         assertEq(positionManager.getPositionLiquidity(tokenId), 0, "liq not zero");
 
+        // With deferred cleanup, pending may remain until claim; verify > 0 then claim to clean
         uint256 pendingAfter = gauge.pendingRewardsOwner(pid, address(this));
-        assertEq(pendingAfter, 0, "owner index not cleaned after zero-liq");
+        assertGt(pendingAfter, 0, "unexpected zero pending after zero-liq before claim");
 
-        // Claim should transfer nothing
+        // Claim should transfer all and then pending becomes zero
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
         uint256 balBefore = bmx.balanceOf(address(this));
         gauge.claimAllForOwner(arr, address(this));
         uint256 balAfter = bmx.balanceOf(address(this));
-        assertEq(balAfter - balBefore, 0, "unexpected claim after zero-liq");
+        assertGt(balAfter - balBefore, 0, "expected claim after zero-liq");
+        assertEq(gauge.pendingRewardsOwner(pid, address(this)), 0, "pending not cleaned after claim");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -474,7 +476,15 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         EasyPosm.decreaseLiquidity(positionManager, tokenId, uint256(liq), 0, 0, address(this), block.timestamp + 1 hours, bytes(""));
 
         uint256 afterPend = _totalPendingInc();
-        assertEq(afterPend, 0, "inc index not cleaned zero-liq");
+        // With deferred cleanup, pending remains until claim
+        assertGt(afterPend, 0, "inc pending unexpectedly zero after zero-liq");
+        // Claim to clean
+        PoolId[] memory arr2 = new PoolId[](1);
+        arr2[0] = pid;
+        uint256 incBalBefore = wblt.balanceOf(address(this));
+        inc.claimAllForOwner(arr2, address(this));
+        assertGt(wblt.balanceOf(address(this)) - incBalBefore, 0, "no inc payout after zero-liq claim");
+        assertEq(_totalPendingInc(), 0, "inc pending not zero after claim");
     }
 
     /*//////////////////////////////////////////////////////////////
