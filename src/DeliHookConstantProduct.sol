@@ -542,8 +542,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             }
         }
 
-        uint256 priceAfterX192 = FullMath.mulDiv(r1p, uint256(1) << 192, r0p);
-        uint160 sqrtAfterX96 = uint160(Math.sqrt(priceAfterX192));
+        // Compute price in Q128 then scale sqrt to Q96 to prevent overflow
+        uint256 priceAfterX128 = FullMath.mulDiv(r1p, uint256(1) << 128, r0p);
+        uint256 sqrtAfterX64 = Math.sqrt(priceAfterX128);
+        uint160 sqrtAfterX96 = uint160(sqrtAfterX64 << 32);
         uint160 limit = params.sqrtPriceLimitX96;
 
         if (zeroForOne) {
@@ -796,8 +798,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             return (0, tick, protocolFee, lpFee);
         }
 
-        // priceX192 = (reserve1 / reserve0) in Q192
-        uint256 priceX192 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 192, uint256(pool.reserve0));
-        sqrtPriceX96 = uint160(Math.sqrt(priceX192));
+        // Compute price in Q128 then scale sqrt to Q96 to prevent overflow
+        uint256 priceX128 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 128, uint256(pool.reserve0));
+        uint256 sqrtX64 = Math.sqrt(priceX128);
+        sqrtPriceX96 = uint160(sqrtX64 << 32);
     }
 }
