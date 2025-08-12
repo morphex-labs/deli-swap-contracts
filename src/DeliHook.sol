@@ -305,7 +305,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         return (
             BaseHook.beforeSwap.selector,
             specifiedDelta == 0 ? BeforeSwapDeltaLibrary.ZERO_DELTA : toBeforeSwapDelta(specifiedDelta, 0),
-            poolFee | LPFeeLibrary.OVERRIDE_FEE_FLAG // Return actual fee with override flag
+            LPFeeLibrary.OVERRIDE_FEE_FLAG // Override classic LP fee to 0; hook collects and forwards fees itself
         );
     }
 
