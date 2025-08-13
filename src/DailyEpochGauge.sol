@@ -153,7 +153,7 @@ contract DailyEpochGauge is Ownable2Step {
                                 EXTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice One-time pool bootstrap called by DeliHook.beforeInitialize so that
+    /// @notice One-time pool bootstrap called by DeliHook.afterInitialize so that
     ///         accumulator state exists before the first swap.
     function initPool(PoolKey memory key, int24 initialTick) external onlyHook {
         PoolId pid = key.toId();
