@@ -153,6 +153,22 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     }
 
     /*//////////////////////////////////////////////////////////////
+                            HOOK PERMISSIONS
+    //////////////////////////////////////////////////////////////*/
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory p) {
+        p.beforeInitialize = true;
+        p.afterInitialize = true;
+        p.beforeAddLiquidity = true;
+        p.beforeRemoveLiquidity = true;
+        p.beforeSwap = true;
+        p.afterSwap = true;
+        p.beforeSwapReturnDelta = true;
+        p.afterSwapReturnDelta = true;
+        return p;
+    }
+
+    /*//////////////////////////////////////////////////////////////
                            POOL INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
@@ -198,7 +214,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     }
 
     /*//////////////////////////////////////////////////////////////
-                               SWAP LOGIC
+                            SWAP CALLBACK LOGIC
     //////////////////////////////////////////////////////////////*/
 
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
@@ -316,7 +332,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         LIQUIDITY MANAGEMENT
+                            LIQUIDITY MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
     function _getAmountIn(PoolKey memory key, AddLiquidityParams memory params)
@@ -387,10 +403,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         if (amount0 < params.amount0Min || amount1 < params.amount1Min) revert DeliErrors.InsufficientOutput();
     }
 
-    /*//////////////////////////////////////////////////////////////
-                    LIQUIDITY TOKEN MANAGEMENT
-    //////////////////////////////////////////////////////////////*/
-
     function _mint(
         PoolKey memory key,
         AddLiquidityParams memory, // params
@@ -456,29 +468,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         _update(poolId, pool.reserve0 - amount0, pool.reserve1 - amount1);
 
         emit Burn(poolId, msg.sender, amount0, amount1, msg.sender);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        HOOK PERMISSIONS
-    //////////////////////////////////////////////////////////////*/
-
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: true,
-            afterInitialize: true,
-            beforeAddLiquidity: true,
-            beforeRemoveLiquidity: true,
-            afterAddLiquidity: false,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: true,
-            beforeDonate: false,
-            afterDonate: false,
-            beforeSwapReturnDelta: true,
-            afterSwapReturnDelta: true,
-            afterAddLiquidityReturnDelta: false,
-            afterRemoveLiquidityReturnDelta: false
-        });
     }
 
     /*//////////////////////////////////////////////////////////////

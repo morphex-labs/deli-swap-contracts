@@ -48,7 +48,8 @@ contract DeliHook is Ownable2Step, BaseHook {
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    uint24 public constant MAX_FEE = 50000; // 5%
+    uint24 public constant MIN_FEE = 100; // 0.01%
+    uint24 public constant MAX_FEE = 30_000; // 3%
 
     address public immutable WBLT;
     address public immutable BMX;
@@ -63,9 +64,6 @@ contract DeliHook is Ownable2Step, BaseHook {
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
-    // Fee registration system
-    mapping(bytes32 => uint24) private _pendingPoolFees; // poolKey hash => registered fee
-
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -74,9 +72,6 @@ contract DeliHook is Ownable2Step, BaseHook {
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
     event IncentiveGaugeUpdated(address indexed newGauge);
-    event PoolFeeRegistered(
-        Currency indexed currency0, Currency indexed currency1, int24 tickSpacing, uint24 fee, address registrant
-    );
     event PoolFeeSet(PoolId indexed poolId, uint24 fee);
 
     /*//////////////////////////////////////////////////////////////
@@ -129,26 +124,13 @@ contract DeliHook is Ownable2Step, BaseHook {
         emit IncentiveGaugeUpdated(_gauge);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                              FEE REGISTRATION
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Register desired fee for a pool before initialization
-    /// @param currency0 First currency of the pool
-    /// @param currency1 Second currency of the pool
-    /// @param tickSpacing Tick spacing of the pool
-    /// @param desiredFee The fee to set (in hundredths of a bip, max 100000 = 10%)
-    function registerPoolFee(Currency currency0, Currency currency1, int24 tickSpacing, uint24 desiredFee) external {
-        // Validate fee is reasonable (must be > 0 and <= 5%)
-        if (desiredFee == 0 || desiredFee > MAX_FEE) revert DeliErrors.InvalidFee();
-
-        // Calculate pool key hash
-        bytes32 keyHash = _hashPoolKey(currency0, currency1, tickSpacing);
-
-        // Store the pending fee
-        _pendingPoolFees[keyHash] = desiredFee;
-
-        emit PoolFeeRegistered(currency0, currency1, tickSpacing, desiredFee, msg.sender);
+    /// @notice Owner override to set a pool's dynamic LP fee.
+    /// @param key The pool key identifying the pool
+    /// @param newFee The new LP fee in hundredths of a bip (max 30,000 = 3%)
+    function setPoolFee(PoolKey calldata key, uint24 newFee) external onlyOwner {
+        if (newFee > MAX_FEE || newFee < MIN_FEE) revert DeliErrors.InvalidFee();
+        poolManager.updateDynamicLPFee(key, newFee);
+        emit PoolFeeSet(key.toId(), newFee);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -166,7 +148,7 @@ contract DeliHook is Ownable2Step, BaseHook {
     }
 
     /*//////////////////////////////////////////////////////////////
-                         POOL INITIALIZATION CHECK
+                            POOL INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Ensure any pool that chooses this hook includes wBLT as one of the two currencies.
@@ -196,38 +178,28 @@ contract DeliHook is Ownable2Step, BaseHook {
         if (address(incentiveGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(feeProcessor) == address(0)) revert DeliErrors.ComponentNotDeployed();
 
-        // Check that a fee has been registered for this pool
-        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
-        if (_pendingPoolFees[keyHash] == 0) {
-            revert DeliErrors.PoolFeeNotRegistered();
-        }
-
         return BaseHook.beforeInitialize.selector;
     }
 
-    /// @notice Bootstraps the DailyEpochGauge pool state and sets the registered fee.
+    /// @notice Bootstraps the DailyEpochGauge pool state and sets the derived fee.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
         // Bootstrap DailyEpochGauge pool state
         PoolId pid = key.toId();
         dailyEpochGauge.initPool(pid, tick);
 
-        // Get and set the registered fee
-        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
-        uint24 registeredFee = _pendingPoolFees[keyHash];
+        // Derive and set the fee from tick spacing; reverts if unsupported
+        uint24 derivedFee = getPoolFeeFromTickSpacing(key.tickSpacing);
 
         // Set the dynamic fee
-        poolManager.updateDynamicLPFee(key, registeredFee);
+        poolManager.updateDynamicLPFee(key, derivedFee);
 
-        // Clean up
-        delete _pendingPoolFees[keyHash];
-
-        emit PoolFeeSet(pid, registeredFee);
+        emit PoolFeeSet(pid, derivedFee);
 
         return BaseHook.afterInitialize.selector;
     }
 
     /*//////////////////////////////////////////////////////////////
-                             CALLBACK OVERRIDES
+                            SWAP CALLBACK LOGIC
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Called by PoolManager before executing the swap.
@@ -361,15 +333,22 @@ contract DeliHook is Ownable2Step, BaseHook {
         return (BaseHook.afterSwap.selector, hookDeltaUnspecified);
     }
 
-    /// @dev Hash a pool key for fee registration lookup
-    function _hashPoolKey(Currency currency0, Currency currency1, int24 tickSpacing) private view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                currency0,
-                currency1,
-                tickSpacing,
-                address(this) // hook
-            )
-        );
+    /*//////////////////////////////////////////////////////////////
+                             FEE DETERMINATION
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Get the LP fee for a supported tick spacing (in hundredths of a bip, out of 1_000_000)
+    /// @dev Reverts with InvalidTickSpacing for unsupported spacings
+    function getPoolFeeFromTickSpacing(int24 tickSpacing) public pure returns (uint24) {
+        if (tickSpacing == 1) return 100; // 0.01%
+        if (tickSpacing == 10) return 300; // 0.03%
+        if (tickSpacing == 40) return 1_500; // 0.15%
+        if (tickSpacing == 60) return 3_000; // 0.30%
+        if (tickSpacing == 100) return 4_000; // 0.40%
+        if (tickSpacing == 200) return 6_500; // 0.65%
+        if (tickSpacing == 300) return 10_000; // 1.00%
+        if (tickSpacing == 400) return 17_500; // 1.75%
+        if (tickSpacing == 600) return 25_000; // 2.50%
+        revert DeliErrors.InvalidTickSpacing();
     }
 }

@@ -163,8 +163,6 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
 
         // 8. Initialise the pool now that hook address is final
         initKey.hooks = IHooks(address(hook));
-        // Register fee before initialization (0.3% = 3000)
-        hook.registerPoolFee(initKey.currency0, initKey.currency1, initKey.tickSpacing, 3000);
         poolManager.initialize(initKey, TickMath.getSqrtPriceAtTick(0));
 
         // 9. Add a small liquidity position so the pool owns tokens
@@ -183,8 +181,6 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
 
         // initialize second pool after hook set
         otherKey.hooks = IHooks(address(hook));
-        // Register fee before initialization (0.3% = 3000)
-        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
 
         // add liquidity to second pool

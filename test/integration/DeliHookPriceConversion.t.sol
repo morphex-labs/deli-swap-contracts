@@ -121,10 +121,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             hooks: IHooks(address(hook))
         });
 
-        // Register fee and initialize with price != 1 (sqrt = 2 * Q96 => price = 4)
-        hook.registerPoolFee(bmxKey.currency0, bmxKey.currency1, bmxKey.tickSpacing, 3000);
-        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
-
+        // Initialize with price != 1 (sqrt = 2 * Q96 => price = 4)
         uint160 sqrtPx = uint160(2) * uint160(FixedPoint96.Q96);
         poolManager.initialize(bmxKey, sqrtPx);
         poolManager.initialize(otherKey, sqrtPx);

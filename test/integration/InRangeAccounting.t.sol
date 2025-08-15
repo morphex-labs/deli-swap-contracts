@@ -127,9 +127,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
             hooks: IHooks(address(hook))
         });
         pid = key.toId();
-        // Register fee before initialization (0.3% = 3000)
-        hook.registerPoolFee(key.currency0, key.currency1, key.tickSpacing, 3000);
-        
+        // Initialize
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
         // 7. Mint wide-range position (always in-range)

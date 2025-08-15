@@ -69,8 +69,6 @@ contract DeliHook_CommonTest is Test {
 
     function testBeforeInitializeSucceedsWhenWBLTIsCurrency0() public {
         PoolKey memory key = _makePoolKey(WBLT, address(0xAAA));
-        // Register fee before initialization
-        hook.registerPoolFee(key.currency0, key.currency1, key.tickSpacing, 3000);
         vm.prank(address(pm));
         bytes4 sel = hook.beforeInitialize(address(this), key, 0);
         assertEq(sel, hook.beforeInitialize.selector);
@@ -78,8 +76,6 @@ contract DeliHook_CommonTest is Test {
 
     function testBeforeInitializeSucceedsWhenWBLTIsCurrency1() public {
         PoolKey memory key = _makePoolKey(address(0xAAA), WBLT);
-        // Register fee before initialization
-        hook.registerPoolFee(key.currency0, key.currency1, key.tickSpacing, 3000);
         vm.prank(address(pm));
         bytes4 sel = hook.beforeInitialize(address(this), key, 0);
         assertEq(sel, hook.beforeInitialize.selector);

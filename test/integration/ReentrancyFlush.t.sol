@@ -187,10 +187,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
-        // Register fees before initialization (0.3% = 3000)
-        hook.registerPoolFee(canonicalKey.currency0, canonicalKey.currency1, canonicalKey.tickSpacing, 3000);
-        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
-        
+        // Initialize pools
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
         EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));

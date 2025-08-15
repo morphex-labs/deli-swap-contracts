@@ -121,8 +121,6 @@ contract GaugeStream_IT is Test, Deployers {
         // 7. Initialise pool
         key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: IHooks(address(hook))});
         pid = key.toId();
-        // Register fee before initialization (0.3% = 3000)
-        hook.registerPoolFee(key.currency0, key.currency1, key.tickSpacing, 3000);
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
         // 8. Add liquidity via EasyPosm and subscribe to PositionManagerAdapter

@@ -138,10 +138,7 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
-        // Register fees before initialization (0.3% = 3000)
-        hook.registerPoolFee(canonicalKey.currency0, canonicalKey.currency1, canonicalKey.tickSpacing, 3000);
-        hook.registerPoolFee(otherKey.currency0, otherKey.currency1, otherKey.tickSpacing, 3000);
-        
+        // Initialize pools
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
 

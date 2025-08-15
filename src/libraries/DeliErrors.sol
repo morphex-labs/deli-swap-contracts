@@ -32,7 +32,6 @@ library DeliErrors {
     error ComponentNotDeployed();
     error EpochRunning();
     error MustUseDynamicFee();
-    error PoolFeeNotRegistered();
     
     // pool errors
     error PoolNotInitialized();
