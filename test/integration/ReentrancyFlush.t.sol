@@ -26,7 +26,7 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 
-interface IFlusher { function flushBuffer(PoolId poolId) external; }
+interface IFlusher { function flushBuffer(PoolId poolId, uint256 expectedBmxOut) external; }
 
 /*//////////////////////////////////////////////////////////////////////////
                                     REENTRANCY TEST
@@ -58,7 +58,7 @@ contract ReentrantBMX is MockERC20 {
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
             // Expect revert with "swap-active" but ignore failure so transfer proceeds.
-            try fp.flushBuffer(poolIdToFlush) { } catch { }
+            try fp.flushBuffer(poolIdToFlush, 0) { } catch { }
         }
         return super.transfer(to, amount);
     }
@@ -66,7 +66,7 @@ contract ReentrantBMX is MockERC20 {
     function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
-            try fp.flushBuffer(poolIdToFlush) { } catch { }
+            try fp.flushBuffer(poolIdToFlush, 0) { } catch { }
         }
         return super.transferFrom(from, to, amount);
     }
@@ -149,7 +149,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         // 4. Deploy gauge & feeProcessor
         gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), expectedHook, IERC20(address(bmx)), address(0));
         inc = new MockIncentiveGauge();
-        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
+        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
+        fp.setKeeper(address(this), true);
 
         // Link feeProcessor to reentrant token so it can try re-enter
         bmx.setFeeProcessor(address(fp));
@@ -202,20 +203,20 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
     //////////////////////////////////////////////////////////////*/
     function testFlushReentrancyProtected() public {
         // Step 1: create wBLT buy-back buffer via OTHER -> wBLT swap
-        uint256 input = 1e17;
+        uint256 input = 4e20;
         poolManager.unlock(abi.encode(address(other), input));
         PoolId otherPoolId = otherKey.toId();
         assertGt(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not populated");
 
         // Step 2: configure pool key and slippage tolerance
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(9900);
+        // slippage is passed per-call now
         
         // Set the pool ID for reentrancy attempt
         bmx.setPoolIdToFlush(otherPoolId);
 
         // Step 3: flush – should succeed and token will attempt re-enter internally
-        fp.flushBuffer(otherPoolId);
+        fp.flushBuffer(otherPoolId, 0);
 
         // Ensure re-entrancy attempt occurred and was blocked (flag set)
         assertTrue(bmx.reentered(), "no reentrancy attempt detected");
@@ -230,7 +231,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
     //////////////////////////////////////////////////////////////*/
     function testInternalSwapReentrancyProtected() public {
         // Step 1: Generate fees on BMX pool to trigger internal swap
-        uint256 input = 1e17;
+        uint256 input = 4e20;
         
         // Determine swap direction based on token ordering
         bool bmxIsToken0 = address(bmx) < address(wblt);
@@ -248,7 +249,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         bmx.setPoolIdToFlush(canonicalKey.toId());
         
         // Step 4: Flush buffers - this will trigger BMX->wBLT internal swap
-        fp.flushBuffer(canonicalKey.toId());
+        fp.flushBuffer(canonicalKey.toId(), 0);
         
         // Verify reentrancy was attempted and blocked
         assertTrue(bmx.reentered(), "no reentrancy attempt during internal swap");

@@ -55,8 +55,7 @@ contract FeeProcessor_CollectTest is Test {
             HOOK,
             address(wbltToken),
             address(bmxToken),
-            IDailyEpochGauge(gauge),
-            VOTER
+            IDailyEpochGauge(gauge)
         );
 
         // Initialize bmxPoolKey

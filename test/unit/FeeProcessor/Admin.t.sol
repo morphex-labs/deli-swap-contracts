@@ -37,7 +37,8 @@ contract FeeProcessor_AdminTest is Test {
 
     function setUp() public {
         gauge = new MockDailyEpochGauge();
-        fp = new FeeProcessor(PM, HOOK, WBLT_TOKEN, BMX_TOKEN, gauge, VOTER);
+        fp = new FeeProcessor(PM, HOOK, WBLT_TOKEN, BMX_TOKEN, gauge);
+        fp.setKeeper(address(this), true);
 
         miscToken = new MintableERC20();
         miscToken.initialize("Misc", "MISC", 18);
@@ -63,7 +64,7 @@ contract FeeProcessor_AdminTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // flushBuffers when buybackPoolSet but empty buffers ‑ should not revert
+    // flushBuffer when buybackPoolSet but empty buffers – should revert below threshold
     // ---------------------------------------------------------------------
     function _makePoolKey() internal pure returns (PoolKey memory key) {
         key = PoolKey({
@@ -75,12 +76,13 @@ contract FeeProcessor_AdminTest is Test {
         });
     }
 
-    function testFlushBuffersNoopWhenEmpty() public {
+    function testFlushBufferBelowThresholdReverts() public {
         // set pool key first
         PoolKey memory key = _makePoolKey();
         fp.setBuybackPoolKey(key);
-        // should not revert even though buffers zero
-        fp.flushBuffer(key.toId());
+        // should revert because buffer is zero (< 1e18 threshold)
+        vm.expectRevert(DeliErrors.BelowMinimumThreshold.selector);
+        fp.flushBuffer(key.toId(), 0);
     }
 
     // ---------------------------------------------------------------------

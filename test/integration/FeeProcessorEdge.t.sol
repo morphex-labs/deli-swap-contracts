@@ -102,7 +102,8 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
             IERC20(address(bmx)),
             address(0)
         );
-        fp = new FeeProcessor(poolManager, hookAddr, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), VOTER_DST);
+        fp = new FeeProcessor(poolManager, hookAddr, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
+        fp.setKeeper(address(this), true);
 
         inc = new MockIncentiveGauge();
 
@@ -214,7 +215,7 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         fp.setBuybackPoolKey(canonicalKey);
 
         // Flush buffers – should execute buyback swap and stream BMX to gauge bucket
-        fp.flushBuffer(otherPoolId);
+        fp.flushBuffer(otherPoolId, 0);
 
         // Buffers cleared
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buyback buffer not cleared");
@@ -240,11 +241,11 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         fp.setBuybackPoolKey(canonicalKey);
 
         // Tighten slippage tolerance to 100% (i.e., require 1:1)
-        fp.setMinOutBps(10000);
+        // slippage now controlled per-call via expectedBmxOut
 
         // Expect flush to revert with "slippage" and buffer to remain
         vm.expectRevert(DeliErrors.Slippage.selector);
-        fp.flushBuffer(otherPoolId);
+        fp.flushBuffer(otherPoolId, type(uint256).max);
 
         // Buffer should still be intact
         assertEq(fp.pendingWbltForBuyback(otherPoolId), pending, "buffer incorrectly cleared after failure");
@@ -255,7 +256,7 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
     //////////////////////////////////////////////////////////////*/
     function testPartialFlushVoterBufferOnly() public {
         // 1. Generate wBLT fee via OTHER -> wBLT so only that pool's buyback buffer is filled
-        uint256 swapIn = 1e20; // 100 OTHER
+        uint256 swapIn = 4e20; // ensure ≥1 wBLT threshold
         poolManager.unlock(abi.encode(address(other), swapIn));
 
         // buybackPortion stored as wBLT buffer for OTHER pool; voter portion accumulates globally
@@ -272,7 +273,7 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         uint256 preVoter = fp.pendingWbltForVoter();
 
         // 3. Flush – should process OTHER pool buffer
-        fp.flushBuffer(otherPoolId);
+        fp.flushBuffer(otherPoolId, 0);
 
         // 4. Assertions: internal BMX->wBLT buyback generates hook fees and credits the source pool bucket
         // Buyback buffer should be zero after successful flush

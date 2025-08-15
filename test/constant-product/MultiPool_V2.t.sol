@@ -102,7 +102,7 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
             address(0)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
         inc = new MockIncentiveGauge();
 

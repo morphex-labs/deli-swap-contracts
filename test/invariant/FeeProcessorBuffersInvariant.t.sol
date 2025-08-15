@@ -55,8 +55,7 @@ contract FeeProcessorBuffersInvariant is Test {
             address(this),              // deliHook (sender)
             WBLT_ADDR,
             BMX,
-            IDailyEpochGauge(address(gauge)),
-            address(0xDEAD)
+            IDailyEpochGauge(address(gauge))
         );
 
         // craft PoolKeys

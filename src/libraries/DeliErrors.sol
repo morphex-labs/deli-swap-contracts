@@ -27,6 +27,7 @@ library DeliErrors {
     error SwapActive();
     error NoSwap();
     error Slippage();
+    error BelowMinimumThreshold();
     error NativeEthNotSupported();
     error WbltMissing();
     error ComponentNotDeployed();

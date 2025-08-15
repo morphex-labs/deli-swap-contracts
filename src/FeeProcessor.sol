@@ -10,8 +10,6 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
-import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
-import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {SafeCallback} from "v4-periphery/src/base/SafeCallback.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -53,61 +51,63 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
     Currency public immutable WBLT;
     address public immutable BMX;
-
     IDailyEpochGauge public immutable DAILY_GAUGE;
-    address public immutable VOTER_DISTRIBUTOR;
+
+    // minimum wBLT amount required to execute a buyback (1 wBLT)
+    uint256 public constant MIN_WBLT_FOR_BUYBACK = 1e18;
 
     // configurable share for buyback (in basis points, 9700 = 97%).
     uint16 public buybackBps = 9700;
-    uint16 public minOutBps = 9900; // 1% max slippage by default
-
-    // Accumulated wBLT awaiting swap → BMX buyback (per-pool tracking)
-    mapping(PoolId => uint256) public pendingWbltForBuyback;
-    uint256 public pendingWbltForVoter;
-
-    // pending swap state
-    bool private _swapActive;
-    uint256 private _pendingAmount;
-    PoolId private _pendingSourcePool;
 
     // poolKey to use for buyback swaps (BMX/wBLT pool)
     PoolKey public buybackPoolKey;
     bool public buybackPoolSet;
 
-    // Authorized hooks
-    mapping(address => bool) public isHook;
+    // pending swap state
+    bool private _swapActive;
+    uint256 private _pendingAmount;
+    PoolId private _pendingSourcePool;
+    uint256 private _expectedMinBmxOut;
+
+    // Accumulated wBLT awaiting swap → BMX buyback (per-pool tracking)
+    mapping(PoolId => uint256) public pendingWbltForBuyback;
+    uint256 public pendingWbltForVoter;
+
+    mapping(address => bool) public isHook; // Authorized hooks
+    mapping(address => bool) public isKeeper; // Authorized keepers
+
+    // Tracking of pools with pending buyback buffers for efficient keeper queries
+    PoolId[] private pendingPools;
+    mapping(PoolId => uint256) private pendingPoolIndex; // 1-based index; 0 means not present
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
 
     event FeeCollected(
-        address indexed pool,
+        address indexed hook,
+        PoolId indexed poolId,
         uint256 totalAmount,
         uint256 buybackPortion,
         uint256 voterPortion,
         bool indexed isInternalSwap
     );
-    event BuybackPoolSet(PoolKey poolKey);
-    event BuybackExecuted(uint256 wbltIn, uint256 bmxOut);
+    event BuybackPoolSet(PoolId poolId);
+    event BuybackExecuted(PoolId indexed poolId, uint256 wbltIn, uint256 bmxOut);
     event BuybackBpsUpdated(uint16 newBps);
-    event MinOutBpsUpdated(uint16 newBps);
     event VoterFeesClaimed(uint256 amount, address to);
     event TokenSwept(address indexed token, uint256 amount, address indexed to);
     event HookAuthorised(address hook, bool enabled);
+    event KeeperAuthorised(address keeper, bool enabled);
 
     /*//////////////////////////////////////////////////////////////
                                  CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
 
-    constructor(
-        IPoolManager _poolManager,
-        address _hook,
-        address _wblt,
-        address _bmx,
-        IDailyEpochGauge _dailyGauge,
-        address _voterDistributor
-    ) Ownable(msg.sender) SafeCallback(_poolManager) {
+    constructor(IPoolManager _poolManager, address _hook, address _wblt, address _bmx, IDailyEpochGauge _dailyGauge)
+        Ownable(msg.sender)
+        SafeCallback(_poolManager)
+    {
         poolManager = _poolManager;
         isHook[_hook] = true; // whitelist initial hook
 
@@ -116,7 +116,6 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         WBLT = Currency.wrap(_wblt);
         BMX = _bmx;
         DAILY_GAUGE = _dailyGauge;
-        VOTER_DISTRIBUTOR = _voterDistributor;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -125,6 +124,11 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
     modifier onlyHook() {
         if (!isHook[msg.sender]) revert DeliErrors.NotHook();
+        _;
+    }
+
+    modifier onlyKeeper() {
+        if (!(isKeeper[msg.sender] || msg.sender == address(this))) revert DeliErrors.NotAllowed();
         _;
     }
 
@@ -153,13 +157,13 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         emit BuybackBpsUpdated(newBps);
     }
 
-    /// @notice Governance setter for the minimum acceptable output when the
-    ///         contract performs a swap (slippage protection).
-    /// @param newBps New minimum-output ratio in basis points (0 ‑ 10 000).
-    function setMinOutBps(uint16 newBps) external onlyOwner {
-        if (newBps > 10_000) revert DeliErrors.InvalidBps();
-        minOutBps = newBps;
-        emit MinOutBpsUpdated(newBps);
+    /// @notice Authorise or de-authorise a keeper address.
+    /// @param keeper The address to authorise or de-authorise.
+    /// @param enabled Whether to authorise or de-authorise the address.
+    function setKeeper(address keeper, bool enabled) external onlyOwner {
+        if (keeper == address(0)) revert DeliErrors.ZeroAddress();
+        isKeeper[keeper] = enabled;
+        emit KeeperAuthorised(keeper, enabled);
     }
 
     /// @notice Configuration of the BMX/wBLT pool used for buy-backs.
@@ -173,7 +177,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         if (!buybackPoolSet) {
             buybackPoolSet = true;
         }
-        emit BuybackPoolSet(key);
+        emit BuybackPoolSet(key.toId());
     }
 
     /// @notice Authorise or de-authorise a hook address.
@@ -198,17 +202,28 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
                         BUFFER AND FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Attempts to process the specified pool's pending buy-back buffer and voter buffer.
-    /// @dev Reverts if no buy-back pool key has been configured yet.
+    /// @notice Processes a pool's pending buy-back buffer using an explicit minimum expected BMX out.
+    /// @dev Reverts if no buy-back pool key has been configured yet. Reverts if below threshold.
     /// @param poolId The pool ID whose pending wBLT buffer to flush.
-    function flushBuffer(PoolId poolId) external {
+    /// @param expectedBmxOut The minimum expected BMX output for slippage protection.
+    function flushBuffer(PoolId poolId, uint256 expectedBmxOut) external onlyKeeper {
         if (!buybackPoolSet) revert DeliErrors.NoKey();
-
-        // Try to flush this pool's pending wBLT
         uint256 poolPending = pendingWbltForBuyback[poolId];
-        if (poolPending > 0) {
-            _pendingSourcePool = poolId;
-            _initiateSwap(poolPending);
+        if (poolPending < MIN_WBLT_FOR_BUYBACK) revert DeliErrors.BelowMinimumThreshold();
+        _pendingSourcePool = poolId;
+        _expectedMinBmxOut = expectedBmxOut;
+        _initiateSwap(poolPending);
+    }
+
+    /// @notice Batch version of {flushBuffer}.
+    /// @dev If any flushBuffer call fails, the loop will continue.
+    /// @param poolIds The pool IDs whose pending wBLT buffers to flush.
+    /// @param expectedBmxOuts The minimum expected BMX outputs for slippage protection.
+    function flushBuffers(PoolId[] calldata poolIds, uint256[] calldata expectedBmxOuts) external onlyKeeper {
+        if (poolIds.length != expectedBmxOuts.length) revert DeliErrors.InvalidOption();
+        for (uint256 i = 0; i < poolIds.length; i++) {
+            // Use try-catch per iteration to avoid reverting the whole batch
+            try this.flushBuffer(poolIds[i], expectedBmxOuts[i]) {} catch {}
         }
     }
 
@@ -222,14 +237,16 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         uint256 buybackPortion = (amountWblt * buybackBps) / 10_000;
         uint256 voterPortion = amountWblt - buybackPortion;
 
-        emit FeeCollected(msg.sender, amountWblt, buybackPortion, voterPortion, isInternalSwap);
+        emit FeeCollected(msg.sender, poolId, amountWblt, buybackPortion, voterPortion, isInternalSwap);
 
-        pendingWbltForBuyback[poolId] += buybackPortion; // track per-pool buyback buffer
+        uint256 oldBuyback = pendingWbltForBuyback[poolId];
+        pendingWbltForBuyback[poolId] = oldBuyback + buybackPortion; // track per-pool buyback buffer
         pendingWbltForVoter += voterPortion; // track voter buffer for weekly sweep
 
-        // Try to flush just this pool's buffer if not internal swap
-        if (!isInternalSwap) {
-            try this.flushBuffer(poolId) {} catch {}
+        // If buffer transitioned from 0 -> >0, add to pending set
+        if (oldBuyback == 0 && buybackPortion > 0 && pendingPoolIndex[poolId] == 0) {
+            pendingPools.push(poolId);
+            pendingPoolIndex[poolId] = pendingPools.length; // 1-based
         }
     }
 
@@ -237,8 +254,21 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
                                INTERNAL
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Removes a pool from the pending set using swap-and-pop.
+    function _removePendingPool(PoolId poolId) internal {
+        uint256 index = pendingPoolIndex[poolId];
+        if (index == 0) return; // not present
+        uint256 lastIdx = pendingPools.length;
+        if (index != lastIdx) {
+            PoolId lastPoolId = pendingPools[lastIdx - 1];
+            pendingPools[index - 1] = lastPoolId;
+            pendingPoolIndex[lastPoolId] = index;
+        }
+        pendingPools.pop();
+        pendingPoolIndex[poolId] = 0;
+    }
+
     /// @dev Initiates a WBLT -> BMX buyback swap for the specified amount.
-    /// @param amount The amount of wBLT to swap to BMX.
     function _initiateSwap(uint256 amount) internal {
         if (_swapActive) revert DeliErrors.SwapActive();
         _swapActive = true;
@@ -280,27 +310,11 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         // Settle input token from this contract into PoolManager
         (wbltIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
 
-        // Construct swap params & pre-swap price for slippage estimation
-        (uint160 sqrtPx96,,,) = StateLibrary.getSlot0(poolManager, buybackPoolKey.toId());
-
         SwapParams memory sp = SwapParams({
             zeroForOne: zeroForOne,
             amountSpecified: -int256(amtIn),
             sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
         });
-
-        // Expected quote at mid-price
-        uint256 quoteOut;
-        // Use ratioX128 to avoid overflow when squaring sqrtPx96
-        // Following Uniswap v3's OracleLibrary implementation
-        uint256 ratioX128 = FullMath.mulDiv(sqrtPx96, sqrtPx96, 1 << 64);
-        if (zeroForOne) {
-            // token0 -> token1: price = sqrtPrice^2
-            quoteOut = FullMath.mulDiv(amtIn, ratioX128, 1 << 128);
-        } else {
-            // token1 -> token0: price = 1 / sqrtPrice^2
-            quoteOut = FullMath.mulDiv(amtIn, 1 << 128, ratioX128);
-        }
 
         // Execute the swap - any failures will be caught by the try-catch in collectFee()
         BalanceDelta delta = poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG));
@@ -309,7 +323,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         Currency outCurrency = zeroForOne ? c1 : c0;
         uint256 outAmt = zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
 
-        if (outAmt < (quoteOut * minOutBps) / 10_000) revert DeliErrors.Slippage();
+        if (outAmt < _expectedMinBmxOut) revert DeliErrors.Slippage();
 
         // Pull tokens owed from PoolManager
         outCurrency.take(poolManager, address(this), outAmt, false);
@@ -317,10 +331,37 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         // Output is BMX, stream to gauge
         IERC20(BMX).safeTransfer(address(DAILY_GAUGE), outAmt);
         DAILY_GAUGE.addRewards(_pendingSourcePool, outAmt);
-        emit BuybackExecuted(amtIn, outAmt);
+        emit BuybackExecuted(_pendingSourcePool, amtIn, outAmt);
 
         _swapActive = false;
         _pendingAmount = 0;
+
+        // If the pool's buffer is still zero after a successful buyback, remove it from the pending set
+        PoolId sourcePool = _pendingSourcePool;
         _pendingSourcePool = PoolId.wrap(bytes32(0));
+        _expectedMinBmxOut = 0;
+        if (pendingWbltForBuyback[sourcePool] == 0) {
+            _removePendingPool(sourcePool);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                VIEWS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Returns the list of pools that currently have a non-zero pending buyback buffer.
+    function getPendingPools() external view returns (PoolId[] memory) {
+        return pendingPools;
+    }
+
+    /// @notice Returns the count of pools with non-zero pending buyback buffers.
+    function pendingPoolsCount() external view returns (uint256) {
+        return pendingPools.length;
+    }
+
+    /// @notice Returns the poolId at a given index in the pending set.
+    /// @param index The index of the pool to return.
+    function getPendingPoolByIndex(uint256 index) external view returns (PoolId) {
+        return pendingPools[index];
     }
 }

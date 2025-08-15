@@ -85,7 +85,7 @@ contract GaugeStream_IT is Test, Deployers {
             IERC20(address(bmx)),
             address(inc)
         );
-        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
+        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
 
         // Deploy PositionManagerAdapter and V4PositionHandler
         adapter = new PositionManagerAdapter(address(gauge), address(inc));

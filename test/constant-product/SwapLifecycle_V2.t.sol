@@ -12,6 +12,7 @@ import {DailyEpochGauge} from "src/DailyEpochGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
 import {MultiPoolCustomCurve} from "src/base/MultiPoolCustomCurve.sol";
 import {InternalSwapFlag} from "src/libraries/InternalSwapFlag.sol";
+import {DeliErrors} from "src/libraries/DeliErrors.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -92,8 +93,9 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
             address(0)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
+        fp.setKeeper(address(this), true);
         inc = new MockIncentiveGauge();
 
         // Deploy hook
@@ -403,7 +405,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
                          INTERNAL SWAP VERIFICATION
     //////////////////////////////////////////////////////////////*/
 
-    function testInternalSwapNoFees() public {
+    function testInternalSwapThresholded() public {
         // Deploy a new token
         MockERC20 tokenA = deployToken();
         tokenA.approve(address(poolManager), type(uint256).max);
@@ -442,7 +444,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         bool wbltIsCurrency0 = Currency.unwrap(nonBmxKey.currency0) == address(wblt);
         // If wBLT is currency0, swap currency1 -> currency0 (zeroForOne = false)
         // If wBLT is currency1, swap currency0 -> currency1 (zeroForOne = true)
-        poolManager.unlock(abi.encode(nonBmxKey, !wbltIsCurrency0, 10 ether, true));
+        poolManager.unlock(abi.encode(nonBmxKey, !wbltIsCurrency0, 8e20, true));
         
         // Now we should have wBLT fees for buyback
         PoolId nonBmxPoolId = nonBmxKey.toId();
@@ -451,19 +453,20 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         
         // Setup for internal swap using the BMX/wBLT pool
         fp.setBuybackPoolKey(key);
-        
+
+        // If pending is below threshold, flush should revert; otherwise perform flush and assert
+        if (pendingBuyback < 1e18) {
+            vm.expectRevert(DeliErrors.BelowMinimumThreshold.selector);
+            fp.flushBuffer(nonBmxPoolId, 0);
+            return;
+        }
+
         (uint128 r0Before, uint128 r1Before) = hook.getReserves(pid);
-        
-        // Flush buffers (triggers internal swap with INTERNAL_SWAP_FLAG)
-        fp.flushBuffer(nonBmxPoolId);
-        
+        fp.flushBuffer(nonBmxPoolId, 0);
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        
-        // For internal swaps, reserves should have changed
+
         assertGt(r1After, r1Before, "wBLT reserves should increase (wBLT in)");
         assertLt(r0After, r0Before, "BMX reserves should decrease (BMX out)");
-        
-        // The swap should have consumed the pending wBLT
         assertEq(fp.pendingWbltForBuyback(nonBmxPoolId), 0, "Pending wBLT should be consumed");
     }
 }

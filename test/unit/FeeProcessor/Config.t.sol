@@ -29,11 +29,12 @@ contract FeeProcessor_ConfigTest is Test {
 
     function setUp() public {
         gauge = new MockDailyEpochGauge();
-        fp = new FeeProcessor(PM, HOOK, WBLT_TOKEN, BMX_TOKEN, gauge, VOTER_DIST);
+        fp = new FeeProcessor(PM, HOOK, WBLT_TOKEN, BMX_TOKEN, gauge);
+        fp.setKeeper(address(this), true);
     }
 
     // ------------------------------------------------------------
-    // setBuybackBps / setMinOutBps
+    // setBuybackBps
     // ------------------------------------------------------------
 
     function testOwnerCanUpdateBuybackBps() public {
@@ -46,24 +47,16 @@ contract FeeProcessor_ConfigTest is Test {
         fp.setBuybackBps(10001);
     }
 
-    function testOwnerCanUpdateMinOutBps() public {
-        fp.setMinOutBps(9500);
-        assertEq(fp.minOutBps(), 9500);
-    }
-
-    function testUpdateMinOutBpsTooHighReverts() public {
-        vm.expectRevert(DeliErrors.InvalidBps.selector);
-        fp.setMinOutBps(10001);
-    }
+    // removed minOutBps tests; slippage controlled via per-call expectedBmxOut
 
     // ------------------------------------------------------------
     // flushBuffers access control
     // ------------------------------------------------------------
 
-    function testFlushBuffersRevertsWithoutPoolKey() public {
+    function testFlushBufferRevertsWithoutPoolKey() public {
         vm.expectRevert(DeliErrors.NoKey.selector);
         // Can use any pool ID, will revert before checking
-        fp.flushBuffer(PoolId.wrap(bytes32(0)));
+        fp.flushBuffer(PoolId.wrap(bytes32(0)), 0);
     }
 
     // ------------------------------------------------------------
