@@ -258,29 +258,23 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), inputAmount, true));
 
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        uint256 bmxAfter = bmx.balanceOf(address(this));
-        uint256 wbltAfter = wblt.balanceOf(address(this));
 
         // Verify token balances
-        assertEq(bmxBefore - bmxAfter, inputAmount, "BMX spent should match input");
-        uint256 outputAmount = wbltAfter - wbltBefore;
+        assertEq(bmxBefore - bmx.balanceOf(address(this)), inputAmount, "BMX spent should match input");
+        uint256 outputAmount = wblt.balanceOf(address(this)) - wbltBefore;
         
-        // In DeliHookConstantProduct, the output is calculated with implicit fees
-        // The actual calculation happens in _getUnspecifiedAmount
-        // We need to verify the output is reasonable, not exact
-        
-        // Output should be less than input due to price impact and fees
-        assertLt(outputAmount, inputAmount, "Output should be less than input");
-        
-        // Output should be at least 65% of input (accounting for 0.3% fee + price impact)
-        // With 5% of liquidity being swapped, price impact is significant
-        assertGt(outputAmount, (inputAmount * 65) / 100, "Output too low");
+        // Expected exact output with fee under constant product
+        uint256 expectedOut = _cpAmountOut(inputAmount, uint256(r0Before), uint256(r1Before), 3000);
+        assertEq(outputAmount, expectedOut, "exact input out mismatch");
 
         // Verify reserves updated correctly
-        // Note: DeliHookConstantProduct removes the fee from reserves after the swap
-        uint256 feeAmount = (inputAmount * 3000) / 1_000_000; // 0.3% fee
-        assertEq(r0After, r0Before + inputAmount - feeAmount, "Reserve0 should increase by input minus fee");
-        assertEq(r1After, r1Before - outputAmount, "Reserve1 should decrease by output");
+        // For BMX->wBLT with fee taken from output currency (wBLT):
+        // - reserve0 increases by the full input
+        // - reserve1 decreases by output + feeOut (fee is taken from output side)
+        uint256 outNoFee = _cpAmountOut(inputAmount, uint256(r0Before), uint256(r1Before), 0);
+        uint256 feeOut = outNoFee > expectedOut ? (outNoFee - expectedOut) : 0;
+        assertEq(r0After, r0Before + inputAmount, "Reserve0 should increase by full input when fee on output");
+        assertEq(r1After, r1Before - outputAmount - feeOut, "Reserve1 should decrease by output plus fee");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -298,34 +292,47 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), outputAmount, false));
 
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        uint256 bmxAfter = bmx.balanceOf(address(this));
-        uint256 wbltAfter = wblt.balanceOf(address(this));
 
         // Verify output received
-        assertEq(wbltAfter - wbltBefore, outputAmount, "wBLT received should match output");
-        uint256 inputAmount = bmxBefore - bmxAfter;
+        assertEq(wblt.balanceOf(address(this)) - wbltBefore, outputAmount, "wBLT received should match output");
+        uint256 inputAmount = bmxBefore - bmx.balanceOf(address(this));
         
-        // DeliHookConstantProduct has different fee handling than standard V2
-        // The fee is calculated on the input and removed from reserves
-        // Just verify the input is reasonable (within 50% of standard calculation)
-        uint256 standardExpectedInput = (r0Before * outputAmount * 1000) / ((r1Before - outputAmount) * 997) + 1;
-        
-        // Allow up to 50% difference due to fee handling
-        assertLt(inputAmount, standardExpectedInput * 3 / 2, "Input too high");
-        assertGt(inputAmount, standardExpectedInput / 2, "Input too low");
+        // Expected exact input for exact output when fee is on output:
+        // compute grossOut = amountOut * (1 + fee) and solve input with ZERO fee
+        uint256 grossOut = (outputAmount * (1_000_000 + 3000)) / 1_000_000;
+        uint256 expectedIn = _cpAmountIn(grossOut, uint256(r0Before), uint256(r1Before), 0);
+        assertEq(inputAmount, expectedIn, "exact output in mismatch");
 
         // Verify reserves
-        // DeliHookConstantProduct removes the fee from reserves after the swap
-        // With the bug fix, fee should now be 0.3% instead of 30%
-        // For exact output, the fee is still calculated as inputWithFee - inputWithoutFee
-        // but now it should be much smaller
-        uint256 inputWithoutFee = (r0Before * outputAmount) / (r1Before - outputAmount) + 1;
-        uint256 feeAmount = inputAmount > inputWithoutFee ? inputAmount - inputWithoutFee : 0;
-        
-        // With fixed fee calculation, input should be around 3.1 ether (not 4.4 ether)
-        // So we might need to adjust expectations or wait for the test to run with fixed contract
-        assertEq(r0After, r0Before + inputAmount - feeAmount, "Reserve0 should increase by input minus fee");
-        assertEq(r1After, r1Before - outputAmount, "Reserve1 should decrease by output");
+        // For fee on output: reserve0 increases by full input; reserve1 decreases by output + feeOut
+        uint256 feeOut = (outputAmount * 3000) / 1_000_000;
+        assertEq(r0After, r0Before + inputAmount, "Reserve0 should increase by full input when fee on output");
+        assertEq(r1After, r1Before - outputAmount - feeOut, "Reserve1 should decrease by output plus fee");
+    }
+
+    // Helpers to reduce local variable usage in tests
+    function _cpAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 feeBasis = 1_000_000 - uint256(feePips);
+        uint256 amountInWithFee = amountIn * feeBasis;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1_000_000 + amountInWithFee;
+        return numerator / denominator;
+    }
+
+    function _cpAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 feeBasis = 1_000_000 - uint256(feePips);
+        require(amountOut < reserveOut, "insufficient liquidity");
+        uint256 numerator = reserveIn * amountOut * 1_000_000;
+        uint256 denominator = (reserveOut - amountOut) * feeBasis;
+        return (numerator / denominator) + 1;
     }
 
     /*//////////////////////////////////////////////////////////////

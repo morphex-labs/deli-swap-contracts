@@ -5,6 +5,5 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 
 /// @title IFeeProcessor
 interface IFeeProcessor {
-    function collectFee(PoolKey calldata key, uint256 amountWBLT) external;
-    function collectInternalFee(uint256 bmxAmount) external;
+    function collectFee(PoolKey calldata key, uint256 amountWBLT, bool isInternalSwap) external;
 }

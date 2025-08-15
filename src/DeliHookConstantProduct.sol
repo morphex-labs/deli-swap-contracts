@@ -88,7 +88,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     event Sync(PoolId indexed poolId, uint128 reserve0, uint128 reserve1);
     event Mint(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1);
     event Burn(PoolId indexed poolId, address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
-    event FeeForwarded(address indexed pool, uint256 amount, bool indexed isBmxPool);
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
     event IncentiveGaugeUpdated(address indexed newGauge);
@@ -264,11 +263,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         // Forward the fee to FeeProcessor
         if (_pendingFeeAmount > 0) {
-            if (_isInternalSwap) {
-                _forwardInternalFeeToProcessor(_pendingFeeCurrency, _pendingFeeAmount);
-            } else {
-                _forwardFeeToProcessor(key, _pendingFeeCurrency, _pendingFeeAmount);
-            }
+            _transferFeeTokens(_pendingFeeCurrency, _pendingFeeAmount);
+            feeProcessor.collectFee(key, _pendingFeeAmount, _isInternalSwap);
         }
 
         // Reset pending fee storage and swap parameters
@@ -480,10 +476,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         view
         returns (bool feeFromOutput, Currency feeCurrency)
     {
-        bool _isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-        Currency _feeCurrency = _isBmxPool
-            ? ((Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1)
-            : ((Currency.unwrap(key.currency0) == WBLT) ? key.currency0 : key.currency1);
+        // Always use wBLT as fee currency
+        Currency _feeCurrency = (key.currency0 == Currency.wrap(WBLT)) ? key.currency0 : key.currency1;
         Currency _outputCurrency = zeroForOne ? key.currency1 : key.currency0;
 
         return (_feeCurrency == _outputCurrency, _feeCurrency);
@@ -707,30 +701,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         }
 
         _pendingFeeAmount = feeAmount;
-    }
-
-    /// @dev Forward the implicit fee to FeeProcessor
-    function _forwardFeeToProcessor(PoolKey memory key, Currency feeCurrency, uint256 feeAmount) private {
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-
-        // Transfer fee tokens to FeeProcessor
-        _transferFeeTokens(feeCurrency, feeAmount);
-
-        // Notify FeeProcessor about the collected fee
-        feeProcessor.collectFee(key, feeAmount);
-
-        emit FeeForwarded(address(this), feeAmount, isBmxPool);
-    }
-
-    /// @dev Forward the implicit fee from internal swaps to FeeProcessor
-    function _forwardInternalFeeToProcessor(Currency feeCurrency, uint256 feeAmount) private {
-        // Transfer fee tokens to FeeProcessor
-        _transferFeeTokens(feeCurrency, feeAmount);
-
-        // Notify FeeProcessor about the internal fee
-        feeProcessor.collectInternalFee(feeAmount);
-
-        emit FeeForwarded(address(this), feeAmount, true);
     }
 
     /// @dev Helper to transfer fee tokens from hook to FeeProcessor

@@ -38,9 +38,11 @@ contract FeeProcessorBuffersInvariant is Test {
                                   STATE TRACK
     //////////////////////////////////////////////////////////////*/
 
-    uint256 internal totalBmxFees;   // fees sent via BMX pool
-    uint256 internal totalWbltFees;  // fees sent via OTHER/wBLT pool
-    uint256 internal totalInternalFees; // fees from internal swaps
+    uint256 internal totalBmxFees;        // raw fees sent via BMX pool (wBLT units)
+    uint256 internal totalWbltFees;       // raw fees sent via OTHER/wBLT pool (wBLT units)
+    uint256 internal totalInternalFees;   // raw fees from internal swaps (wBLT units)
+    uint256 internal voterFromBmx;        // per-collection voter share accumulated for BMX pool (rounded per op)
+    uint256 internal voterFromInternal;   // per-collection voter share accumulated for internal fees (rounded per op)
 
     PoolKey internal bmxPoolKey;
     PoolKey internal otherPoolKey;
@@ -77,11 +79,6 @@ contract FeeProcessorBuffersInvariant is Test {
         // Set buyback pool key for internal fee distribution
         fp.setBuybackPoolKey(bmxPoolKey);
 
-        // whitelist this test as authorised hook sender
-        vm.prank(address(this));
-        // no different requirement – collectFee only has onlyHook modifier inside FeeProcessor which checks sender == deliHook
-        // deliHook set as address(this) in constructor above so ok.
-
         targetContract(address(this));
     }
 
@@ -92,19 +89,20 @@ contract FeeProcessorBuffersInvariant is Test {
     function fuzz_step(uint256 choice, uint256 amount) external {
         uint256 amt = bound(amount, 1, 1e24);
         uint256 action = choice % 3;
-        
         if (action == 0) {
-            // Regular BMX pool fee
-            fp.collectFee(bmxPoolKey, amt);
+            fp.collectFee(bmxPoolKey, amt, false);
             totalBmxFees += amt;
+            uint256 buybackPortion = (amt * fp.buybackBps()) / 10_000; // floor
+            voterFromBmx += (amt - buybackPortion); // per-op rounding
         } else if (action == 1) {
-            // Regular non-BMX pool fee
-            fp.collectFee(otherPoolKey, amt);
+            fp.collectFee(otherPoolKey, amt, false);
             totalWbltFees += amt;
         } else {
-            // Internal swap fee (always BMX)
-            fp.collectInternalFee(amt);
+            // Model internal swap path
+            fp.collectFee(bmxPoolKey, amt, true);
             totalInternalFees += amt;
+            uint256 buybackInternal = (amt * fp.buybackBps()) / 10_000; // floor
+            voterFromInternal += (amt - buybackInternal); // per-op rounding
         }
     }
 
@@ -112,18 +110,14 @@ contract FeeProcessorBuffersInvariant is Test {
                                  INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_bmxAccounting() public {
-        uint256 gaugeRewards = gauge.rewards(bmxPid);
-        uint256 pendingBmxVoter = fp.pendingBmxForVoter();
-        // buyback buffer never holds BMX (only wBLT)
-        // Internal fees are also BMX and go to gauge + voter
-        assertEq(gaugeRewards + pendingBmxVoter, totalBmxFees + totalInternalFees, "BMX fee mismatch");
-    }
-
     function invariant_wbltAccounting() public {
-        // Only OTHER pool generates wBLT fees (non-BMX pool)
+        // In the unified model, all fees are in wBLT.
+        // The global voter buffer accumulates per-operation voter shares from ALL pools (including BMX and internal).
+        // The OTHER pool's buyback buffer holds the buyback share of OTHER/wBLT fees (auto-flush is disabled here).
         uint256 pendingBuy = fp.pendingWbltForBuyback(otherPoolKey.toId());
         uint256 pendingVoter = fp.pendingWbltForVoter();
-        assertEq(pendingBuy + pendingVoter, totalWbltFees, "wBLT fee mismatch");
+        // Expected equals: sum(OTHER fees) + sum(voter shares from BMX) + sum(voter shares from internal)
+        uint256 expected = totalWbltFees + voterFromBmx + voterFromInternal;
+        assertEq(pendingBuy + pendingVoter, expected, "wBLT fee mismatch");
     }
 } 

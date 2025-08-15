@@ -332,38 +332,49 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // Swap on pool1 (3000 = 0.3% fee)
         poolManager.unlock(abi.encode(pool1, true, 10 ether, true)); // pool, zeroForOne, amount, exactInput
 
+        // Snapshot voter buffer before second swap since it is global across pools
+        uint256 voterBefore = fp.pendingWbltForVoter();
         // Swap on pool2 (1000 = 0.1% fee)
         poolManager.unlock(abi.encode(pool2, address(tokenA) < address(wblt), 10 ether, true));
 
-        // Check fee processor collected fees from both pools
-        // NOTE: BMX pool fees work differently than non-BMX pool fees:
-        // - BMX fees: 97% goes directly to DailyEpochGauge, 3% to pendingBmxForVoter
-        // - wBLT fees: 97% to pendingWbltForBuyback, 3% to pendingWbltForVoter
-        
-        // Pool1 (BMX/wBLT): BMX -> wBLT swap, fee in BMX (input)
-        // Fee = 10 ether * 0.003 = 0.03 ether in BMX
-        // - 0.03 * 0.97 = 0.0291 ether sent directly to gauge
-        // - 0.03 * 0.03 = 0.0009 ether to pendingBmxForVoter
-        
-        // Pool2 (tokenA/wBLT): tokenA -> wBLT swap, fee in wBLT (output)
-        // Fee calculation is different when taken from output:
-        // Fee = output_reduction = output_without_fee - output_with_fee
-        // With 100:100 reserves and 10 ether input:
-        // Output without fee = (10 * 100) / (100 + 10) ≈ 9.0909 ether
-        // Output with fee = (10 * 0.999 * 100) / (100 + 10 * 0.999) ≈ 9.0826 ether
-        // Fee ≈ 0.0083 ether in wBLT
-        
+        // Check fee processor collected fees from both pools (minimize locals to avoid stack-too-deep)
         PoolId pool2Id = pool2.toId();
-        uint256 pendingWbltBuyback = fp.pendingWbltForBuyback(pool2Id);
-        uint256 pendingWbltVoter = fp.pendingWbltForVoter();
-        uint256 pendingBmxVoter = fp.pendingBmxForVoter();
-        
-        // Check wBLT fees from pool2 (output-based fee calculation)
-        assertApproxEqAbs(pendingWbltBuyback, 0.0083 ether * 97 / 100, 1e14, "wBLT buyback from pool2");
-        assertApproxEqAbs(pendingWbltVoter, 0.0083 ether * 3 / 100, 1e13, "wBLT voter from pool2");
-        
-        // Check BMX fees from pool1 (input-based fee calculation)
-        assertApproxEqAbs(pendingBmxVoter, 0.0009 ether, 1e14, "BMX voter from pool1");
+        // Compute fee using exact constant product math at initial reserves
+        uint256 feeWblt = _calcFeeWblt(
+            10 ether,
+            1000,
+            address(tokenA) < address(wblt),
+            (address(tokenA) < address(wblt))
+                ? (Currency.unwrap(pool2.currency1) == address(wblt))
+                : (Currency.unwrap(pool2.currency0) == address(wblt)),
+            100 ether,
+            100 ether
+        );
+        uint256 expectedBuyback = (feeWblt * fp.buybackBps()) / 10_000;
+        assertEq(fp.pendingWbltForBuyback(pool2Id), expectedBuyback, "wBLT buyback from pool2");
+        // Voter buffer is global; assert only the delta from pool2's swap equals its voter share
+        uint256 voterDelta = fp.pendingWbltForVoter() - voterBefore;
+        assertEq(voterDelta, feeWblt - expectedBuyback, "wBLT voter from pool2");
+    }
+
+    function _calcFeeWblt(
+        uint256 amountIn,
+        uint24 feePips,
+        bool zeroForOne,
+        bool wbltIsOutput,
+        uint256 reserve0,
+        uint256 reserve1
+    ) private pure returns (uint256) {
+        uint256 rIn = zeroForOne ? reserve0 : reserve1;
+        uint256 rOut = zeroForOne ? reserve1 : reserve0;
+        uint256 feeBasis = 1_000_000 - feePips;
+        uint256 aInWithFee = amountIn * feeBasis;
+        uint256 outWithFee = (aInWithFee * rOut) / (rIn * 1_000_000 + aInWithFee);
+        uint256 outNoFee = (amountIn * rOut) / (rIn + amountIn);
+        if (wbltIsOutput) {
+            return outNoFee - outWithFee;
+        }
+        return (amountIn * feePips) / 1_000_000;
     }
 
     /*//////////////////////////////////////////////////////////////

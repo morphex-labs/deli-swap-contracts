@@ -1112,7 +1112,7 @@ contract V2ConstantProductHookTest is Test, Deployers {
         
         // Check that REGULAR fee was collected (not internal)
         assertEq(feeProcessor.calls(), regularFeeCallsBefore + 1, "Regular fee should be collected");
-        assertEq(feeProcessor.internalFeeCalls(), 0, "Internal fee should NOT be collected");
+        assertEq(feeProcessor.lastIsInternal(), false, "Regular swap should not be internal");
         
         // Check that gauges WERE poked (regular swap behavior)
         assertGt(dailyEpochGauge.pokeCalls(), 0, "DailyEpochGauge should be poked for regular swap");
@@ -1145,6 +1145,12 @@ contract V2ConstantProductHookTest is Test, Deployers {
         uint256 dailyPokesBefore = dailyEpochGauge.pokeCalls();
         uint256 incentivePokesBefore = incentiveGauge.pokeCount();
         uint256 feeCallsBefore = feeProcessor.calls();
+
+        // Compute expected fee for the upcoming regular swap using PRE-SWAP reserves
+        (uint128 r0Before, uint128 r1Before) = hook.getReserves(id3); // r0 = wBLT (output), r1 = BMX (input)
+        uint256 outWithFeeBefore = calculateExactInputSwap(10 ether, uint256(r1Before), uint256(r0Before), 1000);
+        uint256 outNoFeeBefore   = calculateExactInputSwap(10 ether, uint256(r1Before), uint256(r0Before), 0);
+        uint256 expectedFeeWblt  = outNoFeeBefore > outWithFeeBefore ? outNoFeeBefore - outWithFeeBefore : 0;
         
         // Now perform regular swap
         swapInPool3(10 ether, false);
@@ -1152,12 +1158,11 @@ contract V2ConstantProductHookTest is Test, Deployers {
         // Check that regular fee collection occurred
         assertEq(feeProcessor.calls(), feeCallsBefore + 1, "Regular fee should be collected");
         
-        // For BMX -> wBLT swap on BMX pool (key3), fee is in BMX (input)
-        // Since zeroForOne=false: input=currency1=BMX, output=currency0=wBLT
+        // For BMX -> wBLT swap on BMX pool (key3), fee currency is wBLT (output).
+        // Fee equals the reduction in output due to fee at PRE-SWAP reserves.
         uint256 feeAmount = feeProcessor.lastAmount();
         assertGt(feeAmount, 0, "Fee should be collected");
-        // Fee should be exactly 0.1% of input since fee is taken from input currency
-        assertEq(feeAmount, 10 * 10**15, "Fee should be 0.1% of input");
+        assertEq(feeAmount, expectedFeeWblt, "Fee should equal output reduction in wBLT");
         
         // Check gauges were poked for regular swap
         assertEq(dailyEpochGauge.pokeCalls(), dailyPokesBefore + 1, "DailyEpochGauge should be poked");

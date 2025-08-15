@@ -190,8 +190,9 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xC1), key, sp, "");
 
-        // base fee in specified = 1e18 * 0.003 = 3e15; convert token0->token1: * price (4) = 12e15
-        assertEq(fp.lastAmount(), 12e15);
+        // With wBLT-only fee currency, fee remains in token0 units (no conversion)
+        // base fee in specified = 1e18 * 0.003 = 3e15
+        assertEq(fp.lastAmount(), 3e15);
     }
 
     function testPriceConversion_Token1ToToken0_FeeInToken0_Price2x() public {
@@ -253,9 +254,11 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         vm.prank(address(pm));
         ( , int128 afterUnspecified ) = hook.afterSwap(address(0xD1), key, sp, toBalanceDelta(0,0), "");
 
-        // base fee in specified (BMX) = 2e18 * 0.003 = 6e15
-        assertEq(int256(beforeSpecified), int256(6000000000000000));
-        assertEq(afterUnspecified, 0);
+        // With wBLT-only fee currency, fee is in token0 (wBLT), specified is token1 (BMX)
+        // beforeSpecified stays 0; afterUnspecified returns fee in unspecified token (token0)
+        // base fee in specified (BMX) = 2e18 * 0.003 = 6e15; convert token1->token0: / 4, ceil => 1500000000000000
+        assertEq(int256(beforeSpecified), int256(0));
+        assertEq(afterUnspecified, int128(uint128(1500000000000000)));
     }
 
     function testDeltas_SpecifiedDiffersFromFeeCurrency_WbltPool_ExactOutput_Price2x() public {

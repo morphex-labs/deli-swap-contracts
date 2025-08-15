@@ -81,12 +81,9 @@ contract DeliHook_InternalSwapFlagTest is Test {
 
         _callSwap(address(fp), key, sp, flagData);
 
-        // 1. Internal fee should be collected (not regular fee)
-        assertEq(fp.calls(), 0, "regular collectFee should not be called");
-        assertEq(fp.internalFeeCalls(), 1, "collectInternalFee should be called once");
-        // With mock returning 3000 (0.3%) fee
-        uint256 expectedFee = 1e18 * 3000 / 1_000_000; // 0.3% of 1e18
-        assertEq(fp.lastInternalFeeAmount(), expectedFee, "incorrect internal fee amount");
+        // 1. Internal path should route through collectFee with internal flag
+        assertEq(fp.calls(), 1, "collectFee should be called once");
+        assertTrue(fp.lastIsInternal(), "internal flag should be set");
         
         // 2. Epoch roll and pool poke (gauges should be updated)
         assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
@@ -113,7 +110,6 @@ contract DeliHook_InternalSwapFlagTest is Test {
 
         // Should update gauges and collect regular fees
         assertEq(fp.calls(), 1, "regular fee should be collected");
-        assertEq(fp.internalFeeCalls(), 0, "internal fee should not be collected");
         assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
         assertEq(daily.pokeCalls(), 1, "daily gauge should be poked");
         assertEq(inc.pokeCount(), 1, "incentive gauge should be poked");

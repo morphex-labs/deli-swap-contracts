@@ -254,34 +254,30 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
                     TEST: partial flush – BMX voter only
     //////////////////////////////////////////////////////////////*/
     function testPartialFlushVoterBufferOnly() public {
-        // 1. Generate ONLY BMX voter buffer via canonical pool swap (BMX -> wBLT)
-        uint256 swapIn = 1e20; // 100 BMX
-        poolManager.unlock(abi.encode(address(bmx), swapIn));
+        // 1. Generate wBLT fee via OTHER -> wBLT so only that pool's buyback buffer is filled
+        uint256 swapIn = 1e20; // 100 OTHER
+        poolManager.unlock(abi.encode(address(other), swapIn));
 
-        // buybackPortion credited immediately to gauge; voterPortion stored as BMX buffer
-        uint256 voterBuf = fp.pendingBmxForVoter();
-        assertGt(voterBuf, 0, "voter buffer not populated");
+        // buybackPortion stored as wBLT buffer for OTHER pool; voter portion accumulates globally
+        assertGt(fp.pendingWbltForVoter(), 0, "voter buffer not populated");
         
-        // Check no pending wBLT for any pool (can use canonicalKey as example)
-        PoolId canonicalPoolId = canonicalKey.toId();
-        assertEq(fp.pendingWbltForBuyback(canonicalPoolId), 0, "unexpected wblt buyback buffer");
+        // Check pending wBLT for OTHER pool
+        PoolId otherPoolId = otherKey.toId();
+        assertGt(fp.pendingWbltForBuyback(otherPoolId), 0, "wblt buyback buffer should be populated");
 
         // 2. Set buyback pool key
         fp.setBuybackPoolKey(canonicalKey);
 
-        // Record Voter destination balance before flush (wBLT token)
-        uint256 preBal = wblt.balanceOf(VOTER_DST);
+        // Record wBLT voter balance before flush (wBLT token)
+        uint256 preVoter = fp.pendingWbltForVoter();
 
-        // 3. Flush – should only process BMX→wBLT path
-        fp.flushBuffer(canonicalPoolId);
+        // 3. Flush – should process OTHER pool buffer
+        fp.flushBuffer(otherPoolId);
 
-        // 4. Assertions: voter buffer has residual from internal swap fee
-        // The internal BMX->wBLT swap generates its own fee (3% goes to voter buffer)
-        assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
-        assertLt(fp.pendingBmxForVoter(), voterBuf / 100, "residual should be small");
-        assertEq(fp.pendingWbltForBuyback(canonicalPoolId), 0, "buyback buffer should remain zero");
-
-        uint256 postBal = wblt.balanceOf(VOTER_DST);
-        assertGt(postBal - preBal, 0, "wBLT not transferred to voter dst");
+        // 4. Assertions: internal BMX->wBLT buyback generates hook fees and credits the source pool bucket
+        // Buyback buffer should be zero after successful flush
+        assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buyback buffer should be zero after flush");
+        // Voter buffer increases by 3% of the hook fee paid during the internal swap
+        assertGt(fp.pendingWbltForVoter(), preVoter, "voter buffer should increase due to internal fees");
     }
 } 

@@ -219,6 +219,9 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
     function testBmxPool_ExactInput_WbltToBmx_Price2x_ConvertedFee() public {
         uint256 amountIn = 1e18;
 
+        // Ensure buyback pool is configured so auto-flush credits the gauge
+        fp.setBuybackPoolKey(bmxKey);
+
         uint256 bucketBefore = gauge.collectBucket(bmxKey.toId());
         // zeroForOne=false, exact input, settle token1 (wBLT)
         poolManager.unlock(abi.encode(SwapRequest({
@@ -229,24 +232,27 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             exactInput: true
         })));
 
-        // Expected fee in BMX at initial price (sqrtP = 2 * Q96) = ceil(base / 4)
-        uint256 base = _baseFee(amountIn);
-        uint256 sqrtP = uint256(uint160(2) * FixedPoint96.Q96);
-        uint256 inter = FullMath.mulDivRoundingUp(base, FixedPoint96.Q96, sqrtP);
-        uint256 expectedFeeBmx = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtP);
-        uint256 expectedBuy = (expectedFeeBmx * fp.buybackBps()) / 1e4;
-        uint256 expectedVoter = expectedFeeBmx - expectedBuy;
+        // Expected gauge/voter with wBLT-only fee + internal-swap hook fee (0.3%)
+        uint24 feePips = _lpFee(); // e.g., 3000 pips = 0.3%
+        uint256 baseW = _baseFee(amountIn);                // fee in wBLT on the external swap
+        uint256 buyW  = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback in wBLT
+        uint256 internalFee = (buyW * feePips) / 1_000_000; // hook fee on the internal buyback swap (in wBLT)
+        uint256 effW  = buyW - internalFee;                 // effective wBLT actually swapped to BMX
+        // Price was initialised at 4 (sqrtP = 2*Q96), internal swap incurs tiny price impact; allow small tol
+        uint256 expectedBuy = effW / 4;                     // approximate BMX from buyback
+        // Voter accumulates: 3% of baseW + 3% of the internal-swap fee
+        uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
 
         uint256 bucketAfter = gauge.collectBucket(bmxKey.toId());
-        assertEq(bucketAfter - bucketBefore, expectedBuy, "gauge bucket delta");
-        assertEq(fp.pendingBmxForVoter(), expectedVoter, "bmx voter buffer");
+        assertApproxEqRel(bucketAfter - bucketBefore, expectedBuy, 0.01e18, "gauge bucket delta");
+        assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter buffer");
     }
 
-    // ---------------------------------------------
-    // BMX pool: exact output specified = BMX (match), price = 4
-    // ---------------------------------------------
     function testBmxPool_ExactOutput_BmxSpecified_Price2x_NoConversion() public {
         uint256 amountOutBmx = 2e18; // specified token is token0 (BMX)
+
+        // Ensure buyback pool is configured so auto-flush credits the gauge
+        fp.setBuybackPoolKey(bmxKey);
 
         uint256 bucketBefore = gauge.collectBucket(bmxKey.toId());
         // zeroForOne=false, exact output, settle token1 (wBLT)
@@ -258,18 +264,24 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             exactInput: false
         })));
 
-        uint256 base = _baseFee(amountOutBmx);
-        uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;
-        uint256 expectedVoter = base - expectedBuy;
+        // BMX specified: convert BMX-denominated fee to wBLT, apply buyback split,
+        // deduct internal-swap hook fee (0.3%), then convert to BMX at price≈4.
+        uint24 feePips = _lpFee();
+        uint256 baseBmx = _baseFee(amountOutBmx);            // BMX-denominated base fee
+        // Initialised sqrt price corresponds to price=4; use exact conversion to avoid drift
+        uint256 baseW   = baseBmx * 4;                        // BMX -> wBLT
+        uint256 buyW    = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback
+        uint256 internalFee = (buyW * feePips) / 1_000_000;  // internal swap hook fee
+        uint256 effW    = buyW - internalFee;                // effective wBLT swapped to BMX
+        uint256 expectedBuy = effW / 4;                      // BMX credited to gauge
+        uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
 
         uint256 bucketAfter = gauge.collectBucket(bmxKey.toId());
-        assertEq(bucketAfter - bucketBefore, expectedBuy, "gauge bucket (no conversion)");
-        assertEq(fp.pendingBmxForVoter(), expectedVoter, "bmx voter (no conversion)");
+        // Slightly relax tolerance to account for price impact from non-trivial exact-output swap
+        assertApproxEqRel(bucketAfter - bucketBefore, expectedBuy, 0.02e18, "gauge bucket (no conversion)");
+        assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.01e18, "wblt voter (no conversion)");
     }
 
-    // ---------------------------------------------
-    // OTHER pool: exact output specified = OTHER (mismatch), price = 4
-    // ---------------------------------------------
     function testOtherPool_ExactOutput_OtherSpecified_Price2x_ConvertedFee() public {
         uint256 amountOutOther = 3e18; // specified token is token0 (OTHER)
 
@@ -291,9 +303,6 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         assertEq(fp.pendingWbltForVoter(), expectedVoter, "pending wblt voter");
     }
 
-    // ---------------------------------------------
-    // OTHER pool: exact input specified = wBLT (match), price = 4
-    // ---------------------------------------------
     function testOtherPool_ExactInput_WbltSpecified_Price2x_NoConversion() public {
         uint256 amountInWblt = 4e18;
 

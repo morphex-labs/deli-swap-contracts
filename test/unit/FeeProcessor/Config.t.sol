@@ -85,7 +85,7 @@ contract FeeProcessor_ConfigTest is Test {
         // Transfer wBLT to FeeProcessor (mock ERC20 transfer not required here for accounting)
         PoolKey memory key = _makePoolKey();
         vm.prank(HOOK);
-        fp.collectFee(key, amount);
+        fp.collectFee(key, amount, false);
 
         // now pendingWbltForVoter increased by voterPortion (3%)
     }

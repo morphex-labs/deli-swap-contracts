@@ -70,7 +70,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp.collectFee(key, amount);
+        fp.collectFee(key, amount, false);
     }
 
     function _collectBmx(uint256 amount) internal {
@@ -82,7 +82,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp.collectFee(key, amount);
+        fp.collectFee(key, amount, false);
     }
 
     // ---------------------------------------------------------------------
@@ -119,11 +119,10 @@ contract FeeProcessor_SwapEdgeTest is Test {
         assertGt(postCollectGauge, initialGauge, "gauge should increase from auto-flush");
         assertEq(postCollectGauge, initialGauge + expectedBuyback, "gauge should increase by buyback amount");
 
+        // Voter wBLT remains buffered; includes voter share from BOTH collections
         uint256 voterPortionBmxFee = bmxFee - (bmxFee * fp.buybackBps()) / 10_000;
-
-        // Voter wBLT should have been transferred during second collectFee already
-        uint256 voterBal = wblt.balanceOf(VOTER_DIST);
-        assertEq(voterBal, voterPortionBmxFee, "voter wBLT from BMX pool flush");
+        uint256 voterPortionWbltFee = wbltFee - (wbltFee * fp.buybackBps()) / 10_000;
+        assertEq(fp.pendingWbltForVoter(), voterPortionBmxFee + voterPortionWbltFee, "voter wBLT should be buffered from both fees");
 
         // Manual flush should be a no-op since buffer was already auto-flushed
         fp.flushBuffer(nonBmxPoolId);
@@ -134,7 +133,6 @@ contract FeeProcessor_SwapEdgeTest is Test {
 
         // Buffers cleared
         assertEq(fp.pendingWbltForBuyback(nonBmxPoolId), 0);
-        assertEq(fp.pendingBmxForVoter(), 0);
         // pendingWbltForVoter should remain (3% of wbltFee) until claimVoterFees
     }
 
@@ -156,7 +154,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp2.collectFee(otherKey, wbltFee);
+        fp2.collectFee(otherKey, wbltFee, false);
 
         // collect BMX fee (canonical pool)
         PoolKey memory canonKey = PoolKey({
@@ -167,19 +165,17 @@ contract FeeProcessor_SwapEdgeTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp2.collectFee(canonKey, bmxFee);
+        fp2.collectFee(canonKey, bmxFee, false);
 
         // buffers should be populated, no rewards yet
         PoolId otherPoolId = otherKey.toId();
         uint256 preGauge = gauge.rewards(otherPoolId);
         assertGt(fp2.pendingWbltForBuyback(otherPoolId), 0, "buyback buf empty");
-        assertGt(fp2.pendingBmxForVoter(), 0, "voter bmx buf empty");
+        assertGt(fp2.pendingWbltForVoter(), 0, "voter wblt buf empty");
 
         // Register pool key then flush
         fp2.setBuybackPoolKey(buybackKey);
         pm.setSqrtPrice(PoolId.unwrap(buybackKey.toId()), uint160(1 << 96));
-
-        uint256 voterPre = wblt.balanceOf(VOTER_DIST);
 
         fp2.flushBuffer(otherPoolId);
 
@@ -187,13 +183,11 @@ contract FeeProcessor_SwapEdgeTest is Test {
         uint256 postGauge = gauge.rewards(otherPoolId);
         assertGt(postGauge, preGauge, "gauge unchanged");
 
-        // voter received wBLT
-        uint256 voterPost = wblt.balanceOf(VOTER_DIST);
-        assertGt(voterPost, voterPre, "voter not paid");
+        // voter buffer increased; no auto-transfer
+        assertGt(fp2.pendingWbltForVoter(), 0, "voter not paid");
 
         // buffers cleared
         assertEq(fp2.pendingWbltForBuyback(otherPoolId), 0, "buyback buf not cleared");
-        assertEq(fp2.pendingBmxForVoter(), 0, "bmx buf not cleared");
     }
 
     // ---------------------------------------------------------------------
@@ -240,7 +234,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
         _collectBmx(100 ether);
         
         // Check actual values first
-        uint256 actualVoterBuffer = fp.pendingBmxForVoter();
+        uint256 actualVoterBuffer = fp.pendingWbltForVoter();
         uint256 actualGaugeRewards = gauge.rewards(buybackKey.toId());
         
         // Calculate expected values
@@ -252,8 +246,8 @@ contract FeeProcessor_SwapEdgeTest is Test {
         // Verify voter buffer wasn't cleared due to slippage
         assertEq(actualVoterBuffer, expectedVoterBuffer, "Voter buffer should remain after slippage");
         
-        // Gauge should still have received the buyback portion (97%)
-        assertEq(actualGaugeRewards, expectedGauge, "Gauge should have buyback portion");
+        // Auto-flush during collectFee reverts due to slippage and is swallowed; gauge remains unchanged
+        assertEq(actualGaugeRewards, 0, "Gauge should have no buyback portion before successful flush");
         
         // Direct flushBuffer() call would still revert on slippage for voter flush
         vm.expectRevert(DeliErrors.Slippage.selector);
@@ -291,7 +285,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp2.collectFee(key, wbltFee);
+        fp2.collectFee(key, wbltFee, false);
 
         // No rewards yet
         PoolId poolId = key.toId();
@@ -329,7 +323,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
         PoolId firstPoolId = firstKey.toId();
         
         vm.prank(HOOK);
-        fp.collectFee(firstKey, wbltFee);
+        fp.collectFee(firstKey, wbltFee, false);
 
         // After swap failure the buffer is restored
         uint256 expectedFirst = (wbltFee * fp.buybackBps()) / 10_000;
@@ -350,7 +344,7 @@ contract FeeProcessor_SwapEdgeTest is Test {
         PoolId secondPoolId = secondKey.toId();
         
         vm.prank(HOOK);
-        fp.collectFee(secondKey, secondFee);
+        fp.collectFee(secondKey, secondFee, false);
 
         // Second pool's buffer should be zero after successful swap
         assertEq(fp.pendingWbltForBuyback(secondPoolId), 0, "buffer should be zero after successful swap");
@@ -377,19 +371,18 @@ contract FeeProcessor_SwapEdgeTest is Test {
         PoolId nonBmxPoolId = nonBmxKey.toId();
         
         uint256 preBuyback = fp.pendingWbltForBuyback(nonBmxPoolId);
-        uint256 preBmxVoter = fp.pendingBmxForVoter();
+        uint256 preVoter = fp.pendingWbltForVoter();
         uint256 preGauge = gauge.rewards(buybackKey.toId());
         
         // Collect internal fee
         vm.prank(HOOK);
-        fp.collectInternalFee(bmxFee);
+        fp.collectFee(buybackKey, bmxFee, true);
         
         // Buffers should remain unchanged (no flush triggered)
         assertEq(fp.pendingWbltForBuyback(nonBmxPoolId), preBuyback, "buyback buffer changed");
-        assertEq(fp.pendingBmxForVoter(), preBmxVoter + (bmxFee * 300 / 10_000), "BMX voter buffer incorrect");
+        assertEq(fp.pendingWbltForVoter(), preVoter + (bmxFee * 300 / 10_000), "voter buffer incorrect");
         
-        // Gauge should increase by 97% of internal fee
-        uint256 expectedGaugeIncrease = (bmxFee * fp.buybackBps()) / 10_000;
-        assertEq(gauge.rewards(buybackKey.toId()), preGauge + expectedGaugeIncrease, "gauge increase incorrect");
+        // Internal fee collection should NOT trigger a flush; gauge stays the same
+        assertEq(gauge.rewards(buybackKey.toId()), preGauge, "gauge should not change on internal fee");
     }
 } 

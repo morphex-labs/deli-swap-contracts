@@ -440,6 +440,5 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     }
 
     // Dummy implementation to satisfy IFeeProcessor and avoid revert
-    function collectFee(PoolKey calldata, uint256) external override {}
-    function collectInternalFee(uint256) external override {}
+    function collectFee(PoolKey calldata, uint256, bool) external override {}
 } 

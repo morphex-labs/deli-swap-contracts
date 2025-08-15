@@ -29,9 +29,8 @@ import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockC
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
-
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract Token is ERC20 { constructor(string memory s) ERC20(s,s) { _mint(msg.sender,1e24);} }
 
@@ -326,15 +325,12 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         assertEq(fp.pendingWbltForBuyback(otherKey.toId()), 0, "wBLT buyback buffer should be flushed");
 
         // Check voter balances
-        // OTHER swap voter portion (3%) stays in wBLT buffer
-        assertEq(fp.pendingWbltForVoter(), feePerSwap - buybackPerSwap, "OTHER pool voter portion should be in wBLT buffer");
-
-        // BMX swap voter portion (3%) is auto-converted to wBLT and sent to voter
-        // So pendingBmxForVoter should be near zero (just residual from conversion)
-        assertLt(fp.pendingBmxForVoter(), 1e10, "BMX voter buffer should be near zero after auto-flush");
-
-        // Check that VOTER_DST received wBLT from the BMX voter portion conversion
-        assertGt(IERC20(address(wblt)).balanceOf(VOTER_DST), 0, "Voter should have received wBLT from BMX conversion");
+        // Voter wBLT accumulates in buffer; not auto-transferred. It includes:
+        // - 3% of the external swap fee from BOTH swaps
+        // - plus 3% of the hook fee (0.3%) charged on EACH internal buyback swap
+        uint256 internalFeePerBuyback = (buybackPerSwap * 3000) / 1_000_000; // 0.3% of buyback
+        uint256 expectedVoter = 2 * (feePerSwap - buybackPerSwap) + 2 * ((internalFeePerBuyback * 3) / 100);
+        assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.02e18, "OTHER pool voter portion should be in wBLT buffer");
 
         // Test stream rate for BMX pool (which only has rewards from BMX swap)
         // first roll brings epoch current but streamRate should still be zero (bucket queued)
@@ -389,9 +385,12 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         // The buyback buffer should be empty (was flushed)
         assertEq(wbltBuybackAfter, 0, "wBLT buyback should be empty after flush");
         
-        // The voter wBLT buffer still has the 3% portion (9e13)
-        // This is NOT automatically sent, just accumulated for manual distribution
-        assertEq(wbltVoterAfter, 90000000000000, "wBLT voter should have 3% of original fee");
+        // The voter wBLT buffer includes the 3% portion plus 3% of the internal buyback hook fee
+        uint256 feeAmt = otherSwapAmount * 3000 / 1e6; // 0.3%
+        uint256 buyW  = (feeAmt * fp.buybackBps()) / 1e4; // 97%
+        uint256 internalFee = (buyW * 3000) / 1_000_000; // 0.3% on the buyback swap
+        uint256 expectedVoter = (feeAmt - buyW) + ((internalFee * 3) / 100);
+        assertEq(wbltVoterAfter, expectedVoter, "wBLT voter should have 3% + internal fee share");
         
         // With per-pool reward tracking, the OTHER pool's rewards go to OTHER pool gauge
         PoolId otherPid = otherPoolKey.toId();
@@ -410,22 +409,22 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         }
         
         // The internal swaps generated their own fees
-        // Check that there's a small residual from the internal swaps
-        uint256 bmxVoterResidual = fp.pendingBmxForVoter();
-        assertGt(bmxVoterResidual, 0, "should have residual BMX from internal swaps");
+        // Check voter buffer increased from internal swaps
+        uint256 voterResidual = fp.pendingWbltForVoter();
+        assertGt(voterResidual, 0, "should have voter wBLT from swaps");
         
         // 2) Generate BMX fees to test BMX->wBLT automatic flush
         uint256 bmxSwapAmount = 2e18;
         poolManager.unlock(abi.encode(address(bmx), bmxSwapAmount));
         
         // The swap should have triggered automatic flush of BMX voter buffer
-        // But there will be residual from the internal BMX->wBLT swap
-        uint256 bmxVoterAfterSecondSwap = fp.pendingBmxForVoter();
-        assertGt(bmxVoterAfterSecondSwap, 0, "should have residual from internal swap");
+        // Voter buffer remains until claimed
+        uint256 voterAfterSecondSwap = fp.pendingWbltForVoter();
+        assertGt(voterAfterSecondSwap, 0, "should have voter buffer after more swaps");
         
         // The residual should be much smaller than the original fee
         // (it's 3% of 0.3% = 0.009% of the swap amount)
-        assertLt(bmxVoterAfterSecondSwap, bmxSwapAmount * 3000 / 1e6 / 100, "residual should be small");
+        assertLt(voterAfterSecondSwap, bmxSwapAmount * 3000 / 1e6, "voter buffer bounded");
         
         // The automatic flush demonstrates that internal swaps:
         // 1. Execute automatically when buffers have funds

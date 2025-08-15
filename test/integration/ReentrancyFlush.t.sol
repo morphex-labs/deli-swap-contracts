@@ -12,7 +12,6 @@ import "src/DailyEpochGauge.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
@@ -21,9 +20,11 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
-import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
-import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
+import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
+import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 
 interface IFlusher { function flushBuffer(PoolId poolId) external; }
 
@@ -71,9 +72,10 @@ contract ReentrantBMX is MockERC20 {
     }
 }
 
-contract FeeProcessor_Reentrancy_IT is Test, Deployers {
+contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using CurrencySettler for Currency;
+    using BalanceDeltaLibrary for BalanceDelta;
 
     // contracts
     DeliHook hook;
@@ -239,8 +241,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Step 2: Configure buyback pool
         fp.setBuybackPoolKey(canonicalKey);
         
-        // Step 3: Check that we have pending BMX for voter (from the 3% split)
-        assertGt(fp.pendingBmxForVoter(), 0, "no BMX voter buffer");
+        // Step 3: Voter portion is tracked in wBLT buffer
+        assertGt(fp.pendingWbltForVoter(), 0, "no voter buffer");
         
         // Set the pool ID for reentrancy attempt
         bmx.setPoolIdToFlush(canonicalKey.toId());
@@ -251,10 +253,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Verify reentrancy was attempted and blocked
         assertTrue(bmx.reentered(), "no reentrancy attempt during internal swap");
         
-        // Verify flush completed successfully
-        // Note: pendingBmxForVoter will have residual fee from internal swap (3% of 0.3%)
-        assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
-        assertLt(fp.pendingBmxForVoter(), 1e10, "residual should be small");
+        // Verify flush completed successfully; voter buffer remains in wBLT
+        assertGt(fp.pendingWbltForVoter(), 0, "voter buffer remains in wBLT");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -264,7 +264,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
     // The test uses the PoolManager.unlock pattern: it encodes (tokenIn, amount) and
     // expects this callback to perform an exact-input swap using the hook-instrumented
     // pools.  Logic mirrors other integration tests.
-    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+    function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         require(msg.sender == address(poolManager), "not PM");
 
         (address tokenIn, uint256 amountIn) = abi.decode(data, (address, uint256));

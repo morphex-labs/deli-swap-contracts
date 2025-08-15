@@ -60,7 +60,6 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     // Temporary fee info cached between beforeSwap and afterSwap.
     uint256 private _pendingFee; // amount of wBLT fee owed for current swap
-    bool private _pullFromSender; // true if we must pull extra fee token from trader (input side)
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
@@ -68,7 +67,6 @@ contract DeliHook is Ownable2Step, BaseHook {
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    event FeeForwarded(address indexed pool, uint256 amount, bool indexed isBmxPool);
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
     event IncentiveGaugeUpdated(address indexed newGauge);
@@ -232,10 +230,8 @@ contract DeliHook is Ownable2Step, BaseHook {
         // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
         uint256 baseFeeSpecified = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
 
-        // Identify fee token (BMX on BMX pools, otherwise wBLT) and persist immediately
-        bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX)
-            ? (Currency.unwrap(key.currency0) == BMX)
-            : (Currency.unwrap(key.currency0) == WBLT);
+        // Identify fee token: always collect in wBLT
+        bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
         _pendingCurrency = feeCurrencyIs0 ? key.currency0 : key.currency1;
 
         // Convert fee to feeCurrency units if it differs from specified token
@@ -257,13 +253,8 @@ contract DeliHook is Ownable2Step, BaseHook {
             }
         }
 
-        // For non-BMX pools: use BeforeSwapDelta when fee is on input side (exact input swaps)
-        // Never pull tokens from sender for internal swaps (fees still apply but are handled differently)
+        // Use BeforeSwapDelta when fee is on input side (exact input swaps)
         bool feeMatchesSpecified = (feeCurrencyIs0 == specifiedIs0);
-        bool isFeeBmx = Currency.unwrap(_pendingCurrency) == BMX;
-        _pullFromSender = (!_isInternalSwap && !isFeeBmx && feeMatchesSpecified && exactInput);
-
-        // Calculate BeforeSwapDelta
         int128 specifiedDelta = 0;
 
         // Pre-credit the specified side by the fee whenever the fee currency matches the specified token.
@@ -309,14 +300,8 @@ contract DeliHook is Ownable2Step, BaseHook {
             // Always take the fee from PoolManager
             feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
 
-            if (isInternalSwap) {
-                // For internal swaps from BMX pool, distribute fees directly
-                // All internal swaps use BMX/wBLT pool, so fee is always BMX
-                feeProcessor.collectInternalFee(feeOwed);
-            } else {
-                // Normal fee collection
-                feeProcessor.collectFee(key, feeOwed);
-            }
+            // Send wBLT fee to FeeProcessor
+            feeProcessor.collectFee(key, feeOwed, isInternalSwap);
 
             // Only return positive delta when fee is on the unspecified side (relative to specified token)
             // After-swap delta must be expressed in the unspecified token per v4.

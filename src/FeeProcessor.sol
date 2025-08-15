@@ -63,17 +63,10 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
     // Accumulated wBLT awaiting swap → BMX buyback (per-pool tracking)
     mapping(PoolId => uint256) public pendingWbltForBuyback;
-    uint256 public pendingBmxForVoter;
     uint256 public pendingWbltForVoter;
 
     // pending swap state
-    enum PendingSwapType {
-        NONE,
-        WBLT_TO_BMX,
-        BMX_TO_WBLT
-    }
-
-    PendingSwapType private _pendingSwap;
+    bool private _swapActive;
     uint256 private _pendingAmount;
     PoolId private _pendingSourcePool;
 
@@ -89,11 +82,14 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     //////////////////////////////////////////////////////////////*/
 
     event FeeCollected(
-        address indexed pool, uint256 totalAmount, uint256 buybackPortion, uint256 voterPortion, bool indexed isBmxPool
+        address indexed pool,
+        uint256 totalAmount,
+        uint256 buybackPortion,
+        uint256 voterPortion,
+        bool indexed isInternalSwap
     );
     event BuybackPoolSet(PoolKey poolKey);
     event BuybackExecuted(uint256 wbltIn, uint256 bmxOut);
-    event VoterFlush(uint256 bmxIn, uint256 wbltOut);
     event BuybackBpsUpdated(uint16 newBps);
     event MinOutBpsUpdated(uint16 newBps);
     event VoterFeesClaimed(uint256 amount, address to);
@@ -212,88 +208,44 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         uint256 poolPending = pendingWbltForBuyback[poolId];
         if (poolPending > 0) {
             _pendingSourcePool = poolId;
-            _initiateSwap(PendingSwapType.WBLT_TO_BMX, poolPending);
-        }
-
-        // Try to flush voter BMX
-        if (pendingBmxForVoter > 0) {
-            _initiateSwap(PendingSwapType.BMX_TO_WBLT, pendingBmxForVoter);
+            _initiateSwap(poolPending);
         }
     }
 
     /// @notice Called by DeliHook after it transfers `amount` of the fee token to this contract.
     /// Splits amount into buy-back and voter portions, buffers and/or swaps as needed.
-    function collectFee(PoolKey calldata key, uint256 amount) external onlyHook {
-        if (amount == 0) revert DeliErrors.ZeroAmount();
+    function collectFee(PoolKey calldata key, uint256 amountWblt, bool isInternalSwap) external onlyHook {
+        if (amountWblt == 0) revert DeliErrors.ZeroAmount();
 
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
         PoolId poolId = key.toId();
 
-        uint256 buybackPortion = (amount * buybackBps) / 10_000;
-        uint256 voterPortion = amount - buybackPortion;
+        uint256 buybackPortion = (amountWblt * buybackBps) / 10_000;
+        uint256 voterPortion = amountWblt - buybackPortion;
 
-        emit FeeCollected(msg.sender, amount, buybackPortion, voterPortion, isBmxPool);
+        emit FeeCollected(msg.sender, amountWblt, buybackPortion, voterPortion, isInternalSwap);
 
-        if (isBmxPool) {
-            // buybackPortion already in BMX, send directly to gauge
-            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), buybackPortion);
-            DAILY_GAUGE.addRewards(poolId, buybackPortion);
+        pendingWbltForBuyback[poolId] += buybackPortion; // track per-pool buyback buffer
+        pendingWbltForVoter += voterPortion; // track voter buffer for weekly sweep
 
-            // voterPortion is currently BMX; stored for manual conversion to wETH before voter deposit
-            pendingBmxForVoter += voterPortion;
-        } else {
-            // Track per-pool pending wBLT
-            pendingWbltForBuyback[poolId] += buybackPortion;
-
-            // accumulate voter share (wBLT) for weekly sweep
-            pendingWbltForVoter += voterPortion;
+        // Try to flush just this pool's buffer if not internal swap
+        if (!isInternalSwap) {
+            try this.flushBuffer(poolId) {} catch {}
         }
-
-        // Try to flush just this pool's buffer (and voter buffer)
-        try this.flushBuffer(poolId) {} catch {}
-    }
-
-    /// @notice Called by DeliHook after it transfers `bmxAmount` to process fees from internal buyback swaps.
-    /// @dev For internal swaps on BMX pool, fees are always in BMX.
-    ///      97% goes directly to gauge, 3% to voter buffer.
-    /// @param bmxAmount The amount of BMX fee collected from internal swap.
-    function collectInternalFee(uint256 bmxAmount) external onlyHook {
-        if (bmxAmount == 0) revert DeliErrors.ZeroAmount();
-
-        // Split: 97% to gauge, 3% to voter buffer
-        uint256 buybackPortion = (bmxAmount * buybackBps) / 10_000;
-        uint256 voterPortion = bmxAmount - buybackPortion;
-
-        emit FeeCollected(msg.sender, bmxAmount, buybackPortion, voterPortion, true);
-
-        // Send 97% directly to gauge (BMX is already the target token)
-        if (buybackPoolSet) {
-            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), buybackPortion);
-            DAILY_GAUGE.addRewards(buybackPoolKey.toId(), buybackPortion);
-        }
-
-        // Add 3% to voter buffer (needs conversion to wBLT later)
-        pendingBmxForVoter += voterPortion;
     }
 
     /*//////////////////////////////////////////////////////////////
                                INTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Initiates a swap of the specified type and amount.
-    /// @param t The type of swap to initiate.
-    /// @param amount The amount of the swap.
-    function _initiateSwap(PendingSwapType t, uint256 amount) internal {
-        if (_pendingSwap != PendingSwapType.NONE) revert DeliErrors.SwapActive();
-        _pendingSwap = t;
+    /// @dev Initiates a WBLT -> BMX buyback swap for the specified amount.
+    /// @param amount The amount of wBLT to swap to BMX.
+    function _initiateSwap(uint256 amount) internal {
+        if (_swapActive) revert DeliErrors.SwapActive();
+        _swapActive = true;
         _pendingAmount = amount;
 
         // Clear the buffer so a failed swap can safely re-credit it in the catch block
-        if (t == PendingSwapType.WBLT_TO_BMX) {
-            pendingWbltForBuyback[_pendingSourcePool] = 0;
-        } else if (t == PendingSwapType.BMX_TO_WBLT) {
-            pendingBmxForVoter = 0;
-        }
+        pendingWbltForBuyback[_pendingSourcePool] = 0;
 
         // Check if we're already inside an unlock context
         if (poolManager.isUnlocked()) {
@@ -314,33 +266,19 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
     /// @dev Executes the pending swap operation, called from _unlockCallback or directly if already unlocked.
     function _executeSwap() internal {
-        PendingSwapType stype = _pendingSwap;
         uint256 amtIn = _pendingAmount;
-        if (stype == PendingSwapType.NONE) revert DeliErrors.NoSwap();
+        if (!_swapActive || amtIn == 0) revert DeliErrors.NoSwap();
 
         // Derive pool orientation helpers
         Currency c0 = buybackPoolKey.currency0;
         Currency c1 = buybackPoolKey.currency1;
-
         bool wbltIsC0 = (c0 == WBLT);
-        bool bmxIsC0 = (Currency.unwrap(c0) == BMX);
 
-        // Determine swap direction (token0 -> token1 == zeroForOne)
-        bool zeroForOne;
-        if (stype == PendingSwapType.WBLT_TO_BMX) {
-            zeroForOne = wbltIsC0; // wBLT on token0 side means zeroForOne
-        } else {
-            // BMX_TO_WBLT
-            zeroForOne = bmxIsC0; // BMX on token0 side means zeroForOne
-        }
+        // Determine swap direction (wBLT on token0 side means zeroForOne)
+        bool zeroForOne = wbltIsC0;
 
         // Settle input token from this contract into PoolManager
-        if (stype == PendingSwapType.WBLT_TO_BMX) {
-            (wbltIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
-        } else {
-            // BMX input
-            (bmxIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
-        }
+        (wbltIsC0 ? c0 : c1).settle(poolManager, address(this), uint128(amtIn), false);
 
         // Construct swap params & pre-swap price for slippage estimation
         (uint160 sqrtPx96,,,) = StateLibrary.getSlot0(poolManager, buybackPoolKey.toId());
@@ -376,18 +314,12 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         // Pull tokens owed from PoolManager
         outCurrency.take(poolManager, address(this), outAmt, false);
 
-        if (stype == PendingSwapType.WBLT_TO_BMX) {
-            // Output is BMX, stream to gauge
-            IERC20(BMX).safeTransfer(address(DAILY_GAUGE), outAmt);
-            DAILY_GAUGE.addRewards(_pendingSourcePool, outAmt);
-            emit BuybackExecuted(amtIn, outAmt);
-        } else {
-            // Output is wBLT, forward to voter distributor
-            IERC20(Currency.unwrap(WBLT)).safeTransfer(VOTER_DISTRIBUTOR, outAmt);
-            emit VoterFlush(amtIn, outAmt);
-        }
+        // Output is BMX, stream to gauge
+        IERC20(BMX).safeTransfer(address(DAILY_GAUGE), outAmt);
+        DAILY_GAUGE.addRewards(_pendingSourcePool, outAmt);
+        emit BuybackExecuted(amtIn, outAmt);
 
-        _pendingSwap = PendingSwapType.NONE;
+        _swapActive = false;
         _pendingAmount = 0;
         _pendingSourcePool = PoolId.wrap(bytes32(0));
     }

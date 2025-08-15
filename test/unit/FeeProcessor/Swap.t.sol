@@ -76,7 +76,7 @@ contract FeeProcessor_SwapTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp.collectFee(key, amount);
+        fp.collectFee(key, amount, false);
     }
 
     function _collectBmx(uint256 amount) internal {
@@ -88,7 +88,7 @@ contract FeeProcessor_SwapTest is Test {
             hooks: IHooks(address(0))
         });
         vm.prank(HOOK);
-        fp.collectFee(key, amount);
+        fp.collectFee(key, amount, false);
     }
 
     function testBuybackSwapExecutes() public {
@@ -122,11 +122,12 @@ contract FeeProcessor_SwapTest is Test {
         _registerPool();
 
         uint256 voterPortion = feeAmt - (feeAmt * fp.buybackBps() / 10000);
-        bytes memory transferCall = abi.encodeWithSelector(wblt.transfer.selector, VOTER_DIST, voterPortion);
-        vm.expectCall(address(wblt), transferCall);
-        // For BMX pool fees, we can use buybackKey.toId() since voter buffer is global
+        // For BMX pool fees, flush processes only the buyback buffer; voter share remains buffered in wBLT
+        uint256 preGauge = gauge.rewards(buybackKey.toId());
         fp.flushBuffer(buybackKey.toId());
-        assertEq(fp.pendingBmxForVoter(), 0);
+        uint256 postGauge = gauge.rewards(buybackKey.toId());
+        assertEq(postGauge - preGauge, feeAmt * fp.buybackBps() / 10000, "gauge buyback from BMX fee");
+        assertEq(fp.pendingWbltForVoter(), voterPortion, "voter portion buffered in wBLT");
     }
 
     function testSwapFailedEmitsAndResets() public {

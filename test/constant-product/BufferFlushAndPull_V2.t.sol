@@ -301,42 +301,30 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         // 1. Generate wBLT buy-back buffer via OTHER -> wBLT swap
         poolManager.unlock(abi.encode(address(other), input));
 
-        // 2. Generate BMX voter buffer via canonical pool swap
+        // 2. Generate additional fees via canonical pool swap
         poolManager.unlock(abi.encode(address(bmx), input));
 
         assertGt(fp.pendingWbltForBuyback(otherKey.toId()), 0, "no wblt buffer");
-        assertGt(fp.pendingBmxForVoter(), 0, "no bmx buffer");
+        assertGt(fp.pendingWbltForVoter(), 0, "no voter buffer");
 
         // 3. Configure buyback pool
         fp.setBuybackPoolKey(canonicalKey);
 
         // Check the OTHER pool bucket before (since rewards go to source pool)
         uint256 otherBucketBefore = gauge.collectBucket(otherKey.toId());
-        uint256 voterBefore = wblt.balanceOf(VOTER_DST);
-
+        
         // 4. Flush – need to flush each pool separately now
         // First flush the OTHER pool which has pending wBLT
         fp.flushBuffer(otherKey.toId());
         
-        // Then flush voter BMX buffer (this happens automatically with any flush)
-        // The BMX buffer flush is triggered by any flushBuffer call
-
         assertEq(fp.pendingWbltForBuyback(otherKey.toId()), 0, "buyback buf not cleared");
         
-        // The BMX voter buffer will have a small residual from the internal BMX->wBLT swap
-        // This is expected behavior as internal swaps now collect fees
-        uint256 bmxVoterResidual = fp.pendingBmxForVoter();
-        assertGt(bmxVoterResidual, 0, "should have residual from internal swap");
-        
-        // The residual should be small (3% of 0.3% = 0.009% of the swap amount)
-        assertLt(bmxVoterResidual, input * 3000 / 1e6 / 100, "residual should be small");
+        // Voter wBLT buffer should remain unchanged by buyback flush
+        assertGt(fp.pendingWbltForVoter(), 0, "voter wBLT buffer expected");
 
         // Check that OTHER pool got the rewards (not canonical pool)
         uint256 otherBucketAfter = gauge.collectBucket(otherKey.toId());
         assertGt(otherBucketAfter, otherBucketBefore, "OTHER pool bucket not updated");
-
-        uint256 voterAfter = wblt.balanceOf(VOTER_DST);
-        assertGt(voterAfter, voterBefore, "voter not funded");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -348,8 +336,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         // Set buyback pool key so FeeProcessor knows where to credit rewards
         fp.setBuybackPoolKey(canonicalKey);
 
-        // Get reserves before swap
-        (uint128 r0, uint128 r1) = hook.getReserves(canonicalKey.toId());
+        // Execute swap and validate fee pipeline
 
         // wBLT (token1) -> BMX swap on canonical pool
         poolManager.unlock(abi.encode(address(wblt), input, true)); // true = use canonical
@@ -358,30 +345,13 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         uint256 expectedTotalFees = _feeAmt(input); // 0.3% of input
         uint256 expectedBuyback = (expectedTotalFees * fp.buybackBps()) / 1e4; // 97%
         uint256 expectedVoter = expectedTotalFees - expectedBuyback; // 3%
-        
-        // Get actual amounts from gauge and FeeProcessor
-        // For wBLT -> BMX swap on BMX pool, fee is in BMX (output), so use output-based calculation
-        // Since zeroForOne = false, reserveIn = r1 (wBLT), reserveOut = r0 (BMX)
-        uint256 feeAmt = _feeAmtFromOutput(input, r1, r0, 3000);
-        uint256 buybackPortion = (feeAmt * fp.buybackBps()) / 1e4;
-        uint256 voterPortion = feeAmt - buybackPortion;
-
+    
         uint256 bucket = gauge.collectBucket(canonicalKey.toId());
-        uint256 voterBuffer = fp.pendingBmxForVoter();
+        uint256 voterBuffer = fp.pendingWbltForVoter();
         
         // The gauge should receive the expected buyback amount
         assertApproxEqRel(bucket, expectedBuyback, 0.03e18, "bucket should be ~97% of fees");
-        
-        // The voter buffer will have residual from auto-flush
-        // When FeeProcessor collects BMX fees, it auto-flushes the voter portion (3%) to wBLT
-        // This internal swap also generates fees, leaving a small residual in the BMX voter buffer
-        // The residual is approximately 3% of 0.3% of the voter portion = 0.009% of original voter amount
-        assertGt(voterBuffer, 0, "should have residual from internal swap");
-        assertLt(voterBuffer, expectedVoter / 100, "residual should be small compared to original");
-        
-        // Check that voter received wBLT from the auto-flush
-        uint256 voterWbltBalance = wblt.balanceOf(VOTER_DST);
-        assertGt(voterWbltBalance, 0, "Voter should have received wBLT from auto-flush");
+        assertApproxEqRel(voterBuffer, expectedVoter, 0.03e18, "voter buffer should be ~3% of fees");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -496,16 +466,16 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         uint256 pendingWblt = fp.pendingWbltForBuyback(otherPoolId);
         assertGt(pendingWblt, 0, "Should have pending fees");
         uint256 gaugeBucketBefore = gauge.collectBucket(otherPoolId);
-        uint256 pendingBmxForVoterBefore = fp.pendingBmxForVoter();
+        uint256 pendingWbltVoterBefore = fp.pendingWbltForVoter();
         
         fp.flushBuffer(otherPoolId);
         
         // Verify fee distribution: 97% to gauge, 3% to voter buffer
         uint256 gaugeBucketAfter = gauge.collectBucket(otherPoolId);
-        uint256 pendingBmxForVoterAfter = fp.pendingBmxForVoter();
+        uint256 pendingWbltVoterAfter = fp.pendingWbltForVoter();
         
         uint256 gaugeIncrease = gaugeBucketAfter - gaugeBucketBefore;
-        uint256 voterIncrease = pendingBmxForVoterAfter - pendingBmxForVoterBefore;
+        uint256 voterIncrease = pendingWbltVoterAfter - pendingWbltVoterBefore;
         
         // The flushBuffers() function triggers multiple internal swaps:
         // 1. wBLT → BMX buyback swap (collects fee in BMX)
@@ -544,8 +514,8 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), 1e18));
         poolManager.unlock(abi.encode(address(wblt), 5e17, true)); // canonical pool
         
-        // Check fees accumulated - canonical pool is BMX pool, so only BMX voter fees
-        uint256 pendingVoter = fp.pendingBmxForVoter();
+        // Check fees accumulated - voter portion tracked in wBLT buffer
+        uint256 pendingVoter = fp.pendingWbltForVoter();
         assertGt(pendingVoter, 0, "Should have voter fees");
         
         // Add more liquidity
@@ -600,6 +570,6 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         
         // Verify fee buffers unchanged by liquidity operations
         // (no pendingWbltForBuyback since canonical is BMX pool)
-        assertEq(fp.pendingBmxForVoter(), pendingVoter, "Voter buffer unchanged");
+        assertEq(fp.pendingWbltForVoter(), pendingVoter, "Voter buffer unchanged");
     }
 }
