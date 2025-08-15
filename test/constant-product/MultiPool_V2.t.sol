@@ -83,7 +83,8 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
             | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
@@ -112,7 +113,8 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
         hook.setFeeProcessor(address(fp));
         hook.setDailyEpochGauge(address(gauge));
@@ -351,7 +353,8 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // Output with fee = (10 * 0.999 * 100) / (100 + 10 * 0.999) ≈ 9.0826 ether
         // Fee ≈ 0.0083 ether in wBLT
         
-        uint256 pendingWbltBuyback = fp.pendingWbltForBuyback();
+        PoolId pool2Id = pool2.toId();
+        uint256 pendingWbltBuyback = fp.pendingWbltForBuyback(pool2Id);
         uint256 pendingWbltVoter = fp.pendingWbltForVoter();
         uint256 pendingBmxVoter = fp.pendingBmxForVoter();
         

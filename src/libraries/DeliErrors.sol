@@ -18,7 +18,6 @@ library DeliErrors {
 
     // state / config
     error AlreadySettled();
-    error AlreadySet();
     error InvalidBps();
     error InvalidOption();
     error InvalidPoolKey();

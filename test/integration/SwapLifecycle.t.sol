@@ -120,7 +120,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)), // placeholder
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
         uint160 hookFlags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
@@ -141,7 +142,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
 
         // Sanity check: ensure address matches prediction
@@ -278,12 +280,73 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
     function testFullLifecycle() public {
         uint256 feeInput = 1e17; // amount for swaps
 
+        // Set buyback pool key for BMX/wBLT pool
+        PoolKey memory bmxPoolKey = PoolKey({
+            currency0: Currency.wrap(address(bmx)),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        fp.setBuybackPoolKey(bmxPoolKey);
+
         // 1) Swap in OTHER/wBLT pool via unlock pattern so manager isn't locked
         poolManager.unlock(abi.encode(address(other), feeInput));
 
         // 2) Swap in BMX pool via unlock pattern (buy-back)
         poolManager.unlock(abi.encode(address(bmx), feeInput));
 
+        // With per-pool reward tracking, each pool gets its own rewards:
+        // 1. OTHER/wBLT pool fees (wBLT) are auto-converted to BMX and go to OTHER pool gauge
+        // 2. BMX/wBLT pool fees (BMX) go directly to BMX pool gauge
+        
+        // Get the OTHER pool key first
+        PoolKey memory otherKey = PoolKey({
+            currency0: Currency.wrap(address(other)),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        
+        PoolId bmxPid = bmxPoolKey.toId();
+        PoolId otherPid = otherKey.toId();
+        
+        // Check each pool's gauge bucket
+        uint256 bmxPoolBucket = gauge.collectBucket(bmxPid);
+        uint256 otherPoolBucket = gauge.collectBucket(otherPid);
+        
+        // Calculate expected fees from both swaps
+        uint256 feePerSwap = feeInput * 3000 / 1e6; // 0.3% fee
+        uint256 buybackPerSwap = feePerSwap * fp.buybackBps() / 1e4; // 97% buyback
+        
+        // Each pool should have received approximately one swap's worth of buyback rewards
+        // Allow for some variance due to internal swap fees
+        assertApproxEqRel(bmxPoolBucket, buybackPerSwap, 0.05e18, "BMX pool should have buyback from BMX swap");
+        assertApproxEqRel(otherPoolBucket, buybackPerSwap, 0.05e18, "OTHER pool should have buyback from OTHER swap");
+        
+        // Total rewards across both pools should be approximately 2x buyback
+        uint256 totalBucket = bmxPoolBucket + otherPoolBucket;
+        uint256 expectedTotalBuyback = buybackPerSwap * 2;
+        assertApproxEqRel(totalBucket, expectedTotalBuyback, 0.02e18, "Total gauge rewards should match both swaps");
+        
+        // Check that buffers are cleared (auto-flushed)
+        // The OTHER pool's wBLT buffer should be flushed
+        assertEq(fp.pendingWbltForBuyback(otherPid), 0, "wBLT buyback buffer should be flushed");
+        
+        // Check voter balances
+        // OTHER swap voter portion (3%) stays in wBLT buffer
+        uint256 voterPerSwap = feePerSwap - buybackPerSwap; // 3% voter
+        assertEq(fp.pendingWbltForVoter(), voterPerSwap, "OTHER pool voter portion should be in wBLT buffer");
+        
+        // BMX swap voter portion (3%) is auto-converted to wBLT and sent to voter
+        // So pendingBmxForVoter should be near zero (just residual from conversion)
+        assertLt(fp.pendingBmxForVoter(), 1e10, "BMX voter buffer should be near zero after auto-flush");
+        
+        // Check that VOTER_DST received wBLT from the BMX voter portion conversion
+        uint256 voterWbltBalance = IERC20(address(wblt)).balanceOf(VOTER_DST);
+        assertGt(voterWbltBalance, 0, "Voter should have received wBLT from BMX conversion");
+        
         uint256 feeAmt = feeInput * 3000 / 1e6; // 0.3 %
         uint256 expectedBuy = feeAmt * fp.buybackBps() / 1e4;
         uint256 expectedBuyTotal = expectedBuy; // only BMX pool credited immediately
@@ -296,15 +359,24 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         uint256 voterShare = feeAmt - expectedBuy;
         assertEq(fp.pendingBmxForVoter(), voterShare);
 
+        // Test stream rate for BMX pool (which only has rewards from BMX swap)
         // first roll brings epoch current but streamRate should still be zero (bucket queued)
-        gauge.rollIfNeeded(pid);
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        assertEq(gauge.streamRate(pid), 0, "stream should start after one-day delay");
+        gauge.rollIfNeeded(bmxPid);
+        (, uint64 end0,,,) = gauge.epochInfo(bmxPid);
+        assertEq(gauge.streamRate(bmxPid), 0, "stream should start after one-day delay");
 
         // warp two days (one-day queue + one-day streaming window)
         vm.warp(uint256(end0) + 2 days);
-        gauge.rollIfNeeded(pid);
-        assertEq(gauge.streamRate(pid), expectedBuy / 1 days);
+        gauge.rollIfNeeded(bmxPid);
+        
+        // Stream rate should be based on BMX pool's collected amount
+        uint256 expectedStreamRate = bmxPoolBucket / 1 days;
+        assertEq(gauge.streamRate(bmxPid), expectedStreamRate, "Stream rate should match BMX pool collected amount");
+        
+        // Also test OTHER pool has its own stream
+        gauge.rollIfNeeded(otherPid);
+        uint256 otherStreamRate = otherPoolBucket / 1 days;
+        assertEq(gauge.streamRate(otherPid), otherStreamRate, "OTHER pool should have its own stream rate");
     }
 
     function testInternalSwapFeeCollection() public {
@@ -328,7 +400,15 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(other), otherSwapAmount));
         
         // Check that automatic flush happened
-        uint256 wbltBuybackAfter = fp.pendingWbltForBuyback();
+        // Get the OTHER pool key to check its pending buffer
+        PoolKey memory otherPoolKey = PoolKey({
+            currency0: Currency.wrap(address(other)),
+            currency1: Currency.wrap(address(wblt)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        uint256 wbltBuybackAfter = fp.pendingWbltForBuyback(otherPoolKey.toId());
         uint256 wbltVoterAfter = fp.pendingWbltForVoter();
         
         // The buyback buffer should be empty (was flushed)
@@ -338,9 +418,21 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         // This is NOT automatically sent, just accumulated for manual distribution
         assertEq(wbltVoterAfter, 90000000000000, "wBLT voter should have 3% of original fee");
         
-        // Verify gauge received BMX from automatic buyback
-        uint256 gaugeAfter = gauge.collectBucket(pid);
-        assertGt(gaugeAfter, gaugeBefore, "gauge should receive BMX from auto buyback");
+        // With per-pool reward tracking, the OTHER pool's rewards go to OTHER pool gauge
+        PoolId otherPid = otherPoolKey.toId();
+        uint256 otherGaugeAfter = gauge.collectBucket(otherPid);
+        assertGt(otherGaugeAfter, 0, "OTHER pool gauge should receive BMX from auto buyback");
+        
+        // BMX pool gauge may have increased slightly from internal swap fees
+        // (The wBLT->BMX internal swap on the BMX pool generates its own fees)
+        uint256 bmxGaugeAfter = gauge.collectBucket(pid);
+        if (bmxGaugeAfter > gaugeBefore) {
+            // If it increased, it should only be from internal swap fees (very small amount)
+            // Internal fee is 0.3% of the buyback swap amount
+            uint256 expectedInternalFee = (otherSwapAmount * 3000 / 1e6) * fp.buybackBps() / 1e4; // buyback portion
+            uint256 maxInternalFee = expectedInternalFee * 3000 / 1e6; // 0.3% of that
+            assertLt(bmxGaugeAfter - gaugeBefore, maxInternalFee, "BMX gauge increase should only be from internal fees");
+        }
         
         // The internal swaps generated their own fees
         // Check that there's a small residual from the internal swaps

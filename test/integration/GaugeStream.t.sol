@@ -69,7 +69,7 @@ contract GaugeStream_IT is Test, Deployers {
         bmx.approve(address(poolManager), type(uint256).max);
 
         // 3. Precompute hook address
-        bytes memory ctorArgs = abi.encode(poolManager, IFeeProcessor(address(0)), IDailyEpochGauge(address(0)), IIncentiveGauge(address(0)), address(wblt), address(bmx));
+        bytes memory ctorArgs = abi.encode(poolManager, IFeeProcessor(address(0)), IDailyEpochGauge(address(0)), IIncentiveGauge(address(0)), address(wblt), address(bmx), address(this));
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address expectedHook, bytes32 salt) = HookMiner.find(address(this), flags, type(DeliHook).creationCode, ctorArgs);
 
@@ -107,7 +107,8 @@ contract GaugeStream_IT is Test, Deployers {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)  // owner
         );
 
         // Wire up actual contract references post-deployment

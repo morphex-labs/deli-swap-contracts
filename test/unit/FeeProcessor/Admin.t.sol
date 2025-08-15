@@ -9,6 +9,7 @@ import {MockERC20} from "lib/uniswap-hooks/lib/v4-core/lib/forge-std/src/mocks/M
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 
@@ -20,6 +21,8 @@ contract MintableERC20 is MockERC20 {
 
 /// @notice FeeProcessor tests covering admin helpers & edge-cases.
 contract FeeProcessor_AdminTest is Test {
+    using PoolIdLibrary for PoolKey;
+    
     FeeProcessor fp;
     MockDailyEpochGauge gauge;
     MintableERC20 miscToken;
@@ -74,9 +77,10 @@ contract FeeProcessor_AdminTest is Test {
 
     function testFlushBuffersNoopWhenEmpty() public {
         // set pool key first
-        fp.setBuybackPoolKey(_makePoolKey());
+        PoolKey memory key = _makePoolKey();
+        fp.setBuybackPoolKey(key);
         // should not revert even though buffers zero
-        fp.flushBuffers();
+        fp.flushBuffer(key.toId());
     }
 
     // ---------------------------------------------------------------------

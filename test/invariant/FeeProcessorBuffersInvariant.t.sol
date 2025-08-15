@@ -121,7 +121,8 @@ contract FeeProcessorBuffersInvariant is Test {
     }
 
     function invariant_wbltAccounting() public {
-        uint256 pendingBuy = fp.pendingWbltForBuyback();
+        // Only OTHER pool generates wBLT fees (non-BMX pool)
+        uint256 pendingBuy = fp.pendingWbltForBuyback(otherPoolKey.toId());
         uint256 pendingVoter = fp.pendingWbltForVoter();
         assertEq(pendingBuy + pendingVoter, totalWbltFees, "wBLT fee mismatch");
     }
