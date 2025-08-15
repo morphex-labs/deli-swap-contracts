@@ -80,7 +80,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)
         );
         uint160 hookFlags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
         (address predictedHook, bytes32 salt) = HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
@@ -95,7 +96,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             IDailyEpochGauge(address(0)),
             IIncentiveGauge(address(0)),
             address(wblt),
-            address(bmx)
+            address(bmx),
+            address(this)
         );
         require(address(hook) == predictedHook, "Hook addr mismatch");
         hook.setFeeProcessor(address(fp));
@@ -288,7 +290,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 expectedBuy = (expectedFeeWblt * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = expectedFeeWblt - expectedBuy;
 
-        assertEq(fp.pendingWbltForBuyback(), expectedBuy, "pending wblt buyback");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), expectedBuy, "pending wblt buyback");
         assertEq(fp.pendingWbltForVoter(), expectedVoter, "pending wblt voter");
     }
 
@@ -311,7 +313,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = base - expectedBuy;
 
-        assertEq(fp.pendingWbltForBuyback(), expectedBuy, "wblt buyback (no conversion)");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), expectedBuy, "wblt buyback (no conversion)");
         assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter (no conversion)");
     }
 }
