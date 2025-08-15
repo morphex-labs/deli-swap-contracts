@@ -23,6 +23,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
@@ -118,8 +119,10 @@ contract GaugeStream_IT is Test, Deployers {
         gauge.setFeeProcessor(address(fp));
 
         // 7. Initialise pool
-        key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))});
+        key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: IHooks(address(hook))});
         pid = key.toId();
+        // Register fee before initialization (0.3% = 3000)
+        hook.registerPoolFee(key.currency0, key.currency1, key.tickSpacing, 3000);
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
         // 8. Add liquidity via EasyPosm and subscribe to PositionManagerAdapter

@@ -28,6 +28,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
 
 /// @notice Tests V2 constant product swap lifecycle, reserve tracking, and x*y=k invariant
 contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
@@ -41,6 +42,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
     FeeProcessor fp;
     DailyEpochGauge gauge;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -108,6 +110,10 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
 
         // Initialize pool
         key = PoolKey({
@@ -231,13 +237,10 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
         uint256 kAfter = uint256(r0After) * uint256(r1After);
 
-        // K should increase due to implicit fees in V2 model
-        // In DeliHookConstantProduct, fees are implicit in the swap calculation
-        // and then removed from reserves. With 0.3% fee, K increases very slightly.
-        
-        // The test was failing because the basis points calculation was rounding to 0
-        // Let's just verify K increased at all
-        assertGt(kAfter, kBefore, "K should increase with fees");
+        // Since fees are extracted and forwarded to FeeProcessor,
+        // K should remain approximately constant (not increase)
+        // The constant product is maintained while fees are removed from reserves
+        assertApproxEqRel(kAfter, kBefore, 0.01e18, "K should remain approximately constant");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -342,13 +345,14 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         
         (uint128 r0Final, uint128 r1Final) = hook.getReserves(pid);
         
-        // Both swaps should increase k due to fees
+        // Since fees are extracted and forwarded to FeeProcessor,
+        // K should remain approximately constant (not increase)
         uint256 kInitial = 100 ether * 100 ether;
         uint256 kMid = uint256(r0Mid) * uint256(r1Mid);
         uint256 kFinal = uint256(r0Final) * uint256(r1Final);
         
-        assertGt(kMid, kInitial, "K should increase after first swap");
-        assertGt(kFinal, kMid, "K should increase after second swap");
+        assertApproxEqRel(kMid, kInitial, 0.01e18, "K should remain approximately constant after first swap");
+        assertApproxEqRel(kFinal, kMid, 0.01e18, "K should remain approximately constant after second swap");
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -31,6 +31,8 @@ library DeliErrors {
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
+    error MustUseDynamicFee();
+    error PoolFeeNotRegistered();
     
     // pool errors
     error PoolNotInitialized();

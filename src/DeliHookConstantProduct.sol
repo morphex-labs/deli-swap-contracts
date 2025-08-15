@@ -5,7 +5,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
@@ -27,6 +27,8 @@ import {IV2PositionHandler} from "./interfaces/IV2PositionHandler.sol";
 import {Math} from "./libraries/Math.sol";
 import {DeliErrors} from "./libraries/DeliErrors.sol";
 import {InternalSwapFlag} from "./libraries/InternalSwapFlag.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /**
  * @title DeliHookConstantProduct
@@ -68,12 +70,13 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     IFeeProcessor public feeProcessor;
     IDailyEpochGauge public dailyEpochGauge;
     IIncentiveGauge public incentiveGauge;
-    address public v2PositionHandler;
+    IV2PositionHandler public v2PositionHandler;
 
     // Temporary swap info cached between beforeSwap and afterSwap
     uint256 private _pendingFeeAmount;
     Currency private _pendingFeeCurrency;
     bool private _isInternalSwap;
+    bool private _feeFromOutput;
     int256 private _swapAmountSpecified;
     bool private _swapZeroForOne;
 
@@ -145,7 +148,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     /// @param _handler The address of the V2PositionHandler contract.
     function setV2PositionHandler(address _handler) external onlyOwner {
         if (_handler == address(0)) revert DeliErrors.ZeroAddress();
-        v2PositionHandler = _handler;
+        v2PositionHandler = IV2PositionHandler(_handler);
         emit V2PositionHandlerUpdated(_handler);
     }
 
@@ -170,10 +173,11 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         if (key.tickSpacing != 1) revert DeliErrors.InvalidTickSpacing();
         // Enforce minimum fee of 0.1% (1000 in hundredths of basis points)
         if (key.fee < 1000) revert DeliErrors.InvalidFee();
-        // Require deployed gauges + fee processor
+        // Require all components to be deployed before pool creation
         if (address(dailyEpochGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(incentiveGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(feeProcessor) == address(0)) revert DeliErrors.ComponentNotDeployed();
+        if (address(v2PositionHandler) == address(0)) revert DeliErrors.ComponentNotDeployed();
 
         PoolId poolId = key.toId();
 
@@ -203,10 +207,17 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Check if this is an internal swap (from FeeProcessor)
-        _isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG;
+        // Must verify both the flag AND that sender is actually FeeProcessor to prevent impersonation
+        _isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG
+            && sender == address(feeProcessor);
 
         // Calculate the implicit fee amount for V2 swaps
         _calculateImplicitFee(key, params);
+
+        // Enforce slippage using sqrtPriceLimitX96 against the virtual V2 price after this swap (including fee removal).
+        if (params.sqrtPriceLimitX96 != 0) {
+            _enforceVirtualPriceLimit(key, params);
+        }
 
         // Store parameters for afterSwap calculation
         _swapAmountSpecified = params.amountSpecified;
@@ -230,16 +241,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Calculate and update reserves
         _updateReservesAfterSwap(poolId, pool, key);
 
-        // Skip gauge updates for internal swaps but still collect fees
-        if (!_isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool
-            dailyEpochGauge.rollIfNeeded(poolId);
-            dailyEpochGauge.pokePool(key);
-            incentiveGauge.pokePool(key);
-        }
-
-        // Clear the deltas produced by the gauge calls
-        _clearHookDeltas(key);
+        // Lazy-roll daily epoch & checkpoint pool
+        dailyEpochGauge.rollIfNeeded(poolId);
+        dailyEpochGauge.pokePool(key);
+        incentiveGauge.pokePool(key);
 
         // Forward the fee to FeeProcessor
         if (_pendingFeeAmount > 0) {
@@ -253,6 +258,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Reset pending fee storage and swap parameters
         _pendingFeeAmount = 0;
         _pendingFeeCurrency = Currency.wrap(address(0));
+        _feeFromOutput = false;
         _swapAmountSpecified = 0;
         _swapZeroForOne = false;
         _isInternalSwap = false;
@@ -274,41 +280,33 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         if (!poolInitialized[poolId]) revert DeliErrors.PoolNotInitialized();
         V2Pool storage pool = pools[poolId];
 
-        bool exactInput = params.amountSpecified < 0;
         bool zeroForOne = params.zeroForOne;
-
         uint128 reserveIn = zeroForOne ? pool.reserve0 : pool.reserve1;
         uint128 reserveOut = zeroForOne ? pool.reserve1 : pool.reserve0;
 
         if (reserveIn == 0 || reserveOut == 0) revert DeliErrors.NoLiquidity();
 
-        uint256 amountSpecified = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        uint256 amountSpecified =
+            params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
 
-        // key.fee is in hundredths of a basis point (1 = 0.01%, 100 = 1%, 3000 = 30%)
-        // Convert to basis for calculation: feeBasis = 1000000 - key.fee
-        uint256 feeBasis = 1000000 - uint256(key.fee);
+        // Determine whether the fee is taken from the output currency
+        (bool feeFromOutput,) = _isFeeFromOutput(key, zeroForOne);
 
-        if (exactInput) {
-            // Calculate output for exact input
-            // With 0.3% fee: amountOut = (amountIn * 997 * reserveOut) / (reserveIn * 1000 + amountIn * 997)
-            // Generalized: amountOut = (amountIn * feeBasis * reserveOut) / (reserveIn * 1000000 + amountIn * feeBasis)
-            // For 100% fee (feeBasis = 0), output is 0
-            if (feeBasis == 0) return 0;
-
-            uint256 amountInWithFee = amountSpecified * feeBasis;
-            uint256 numerator = amountInWithFee * reserveOut;
-            uint256 denominator = reserveIn * 1000000 + amountInWithFee;
-            return numerator / denominator;
+        if (params.amountSpecified < 0) {
+            // exact input
+            // Always use fee-inclusive output
+            return _getAmountOut(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
         } else {
+            // exact output
             // Calculate input for exact output
-            if (amountSpecified >= reserveOut) revert DeliErrors.InsufficientLiquidity();
-            // amountIn = (reserveIn * amountOut * 1000000) / ((reserveOut - amountOut) * feeBasis) + 1
-            // For 100% fee (feeBasis = 0), can't buy anything
-            if (feeBasis == 0) revert DeliErrors.InvalidFee();
-
-            uint256 numerator = reserveIn * amountSpecified * 1000000;
-            uint256 denominator = (reserveOut - amountSpecified) * feeBasis;
-            return (numerator / denominator) + 1; // Round up
+            if (feeFromOutput) {
+                // Compute input for gross output with zero LP fee to preserve K
+                uint256 targetOut = FullMath.mulDiv(amountSpecified, 1_000_000 + uint256(key.fee), 1_000_000);
+                return _getAmountIn(zeroForOne, targetOut, pool.reserve0, pool.reserve1, 0);
+            } else {
+                // Standard V2 exact-output calc with fee in input
+                return _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
+            }
         }
     }
 
@@ -425,10 +423,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Update user's shares
         liquidityShares[poolId][msg.sender] += shares;
 
-        // Notify V2 position handler if set
-        if (v2PositionHandler != address(0)) {
-            IV2PositionHandler(v2PositionHandler).notifyAddLiquidity(key, msg.sender, uint128(shares));
-        }
+        // Notify V2 position handler
+        v2PositionHandler.notifyAddLiquidity(key, msg.sender, shares.toUint128());
 
         emit Mint(poolId, msg.sender, amount0, amount1);
     }
@@ -453,10 +449,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Update user's shares
         liquidityShares[poolId][msg.sender] -= shares;
 
-        // Notify V2 position handler if set
-        if (v2PositionHandler != address(0)) {
-            IV2PositionHandler(v2PositionHandler).notifyRemoveLiquidity(key, msg.sender, uint128(shares));
-        }
+        // Notify V2 position handler
+        v2PositionHandler.notifyRemoveLiquidity(key, msg.sender, shares.toUint128());
 
         // Update reserves by subtracting removed amounts
         _update(poolId, pool.reserve0 - amount0, pool.reserve1 - amount1);
@@ -491,6 +485,78 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                            INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Helper to determine if the fee is taken from the output currency
+    function _isFeeFromOutput(PoolKey memory key, bool zeroForOne)
+        private
+        view
+        returns (bool feeFromOutput, Currency feeCurrency)
+    {
+        bool _isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
+        Currency _feeCurrency = _isBmxPool
+            ? ((Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1)
+            : ((Currency.unwrap(key.currency0) == WBLT) ? key.currency0 : key.currency1);
+        Currency _outputCurrency = zeroForOne ? key.currency1 : key.currency0;
+
+        return (_feeCurrency == _outputCurrency, _feeCurrency);
+    }
+
+    /// @dev Helper to enforce sqrtPriceLimitX96 slippage against virtual V2 price after applying swap and fee removal.
+    ///      In contrast to Uniswap v4 and like v2, swaps will revert if price reaches the limit.
+    function _enforceVirtualPriceLimit(PoolKey calldata key, SwapParams calldata params) private view {
+        PoolId poolId = key.toId();
+        V2Pool storage pool = pools[poolId];
+
+        bool exactInput = params.amountSpecified < 0;
+        bool zeroForOne = params.zeroForOne;
+        uint256 specifiedAmount = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        uint256 otherAmount = _getUnspecifiedAmount(key, params); // out if exact in, in if exact out
+
+        uint256 r0 = uint256(pool.reserve0);
+        uint256 r1 = uint256(pool.reserve1);
+        uint256 r0p;
+        uint256 r1p;
+
+        if (exactInput) {
+            if (zeroForOne) {
+                r0p = r0 + specifiedAmount;
+                r1p = r1 - otherAmount;
+            } else {
+                r0p = r0 - otherAmount;
+                r1p = r1 + specifiedAmount;
+            }
+        } else {
+            if (zeroForOne) {
+                r0p = r0 + otherAmount;
+                r1p = r1 - specifiedAmount;
+            } else {
+                r0p = r0 - specifiedAmount;
+                r1p = r1 + otherAmount;
+            }
+        }
+
+        // Apply fee removal as done in _updateReservesAfterSwap
+        if (_pendingFeeAmount > 0) {
+            if (_pendingFeeCurrency == key.currency0) {
+                r0p -= _pendingFeeAmount;
+            } else {
+                r1p -= _pendingFeeAmount;
+            }
+        }
+
+        // Compute price in Q128 then scale sqrt to Q96 to prevent overflow
+        uint256 priceAfterX128 = FullMath.mulDiv(r1p, uint256(1) << 128, r0p);
+        uint256 sqrtAfterX64 = Math.sqrt(priceAfterX128);
+        uint160 sqrtAfterX96 = uint160(sqrtAfterX64 << 32);
+        uint160 limit = params.sqrtPriceLimitX96;
+
+        if (zeroForOne) {
+            if (sqrtAfterX96 < limit) revert DeliErrors.Slippage();
+        } else {
+            if (sqrtAfterX96 > limit) revert DeliErrors.Slippage();
+        }
+    }
+
+    /// @dev Update the reserves of a pool
     function _update(PoolId poolId, uint256 balance0, uint256 balance1) private {
         if (balance0 > type(uint128).max || balance1 > type(uint128).max) revert DeliErrors.BalanceOverflow();
         V2Pool storage pool = pools[poolId];
@@ -547,7 +613,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         uint24 effectiveFee = key.fee;
 
         if (exactInput) {
-            // For exact input swaps
+            // For exact input swaps, always compute fee-inclusive output
             uint256 amountOut =
                 _getAmountOut(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, effectiveFee);
 
@@ -560,8 +626,15 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             }
         } else {
             // For exact output swaps
-            uint256 amountIn =
-                _getAmountIn(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, effectiveFee);
+            uint256 amountIn;
+            if (_feeFromOutput) {
+                // Input computed against gross output with zero LP fee to preserve K
+                uint256 grossOut = FullMath.mulDiv(specifiedAmount, 1_000_000 + uint256(effectiveFee), 1_000_000);
+                amountIn = _getAmountIn(_swapZeroForOne, grossOut, pool.reserve0, pool.reserve1, 0);
+            } else {
+                // Standard exact-output with LP fee in input
+                amountIn = _getAmountIn(_swapZeroForOne, specifiedAmount, pool.reserve0, pool.reserve1, effectiveFee);
+            }
 
             if (_swapZeroForOne) {
                 delta0 = int256(amountIn);
@@ -572,10 +645,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             }
         }
 
-        // Adjust for fee removal (only for non-internal swaps)
-        // In our system, fees are extracted and sent to FeeProcessor
-        // This intentionally causes K to decrease, unlike traditional V2
-        if (_pendingFeeAmount > 0 && !_isInternalSwap) {
+        // Adjust for fee removal, fees are extracted and sent to FeeProcessor
+        if (_pendingFeeAmount > 0) {
+            // Always deduct fee from reserves when forwarding to FeeProcessor
+            // This is necessary because the hook receives the tokens that will be forwarded as fees
             if (_pendingFeeCurrency == key.currency0) {
                 delta0 -= int256(_pendingFeeAmount);
             } else {
@@ -589,6 +662,20 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         );
     }
 
+    /// @dev Helper to calculate output-based fee for exact input swaps
+    function _calculateOutputFee(bool zeroForOne, uint256 amountIn, uint128 reserve0, uint128 reserve1, uint24 fee)
+        private
+        pure
+        returns (uint256)
+    {
+        // Calculate actual output with fee
+        uint256 outputWithFee = _getAmountOut(zeroForOne, amountIn, reserve0, reserve1, fee);
+        // Calculate theoretical output without fee
+        uint256 outputWithoutFee = _getAmountOut(zeroForOne, amountIn, reserve0, reserve1, 0);
+        // Fee is the difference
+        return outputWithoutFee > outputWithFee ? outputWithoutFee - outputWithFee : 0;
+    }
+
     /// @dev Calculate the implicit fee from a V2 swap
     function _calculateImplicitFee(PoolKey calldata key, SwapParams calldata params) private {
         PoolId poolId = key.toId();
@@ -597,58 +684,48 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         bool exactInput = params.amountSpecified < 0;
         bool zeroForOne = params.zeroForOne;
 
-        // Identify fee currency (always wBLT for non-BMX pools, BMX for BMX pools)
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
-        Currency feeCurrency;
-        if (isBmxPool) {
-            // For BMX pools, fee is always in BMX
-            feeCurrency = (Currency.unwrap(key.currency0) == BMX) ? key.currency0 : key.currency1;
-        } else {
-            // For non-BMX pools, fee is always in wBLT
-            feeCurrency = (Currency.unwrap(key.currency0) == WBLT) ? key.currency0 : key.currency1;
-        }
-
-        // For V2 swaps, the fee is implicit in the constant product formula
-        // We need to calculate what the output would have been without fees
-        // and compare to actual output to get the fee amount
+        // Set flag for whether fee is taken from output and identify fee currency
+        (_feeFromOutput, _pendingFeeCurrency) = _isFeeFromOutput(key, zeroForOne);
 
         uint256 amountSpecified = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
 
-        uint128 reserveIn = zeroForOne ? pool.reserve0 : pool.reserve1;
-        uint128 reserveOut = zeroForOne ? pool.reserve1 : pool.reserve0;
-
         uint256 feeAmount;
-
         if (exactInput) {
-            // For exact input: fee = input * (fee%) / 100%
-            // Since V4 fee is in hundredths of a basis point: fee = input * key.fee / 1,000,000
-            feeAmount = (amountSpecified * uint256(key.fee)) / 1_000_000;
+            if (_feeFromOutput) {
+                // EXACT INPUT + FEE FROM OUTPUT (e.g., swap 1 WETH for WBLT, fee in WBLT)
+                // Fee is the reduction in output amount due to V2's implicit fee
+                // User provides exact input, receives less output (fee already deducted)
+                feeAmount = _calculateOutputFee(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
+            } else {
+                // EXACT INPUT + FEE FROM INPUT (e.g., swap 100 WBLT for WETH, fee in WBLT)
+                // Fee is a percentage of the input amount
+                // User provides exact input including fee, receives calculated output
+                feeAmount = (amountSpecified * uint256(key.fee)) / 1_000_000;
+            }
         } else {
-            // For exact output: calculate the input with and without fees
-            // The difference is the fee amount
-            uint256 inputWithFee = _getUnspecifiedAmount(key, params);
-            // Calculate input without fee (as if fee was 0)
-            uint256 inputWithoutFee = (reserveIn * amountSpecified) / (reserveOut - amountSpecified) + 1;
-            feeAmount = inputWithFee > inputWithoutFee ? inputWithFee - inputWithoutFee : 0;
+            if (_feeFromOutput) {
+                // EXACT OUTPUT + FEE FROM OUTPUT (e.g., get exactly 100 WBLT, fee in WBLT)
+                // Fee is a percentage of the output amount
+                // User receives exact output, needs to provide more input to cover implicit fee
+                feeAmount = (amountSpecified * uint256(key.fee)) / 1_000_000;
+            } else {
+                // EXACT OUTPUT + FEE FROM INPUT (e.g., get exactly 1 WETH, fee in WBLT)
+                // Fee is the extra input required beyond theoretical amount
+                uint256 inputWithFee = _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
+                uint256 inputWithoutFee = _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, 0);
+                feeAmount = inputWithFee > inputWithoutFee ? inputWithFee - inputWithoutFee : 0;
+            }
         }
 
         _pendingFeeAmount = feeAmount;
-        _pendingFeeCurrency = feeCurrency;
     }
 
     /// @dev Forward the implicit fee to FeeProcessor
     function _forwardFeeToProcessor(PoolKey memory key, Currency feeCurrency, uint256 feeAmount) private {
         bool isBmxPool = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX);
 
-        // Since the fee is already part of the V2 swap reserves, we need to:
-        // 1. Burn the fee amount of ERC-6909 tokens from hook's balance
-        // 2. Take the actual tokens (not claims) and send to FeeProcessor
-
-        // First burn ERC-6909 tokens from hook's balance
-        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
-
-        // Then take the actual tokens and send to FeeProcessor
-        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
+        // Transfer fee tokens to FeeProcessor
+        _transferFeeTokens(feeCurrency, feeAmount);
 
         // Notify FeeProcessor about the collected fee
         feeProcessor.collectFee(key, feeAmount);
@@ -658,12 +735,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
     /// @dev Forward the implicit fee from internal swaps to FeeProcessor
     function _forwardInternalFeeToProcessor(Currency feeCurrency, uint256 feeAmount) private {
-        // For internal swaps on BMX pool, fee is always BMX
-        // First burn ERC-6909 tokens from hook's balance
-        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
-
-        // Then take the actual tokens and send to FeeProcessor
-        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
+        // Transfer fee tokens to FeeProcessor
+        _transferFeeTokens(feeCurrency, feeAmount);
 
         // Notify FeeProcessor about the internal fee
         feeProcessor.collectInternalFee(feeAmount);
@@ -671,43 +744,64 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         emit FeeForwarded(address(this), feeAmount, true);
     }
 
-    /// @dev Zero out any outstanding deltas the hook has for both pool currencies
-    function _clearHookDeltas(PoolKey memory key) internal returns (int128 res0, int128 res1) {
-        // --- currency0 ---
-        int256 d0 = key.currency0.getDelta(address(this));
-        if (d0 < 0) {
-            key.currency0.settle(poolManager, address(this), uint256(-d0), false);
-        } else if (d0 > 0) {
-            key.currency0.take(poolManager, address(this), uint256(d0), false);
-        }
+    /// @dev Helper to transfer fee tokens from hook to FeeProcessor
+    function _transferFeeTokens(Currency feeCurrency, uint256 feeAmount) private {
+        // Since the fee is already part of the V2 swap reserves, we need to:
+        // 1. Burn the fee amount of ERC-6909 tokens from hook's balance
+        // 2. Take the actual tokens (not claims) and send to FeeProcessor
 
-        // --- currency1 ---
-        int256 d1 = key.currency1.getDelta(address(this));
-        if (d1 < 0) {
-            key.currency1.settle(poolManager, address(this), uint256(-d1), false);
-        } else if (d1 > 0) {
-            key.currency1.take(poolManager, address(this), uint256(d1), false);
-        }
+        // First burn ERC-6909 tokens from hook's balance
+        poolManager.burn(address(this), CurrencyLibrary.toId(feeCurrency), feeAmount);
 
-        // return updated deltas after operations
-        res0 = SafeCast.toInt128(key.currency0.getDelta(address(this)));
-        res1 = SafeCast.toInt128(key.currency1.getDelta(address(this)));
+        // Then take the actual tokens and send to FeeProcessor
+        feeCurrency.take(poolManager, address(feeProcessor), feeAmount, false);
     }
 
     /*//////////////////////////////////////////////////////////////
                            VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Get the reserves of a pool
+    /// @param poolId The pool ID to query
     function getReserves(PoolId poolId) external view returns (uint128, uint128) {
         V2Pool storage pool = pools[poolId];
         return (pool.reserve0, pool.reserve1);
     }
 
+    /// @notice Get the total supply of a pool
+    /// @param poolId The pool ID to query
     function getTotalSupply(PoolId poolId) external view returns (uint256) {
         return pools[poolId].totalSupply;
     }
 
+    /// @notice Get the balance of a user in a pool
+    /// @param poolId The pool ID to query
+    /// @param account The address of the user to query
     function balanceOf(PoolId poolId, address account) external view returns (uint256) {
         return liquidityShares[poolId][account];
+    }
+
+    /// @notice External getSlot0-style view for constant-product pools.
+    /// @dev    Returns virtual sqrtPriceX96 derived from reserves; protocolFee and tick are always 0 for V2 pools;
+    ///         lpFee is the per-pool LP fee.
+    /// @param poolId The pool ID to query
+    function getSlot0(IPoolManager, /*manager*/ PoolId poolId)
+        external
+        view
+        returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)
+    {
+        V2Pool storage pool = pools[poolId];
+        // Fetch fees and tick=0 from core PoolManager; we expose virtual price only
+        (, tick, protocolFee, lpFee) = StateLibrary.getSlot0(poolManager, poolId);
+
+        if (pool.reserve0 == 0 || pool.reserve1 == 0) {
+            // Uninitialized/empty: return zeros
+            return (0, tick, protocolFee, lpFee);
+        }
+
+        // Compute price in Q128 then scale sqrt to Q96 to prevent overflow
+        uint256 priceX128 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 128, uint256(pool.reserve0));
+        uint256 sqrtX64 = Math.sqrt(priceX128);
+        sqrtPriceX96 = uint160(sqrtX64 << 32);
     }
 }

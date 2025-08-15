@@ -17,6 +17,10 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {CurrencyDelta} from "@uniswap/v4-core/src/libraries/CurrencyDelta.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {FixedPoint96} from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
 
 import {IIncentiveGauge} from "./interfaces/IIncentiveGauge.sol";
 import {IFeeProcessor} from "./interfaces/IFeeProcessor.sol";
@@ -38,10 +42,13 @@ contract DeliHook is Ownable2Step, BaseHook {
     using CurrencyDelta for Currency;
     using SafeCast for uint256;
     using InternalSwapFlag for bytes;
+    using LPFeeLibrary for uint24;
 
     /*//////////////////////////////////////////////////////////////
                                    STORAGE
     //////////////////////////////////////////////////////////////*/
+
+    uint24 public constant MAX_FEE = 50000; // 5%
 
     address public immutable WBLT;
     address public immutable BMX;
@@ -56,6 +63,9 @@ contract DeliHook is Ownable2Step, BaseHook {
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
+    // Fee registration system
+    mapping(bytes32 => uint24) private _pendingPoolFees; // poolKey hash => registered fee
+
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -64,6 +74,10 @@ contract DeliHook is Ownable2Step, BaseHook {
     event FeeProcessorUpdated(address indexed newFeeProcessor);
     event DailyEpochGaugeUpdated(address indexed newGauge);
     event IncentiveGaugeUpdated(address indexed newGauge);
+    event PoolFeeRegistered(
+        Currency indexed currency0, Currency indexed currency1, int24 tickSpacing, uint24 fee, address registrant
+    );
+    event PoolFeeSet(PoolId indexed poolId, uint24 fee);
 
     /*//////////////////////////////////////////////////////////////
                                   CONSTRUCTOR
@@ -116,6 +130,28 @@ contract DeliHook is Ownable2Step, BaseHook {
     }
 
     /*//////////////////////////////////////////////////////////////
+                              FEE REGISTRATION
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Register desired fee for a pool before initialization
+    /// @param currency0 First currency of the pool
+    /// @param currency1 Second currency of the pool
+    /// @param tickSpacing Tick spacing of the pool
+    /// @param desiredFee The fee to set (in hundredths of a bip, max 100000 = 10%)
+    function registerPoolFee(Currency currency0, Currency currency1, int24 tickSpacing, uint24 desiredFee) external {
+        // Validate fee is reasonable (must be > 0 and <= 5%)
+        if (desiredFee == 0 || desiredFee > MAX_FEE) revert DeliErrors.InvalidFee();
+
+        // Calculate pool key hash
+        bytes32 keyHash = _hashPoolKey(currency0, currency1, tickSpacing);
+
+        // Store the pending fee
+        _pendingPoolFees[keyHash] = desiredFee;
+
+        emit PoolFeeRegistered(currency0, currency1, tickSpacing, desiredFee, msg.sender);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                               HOOK PERMISSIONS
     //////////////////////////////////////////////////////////////*/
 
@@ -149,19 +185,43 @@ contract DeliHook is Ownable2Step, BaseHook {
         if (!(key.currency0 == Currency.wrap(WBLT) || key.currency1 == Currency.wrap(WBLT))) {
             revert DeliErrors.WbltMissing();
         }
+
+        // Require pool to use dynamic fee (to override LP fees)
+        if (!key.fee.isDynamicFee()) {
+            revert DeliErrors.MustUseDynamicFee();
+        }
+
         // Require deployed gauges + fee processor
         if (address(dailyEpochGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(incentiveGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(feeProcessor) == address(0)) revert DeliErrors.ComponentNotDeployed();
 
+        // Check that a fee has been registered for this pool
+        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
+        if (_pendingPoolFees[keyHash] == 0) {
+            revert DeliErrors.PoolFeeNotRegistered();
+        }
+
         return BaseHook.beforeInitialize.selector;
     }
 
-    /// @notice Bootstraps the DailyEpochGauge pool state.
+    /// @notice Bootstraps the DailyEpochGauge pool state and sets the registered fee.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
         // Bootstrap DailyEpochGauge pool state
         PoolId pid = key.toId();
         dailyEpochGauge.initPool(pid, tick);
+
+        // Get and set the registered fee
+        bytes32 keyHash = _hashPoolKey(key.currency0, key.currency1, key.tickSpacing);
+        uint24 registeredFee = _pendingPoolFees[keyHash];
+
+        // Set the dynamic fee
+        poolManager.updateDynamicLPFee(key, registeredFee);
+
+        // Clean up
+        delete _pendingPoolFees[keyHash];
+
+        emit PoolFeeSet(pid, registeredFee);
 
         return BaseHook.afterInitialize.selector;
     }
@@ -172,62 +232,78 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     /// @notice Called by PoolManager before executing the swap.
     ///         Internal swaps still calculate fees but handle them differently.
-    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
+    function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Check if this is an internal buy-back swap
-        bool isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG;
+        _isInternalSwap = hookData.length >= 4 && bytes4(hookData) == InternalSwapFlag.INTERNAL_SWAP_FLAG
+            && sender == address(feeProcessor);
 
         // Determine swap metadata
         bool exactInput = params.amountSpecified < 0;
-        bool zeroForOne = params.zeroForOne;
 
-        // Identify specified currency to compute absolute amount
+        // Identify specified token index
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+
+        // Determine absolute amount of the specified token (v4 deltas are keyed to the specified token)
         uint256 absAmountSpecified = exactInput
             ? uint256(uint128(uint256(-params.amountSpecified)))
             : uint256(uint128(uint256(params.amountSpecified)));
 
-        // Compute fee amount based on pool fee
-        uint256 feeAmount = (absAmountSpecified * uint256(key.fee)) / 1_000_000;
+        // Get the current sqrt price and LP fee for this pool from PoolManager
+        (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
 
-        // Identify whether this is BMX/wBLT pool (different logic)
-        bool isBmxPool = (Currency.unwrap(key.currency0) == BMX) || (Currency.unwrap(key.currency1) == BMX);
+        // Compute base fee in specified-token units
+        // We first denominate the fee in the specified token, then convert to the
+        // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
+        uint256 baseFeeSpecified = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
 
-        // Identify fee token
-        Currency feeCurrency = isBmxPool
-            ? (key.currency0 == Currency.wrap(BMX) ? key.currency0 : key.currency1)
-            : (key.currency0 == Currency.wrap(WBLT) ? key.currency0 : key.currency1);
+        // Identify fee token (BMX on BMX pools, otherwise wBLT) and persist immediately
+        bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX)
+            ? (Currency.unwrap(key.currency0) == BMX)
+            : (Currency.unwrap(key.currency0) == WBLT);
+        _pendingCurrency = feeCurrencyIs0 ? key.currency0 : key.currency1;
 
-        // Identify input currency
-        Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
+        // Convert fee to feeCurrency units if it differs from specified token
+        // Price p = (sqrtPriceX96^2) / 2^192 (token1 per token0).
+        // Conversions follow v4 rounding conventions:
+        //  - token0 -> token1: floor(base * p)
+        //  - token1 -> token0: ceil(base / p)
+        if (feeCurrencyIs0 == specifiedIs0) {
+            _pendingFee = baseFeeSpecified;
+        } else {
+            if (specifiedIs0) {
+                // specified = token0, feeCurrency = token1
+                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+            } else {
+                // specified = token1, feeCurrency = token0
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
+                _pendingFee = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
+            }
+        }
 
         // For non-BMX pools: use BeforeSwapDelta when fee is on input side (exact input swaps)
-        // Never pull from sender for internal swaps
-        _pullFromSender = (!isInternalSwap && !isBmxPool && feeCurrency == inputCurrency && exactInput);
-
-        // Persist info for _afterSwap
-        _pendingFee = feeAmount;
-        _pendingCurrency = feeCurrency;
-        _isInternalSwap = isInternalSwap;
+        // Never pull tokens from sender for internal swaps (fees still apply but are handled differently)
+        bool feeMatchesSpecified = (feeCurrencyIs0 == specifiedIs0);
+        bool isFeeBmx = Currency.unwrap(_pendingCurrency) == BMX;
+        _pullFromSender = (!_isInternalSwap && !isFeeBmx && feeMatchesSpecified && exactInput);
 
         // Calculate BeforeSwapDelta
         int128 specifiedDelta = 0;
 
-        if (_pullFromSender && feeAmount > 0) {
-            // For exact input with fee on input side:
-            // Reduce the swap input by the fee amount by returning a positive delta
-            specifiedDelta = SafeCast.toInt128(int256(feeAmount));
-        } else if (isBmxPool && feeCurrency == inputCurrency && feeAmount > 0) {
-            // BMX pool: pre-credit to offset later take()
-            specifiedDelta = SafeCast.toInt128(int256(feeAmount));
+        // Pre-credit the specified side by the fee whenever the fee currency matches the specified token.
+        // This handles both exact input (fee on input) and exact output (fee on output) uniformly.
+        if (feeMatchesSpecified) {
+            specifiedDelta = SafeCast.toInt128(int256(_pendingFee));
         }
 
         return (
             BaseHook.beforeSwap.selector,
             specifiedDelta == 0 ? BeforeSwapDeltaLibrary.ZERO_DELTA : toBeforeSwapDelta(specifiedDelta, 0),
-            0
+            LPFeeLibrary.OVERRIDE_FEE_FLAG // Override classic LP fee to 0; hook collects and forwards fees itself
         );
     }
 
@@ -249,16 +325,10 @@ contract DeliHook is Ownable2Step, BaseHook {
         _pendingCurrency = Currency.wrap(address(0));
         _isInternalSwap = false;
 
-        // Skip gauge updates for internal swaps but still collect fees
-        if (!isInternalSwap) {
-            // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
-            dailyEpochGauge.rollIfNeeded(key.toId());
-            dailyEpochGauge.pokePool(key);
-            incentiveGauge.pokePool(key);
-        }
-
-        // Clear the deltas produced by the gauge calls so we start fee logic from a zero-balance baseline.
-        _clearHookDeltas(key);
+        // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
+        dailyEpochGauge.rollIfNeeded(key.toId());
+        dailyEpochGauge.pokePool(key);
+        incentiveGauge.pokePool(key);
 
         // Forward the swap fee to FeeProcessor
         int128 hookDeltaUnspecified = 0;
@@ -276,42 +346,30 @@ contract DeliHook is Ownable2Step, BaseHook {
                 feeProcessor.collectFee(key, feeOwed);
             }
 
-            // Only return positive delta when fee is on OUTPUT side
-            Currency inputCurrency = params.zeroForOne ? key.currency0 : key.currency1;
-
-            // If fee was NOT handled by BeforeSwapDelta (i.e., fee is on output side)
-            if (Currency.unwrap(feeCurrency) != Currency.unwrap(inputCurrency)) {
-                // Return positive delta to offset the negative delta created by take()
+            // Only return positive delta when fee is on the unspecified side (relative to specified token)
+            // After-swap delta must be expressed in the unspecified token per v4.
+            bool exactInput = params.amountSpecified < 0;
+            bool zeroForOne = params.zeroForOne;
+            Currency specifiedCurrency =
+                zeroForOne ? (exactInput ? key.currency0 : key.currency1) : (exactInput ? key.currency1 : key.currency0);
+            if (Currency.unwrap(feeCurrency) != Currency.unwrap(specifiedCurrency)) {
+                // Return positive delta in the unspecified token equal to the fee taken
                 hookDeltaUnspecified = SafeCast.toInt128(int256(feeOwed));
             }
         }
 
-        // Clear hook deltas
-        _clearHookDeltas(key);
-
         return (BaseHook.afterSwap.selector, hookDeltaUnspecified);
     }
 
-    /// @dev Zero out any outstanding deltas the hook has for both pool currencies. Uses settle() when the hook owes tokens and take() when the pool owes the hook. After execution the hook’s delta for each currency is guaranteed to be zero so PoolManager won’t revert.
-    function _clearHookDeltas(PoolKey memory key) internal returns (int128 res0, int128 res1) {
-        // --- currency0 ---
-        int256 d0 = key.currency0.getDelta(address(this));
-        if (d0 < 0) {
-            key.currency0.settle(poolManager, address(this), uint256(-d0), false);
-        } else if (d0 > 0) {
-            key.currency0.take(poolManager, address(this), uint256(d0), false);
-        }
-
-        // --- currency1 ---
-        int256 d1 = key.currency1.getDelta(address(this));
-        if (d1 < 0) {
-            key.currency1.settle(poolManager, address(this), uint256(-d1), false);
-        } else if (d1 > 0) {
-            key.currency1.take(poolManager, address(this), uint256(d1), false);
-        }
-
-        // return updated deltas after operations
-        res0 = SafeCast.toInt128(key.currency0.getDelta(address(this)));
-        res1 = SafeCast.toInt128(key.currency1.getDelta(address(this)));
+    /// @dev Hash a pool key for fee registration lookup
+    function _hashPoolKey(Currency currency0, Currency currency1, int24 tickSpacing) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                currency0,
+                currency1,
+                tickSpacing,
+                address(this) // hook
+            )
+        );
     }
 }
