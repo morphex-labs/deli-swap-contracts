@@ -33,7 +33,8 @@ library DeliErrors {
     error ComponentNotDeployed();
     error EpochRunning();
     error MustUseDynamicFee();
-    
+    error FinalizationInProgress();
+
     // pool errors
     error PoolNotInitialized();
     error InvalidTickSpacing();

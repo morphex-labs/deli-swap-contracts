@@ -126,9 +126,8 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
         ensure(params.deadline)
         returns (BalanceDelta delta)
     {
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
-
-        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+        PoolId poolId = key.toId();
+        if (!poolInitialized[poolId]) revert PoolNotInitialized();
 
         // Revert if msg.value is non-zero but currency0 is not native
         bool isNative = key.currency0.isAddressZero();
@@ -138,6 +137,7 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
         _currentPoolKey = key;
 
         // Get the liquidity modification parameters and the amount of liquidity shares to mint
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
         (bytes memory modifyParams, uint256 shares) = _getAddLiquidity(key, sqrtPriceX96, params);
 
         // Apply the liquidity modification
@@ -175,9 +175,7 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
         ensure(params.deadline)
         returns (BalanceDelta delta)
     {
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
-
-        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+        if (!poolInitialized[key.toId()]) revert PoolNotInitialized();
 
         // Set current pool context
         _currentPoolKey = key;
@@ -534,7 +532,7 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
             afterAddLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: true,
+            afterSwap: false,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: true,
