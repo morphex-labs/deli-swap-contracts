@@ -1,4 +1,7 @@
 {
+  "lib/universal-router": {
+    "rev": "3663f6db6e2fe121753cd2d899699c2dc75dca86"
+  },
   "lib/forge-std": {
     "rev": "ee93fdc45d1e5e4dee883afe0103109881a83549"
   },

@@ -16,12 +16,15 @@ contract MockIncentiveGauge is IIncentiveGauge {
         pokeCount += 1;
     }
 
+    // hook-based pool initialization (no-op in mock)
+    function initPool(PoolKey memory key, int24 initialTick) external override {}
+
     // View helper
-    function poolTokensOf(PoolId) external view returns (IERC20[] memory arr) {
+    function poolTokensOf(PoolId) external pure returns (IERC20[] memory arr) {
         arr = new IERC20[](0);
     }
 
-    function claim(IERC20, bytes32, address) external returns (uint256) { return 0; }
+    function claim(uint256, IERC20, address) external pure returns (uint256) { return 0; }
     function claimAllForOwner(PoolId[] calldata, address) external {
         called = true;
     }
@@ -36,9 +39,46 @@ contract MockIncentiveGauge is IIncentiveGauge {
         uint128
     ) external {}
     
-    // Subscription callbacks (from ISubscriber interface)
-    function notifySubscribe(uint256, bytes memory) external override {}
-    function notifyUnsubscribe(uint256) external override {}
-    function notifyBurn(uint256, address, PositionInfo, uint256, BalanceDelta) external override {}
-    function notifyModifyLiquidity(uint256, int256, BalanceDelta) external override {}
+    // Context-based subscription callbacks (no-ops in mock)
+    function notifySubscribeWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        uint128,
+        address
+    ) external override {}
+
+    function notifyUnsubscribeWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyBurnWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        address,
+        int24,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyModifyLiquidityWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        int256,
+        uint128
+    ) external override {}
 } 

@@ -32,11 +32,13 @@ library DeliErrors {
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
+    error InsufficientIncentive();
     error MustUseDynamicFee();
     error FinalizationInProgress();
 
     // pool errors
     error PoolNotInitialized();
+    error PoolNotFound();
     error InvalidTickSpacing();
     error InvalidFee();
     error NoLiquidity();

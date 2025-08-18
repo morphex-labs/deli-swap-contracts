@@ -179,11 +179,10 @@ contract DeliHook is Ownable2Step, BaseHook {
         return BaseHook.beforeInitialize.selector;
     }
 
-    /// @notice Bootstraps the DailyEpochGauge pool state and sets the derived fee.
+    /// @notice Bootstraps the DailyEpochGauge and IncentiveGauge pool state.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
-        // Bootstrap DailyEpochGauge pool state
-        PoolId pid = key.toId();
-        dailyEpochGauge.initPool(pid, tick);
+        dailyEpochGauge.initPool(key, tick);
+        incentiveGauge.initPool(key, tick);
 
         // Derive and set the fee from tick spacing; reverts if unsupported
         uint24 derivedFee = getPoolFeeFromTickSpacing(key.tickSpacing);
@@ -288,8 +287,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         _pendingCurrency = Currency.wrap(address(0));
         _isInternalSwap = false;
 
-        // Lazy-roll daily epoch & checkpoint pool **before** fee handling so that any deltas they create are cleared first.
-        dailyEpochGauge.rollIfNeeded(key.toId());
+        // Checkpoint pool **before** fee handling so that any deltas they create are cleared first.
         dailyEpochGauge.pokePool(key);
         incentiveGauge.pokePool(key);
 

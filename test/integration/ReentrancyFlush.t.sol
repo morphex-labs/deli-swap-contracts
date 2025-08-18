@@ -221,9 +221,10 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         // Ensure re-entrancy attempt occurred and was blocked (flag set)
         assertTrue(bmx.reentered(), "no reentrancy attempt detected");
 
-        // Buffer cleared and gauge bucket credited for the source pool
+        // Buffer cleared and gauge bucket credited
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not cleared");
-        assertGt(gauge.collectBucket(otherPoolId), 0, "bucket not credited");
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        assertGt(gauge.dayBuckets(pid, dayNow + 2), 0, "bucket not credited");
     }
 
     /*//////////////////////////////////////////////////////////////

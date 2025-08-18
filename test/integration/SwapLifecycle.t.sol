@@ -29,6 +29,8 @@ import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockC
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -305,8 +307,9 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         fp.flushBuffer(otherKey.toId(), 0);
 
         // Check each pool's gauge bucket
-        uint256 bmxPoolBucket = gauge.collectBucket(bmxPoolKey.toId());
-        uint256 otherPoolBucket = gauge.collectBucket(otherKey.toId());
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bmxPoolBucket = gauge.dayBuckets(bmxPoolKey.toId(), dayNow + 2);
+        uint256 otherPoolBucket = gauge.dayBuckets(otherKey.toId(), dayNow + 2);
 
         // Calculate expected fees from both swaps
         uint256 feePerSwap = feeInput * 3000 / 1e6; // 0.3% fee
@@ -328,20 +331,17 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.02e18, "OTHER pool voter portion should be in wBLT buffer");
 
         // Test stream rate for BMX pool (which only has rewards from BMX swap)
-        // first roll brings epoch current but streamRate should still be zero (bucket queued)
-        gauge.rollIfNeeded(bmxPoolKey.toId());
-        (, uint64 end0,,,) = gauge.epochInfo(bmxPoolKey.toId());
+        // keeperless: derive day boundary; streamRate should be zero until activation day (N+2)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
         assertEq(gauge.streamRate(bmxPoolKey.toId()), 0, "stream should start after one-day delay");
 
         // warp two days (one-day queue + one-day streaming window)
         vm.warp(uint256(end0) + 2 days);
-        gauge.rollIfNeeded(bmxPoolKey.toId());
 
         // Stream rate should be based on BMX pool's collected amount
         assertEq(gauge.streamRate(bmxPoolKey.toId()), bmxPoolBucket / 1 days, "Stream rate should match BMX pool collected amount");
 
         // Also test OTHER pool has its own stream
-        gauge.rollIfNeeded(otherKey.toId());
         assertEq(gauge.streamRate(otherKey.toId()), otherPoolBucket / 1 days, "OTHER pool should have its own stream rate");
     }
 
@@ -358,7 +358,8 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         PoolId pid = bmxKey.toId();
         
         // Check gauge balance before
-        uint256 gaugeBefore = gauge.collectBucket(pid);
+        uint32 dayNow2 = uint32(block.timestamp / 1 days);
+        uint256 gaugeBefore = gauge.dayBuckets(pid, dayNow2 + 2);
         
         // 1) Generate wBLT fees in OTHER pool
         uint256 otherSwapAmount = 4e20;
@@ -393,7 +394,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
         
         // BMX pool gauge may have increased slightly from internal swap fees
         // (The wBLT->BMX internal swap on the BMX pool generates its own fees)
-        uint256 bmxGaugeAfter = gauge.collectBucket(pid);
+        uint256 bmxGaugeAfter = gauge.dayBuckets(pid, dayNow2 + 2);
         if (bmxGaugeAfter > gaugeBefore) {
             // If it increased, it should only be from internal swap fees (very small amount)
             // Internal fee is 0.3% of the buyback swap amount

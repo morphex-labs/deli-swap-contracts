@@ -24,6 +24,10 @@ contract V4PositionHandler is IPositionHandler {
 
     /// @inheritdoc IPositionHandler
     function handlesTokenId(uint256 tokenId) external view override returns (bool) {
+        // Safety check: V4 tokenIds should never have bit 255 set
+        // Mathematically, this check shouldn't be needed but added for robustness
+        if ((tokenId & (1 << 255)) != 0) return false;
+
         // Check if the token exists in the PositionManager contract
         try IERC721(address(positionManager)).ownerOf(tokenId) {
             return true;
@@ -33,18 +37,14 @@ contract V4PositionHandler is IPositionHandler {
     }
 
     /// @inheritdoc IPositionHandler
-    function getPoolAndPositionInfo(uint256 tokenId)
+    function getPoolPositionAndLiquidity(uint256 tokenId)
         external
         view
         override
-        returns (PoolKey memory key, PositionInfo info)
+        returns (PoolKey memory key, PositionInfo info, uint128 liquidity)
     {
-        return positionManager.getPoolAndPositionInfo(tokenId);
-    }
-
-    /// @inheritdoc IPositionHandler
-    function getPositionLiquidity(uint256 tokenId) external view override returns (uint128) {
-        return positionManager.getPositionLiquidity(tokenId);
+        (key, info) = positionManager.getPoolAndPositionInfo(tokenId);
+        liquidity = positionManager.getPositionLiquidity(tokenId);
     }
 
     /// @inheritdoc IPositionHandler

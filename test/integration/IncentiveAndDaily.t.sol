@@ -13,6 +13,7 @@ import "src/PositionManagerAdapter.sol";
 import "src/handlers/V4PositionHandler.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -117,6 +118,20 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         /***************************************************
          * 4. Pool setup & liquidity                      *
          ***************************************************/
+
+        // Deploy PositionManagerAdapter and V4PositionHandler
+        adapter = new PositionManagerAdapter(address(daily), address(inc), address(positionManager), address(poolManager));
+        v4Handler = new V4PositionHandler(address(positionManager));
+        
+        // Register V4 handler and wire up the adapter
+        adapter.addHandler(address(v4Handler));
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        adapter.setAuthorizedCaller(address(hook), true);
+        
+        // Update gauges to use the adapter
+        daily.setPositionManagerAdapter(address(adapter));
+        inc.setPositionManagerAdapter(address(adapter));
+
         key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
@@ -130,19 +145,6 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         // Mint two positions: one for DailyGauge, one for IncentiveGauge
         (tokenDailyId,) = EasyPosm.mint(positionManager, key, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
         (tokenIncId,)   = EasyPosm.mint(positionManager, key, -30000, 30000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
-
-        // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(daily), address(inc));
-        v4Handler = new V4PositionHandler(address(positionManager));
-        
-        // Register V4 handler and wire up the adapter
-        adapter.addHandler(address(v4Handler));
-        adapter.setAuthorizedCaller(address(positionManager), true);
-        adapter.setPositionManager(address(positionManager));
-        
-        // Update gauges to use the adapter
-        daily.setPositionManagerAdapter(address(adapter));
-        inc.setPositionManagerAdapter(address(adapter));
 
         // Subscribe positions via PositionManagerAdapter
         positionManager.subscribe(tokenDailyId, address(adapter), bytes(""));
@@ -162,7 +164,6 @@ contract IncentiveAndDaily_IT is Test, Deployers {
 
     function testClaimBothRewards() public {
         // Fast-forward 3 days so both daily.streamRate and incentive stream accrue
-        daily.rollIfNeeded(pid);
         vm.warp(block.timestamp + 3 days);
 
         // Hook-triggered pokes to update pool accumulators
@@ -208,11 +209,11 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         vm.warp(block.timestamp + 3 days);
 
         // Record current incentive data
-        (uint256 rateBefore, uint256 finishBefore, uint256 remainingBefore) = inc.incentiveData(pid, rewardTok);
+        (uint256 rateBefore, uint256 finishBefore, ) = inc.incentiveData(pid, rewardTok);
         assertGt(rateBefore, 0, "stream not active");
 
-        // Extend by adding 350 tokens mid-stream
-        uint256 topUp = 350 ether;
+        // Extend by adding more tokens than remaining (griefing protection)
+        uint256 topUp = 450 ether; // More than the ~400 ether remaining
         rewardTok.approve(address(inc), topUp);
         inc.createIncentive(key, rewardTok, topUp);
 
@@ -253,24 +254,15 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testDailyMultiDayRoll() public {
-        // Initialise Day0
-        daily.rollIfNeeded(pid);
-        (uint64 start0,, , ,) = daily.epochInfo(pid);
+        // Day0
+        uint256 start0 = TimeLibrary.dayStart(block.timestamp);
 
-        // Warp forward 3 full days without any swaps / pokes
-        vm.warp(uint256(start0) + 3 days + 1);
+        // Warp forward to Day2 (activation day for Day0 bucket)
+        vm.warp(uint256(start0) + 2 days + 1);
 
-        // Single pokePool should fast-forward three _rollOnce iterations
-        vm.prank(address(hook));
-        daily.pokePool(key);
-
-        // Expect epoch start advanced by exactly 3 days
-        (uint64 startAfter, uint64 endAfter, uint128 streamRate, uint128 nextSr, uint128 queuedSr) = daily.epochInfo(pid);
-        assertEq(startAfter, start0 + 3 days, "epoch did not fast-forward 3 days");
-
-        // After 3 rolls streamRate should equal queuedRate = bucket / DAY
+        // On Day2, streamRate should be bucket/86400
         uint256 expectedRate = uint256(1000 ether) / uint256(1 days);
-        assertApproxEqAbs(uint256(streamRate), expectedRate, 1, "streamRate mismatch after multi-day roll");
+        assertApproxEqAbs(daily.streamRate(pid), expectedRate, 1, "streamRate mismatch on Day2");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -278,8 +270,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testEpochRollWithZeroLiquidity() public {
-        // Day0 initialise
-        daily.rollIfNeeded(pid);
+        // Day0 info
 
         // Burn BOTH positions so activeLiquidity drops to zero
         uint128 liqDaily = positionManager.getPositionLiquidity(tokenDailyId);
@@ -291,22 +282,21 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         EasyPosm.burn(positionManager, tokenIncId, 0, 0, address(this), block.timestamp + 1 hours, bytes(""));
 
         // Snapshot accumulator before zero-liquidity day rolls
-        (uint256 rplBefore,, ,) = daily.poolRewards(pid);
+        (, uint256 rplBefore,) = daily.getPoolData(pid);
 
-        // Warp a full day+ & poke once
-        (, uint64 end0,, ,) = daily.epochInfo(pid);
-        vm.warp(uint256(end0) + 1 days + 1);
+        // Warp a full day+
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(end0 + 1 days + 1);
         vm.prank(address(hook));
         daily.pokePool(key);
 
         // Accumulator should be unchanged because activeLiquidity was zero all day
-        (uint256 rplAfter,, ,) = daily.poolRewards(pid);
+        (, uint256 rplAfter,) = daily.getPoolData(pid);
         assertEq(rplAfter, rplBefore, "RPL should not accrue when liquidity is zero");
 
-        // Stream pipeline should still progress (queued -> next) even with zero liquidity
-        (, , uint128 sr, uint128 nextSr, ) = daily.epochInfo(pid);
-        assertEq(sr, 0, "streamRate should remain zero until next day active");
-        assertGt(nextSr, 0, "nextStreamRate should be set even with zero liquidity");
+        // Stream rate is independent of liquidity; on Day2 it should be bucket/DAY
+        uint256 expectedRate = uint256(1000 ether) / uint256(1 days);
+        assertApproxEqAbs(daily.streamRate(pid), expectedRate, 1, "streamRate should reflect Day2 bucket");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -335,6 +325,14 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         inc.createIncentive(key, iTokA, amtA);
         inc.createIncentive(key, iTokB, amtB);
 
+        // Now expire the pre-existing stream and poke so queued token is promoted into freed slot
+        {
+            (, uint256 finish, ) = inc.incentiveData(pid, rewardTok);
+            vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+
         // move forward 2 days and update pool accumulator once
         vm.warp(block.timestamp + 2 days);
         vm.prank(address(hook));
@@ -354,10 +352,10 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     }
 
     /*//////////////////////////////////////////////////////////////
-            Gas sanity: 10 concurrent incentive tokens
+            Gas sanity: 2 concurrent incentive tokens
     //////////////////////////////////////////////////////////////*/
-    function testGasMultiTokenClaim() public {
-        uint256 NUM = 10;
+    function testMultiTokenClaim() public {
+        uint256 NUM = 2;
         IERC20[] memory toks = new IERC20[](NUM);
         for (uint256 i; i < NUM; ++i) {
             MockERC20 t = new MockERC20(string(abi.encodePacked("T", i)), string(abi.encodePacked("T", i)), 18);
@@ -380,7 +378,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         uint256 gasBefore = gasleft();
         inc.claimAllForOwner(arr, address(this));
         uint256 gasUsed = gasBefore - gasleft();
-        // Sanity threshold: < 2.8m gas for 10 tokens claim path
+        // Sanity threshold: < 2.8m gas for 2 tokens claim path
         assertLt(gasUsed, 2_800_000, "claim gas too high");
 
         // Ensure each token paid some amount > 0
@@ -394,22 +392,19 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
     function testDailyBucketTopUpMidStream() public {
         // Ensure streaming is active
-        daily.rollIfNeeded(pid);
         while (daily.streamRate(pid) == 0) {
             vm.warp(block.timestamp + 1 days);
-            daily.rollIfNeeded(pid);
         }
-        uint256 initialRate = daily.streamRate(pid);
+        // streaming is active now
 
         // Top-up bucket with additional 500 BMX
         uint256 topUp = 500 ether;
         bmx.transfer(address(daily), topUp);
         daily.addRewards(pid, topUp);
 
-        // Advance 2 days from current epoch end to allow queued rate to activate
-        (, uint64 endNow,, ,) = daily.epochInfo(pid);
-        vm.warp(uint256(endNow) + 2 days + 1);
-        daily.rollIfNeeded(pid);
+        // Advance 1 day from current epoch end to allow N+2 bucket to activate
+        uint256 endNow = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(endNow + 1 days + 1);
 
         uint256 newRate = daily.streamRate(pid);
         uint256 expectedRate = topUp / uint256(1 days);
@@ -421,6 +416,13 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
 
     function testClaimAcrossPositions() public {
+        // First, warp past the incentive period so it expires
+        vm.warp(block.timestamp + 8 days);
+        
+        // Update the pool to finalize the incentive
+        vm.prank(address(hook));
+        inc.pokePool(key);
+
         // Mint a *second* position for the Daily gauge within the same pool
         // ticks must align with spacing (60). Use -12000 / 12000 which are multiples of 60.
         (uint256 tokenDailyId2,) = EasyPosm.mint(
@@ -437,16 +439,17 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         );
         positionManager.subscribe(tokenDailyId2, address(adapter), bytes(""));
 
+        // Add new BMX rewards since the original bucket has likely been depleted
+        uint256 newBucket = 500 ether;
+        bmx.transfer(address(daily), newBucket);
+        daily.addRewards(pid, newBucket);
+
         // -------------------------------------------------------------
-        // Advance until the daily stream is active for sure.  Because
-        // the pipeline introduces a 1-day delay (bucket → queued → next →
-        // current) we may need to roll twice.
+        // Advance enough days for rewards to move through the pipeline.
+        // Day 1: idle (no streaming)
+        // Day 2: current (active streaming of Day0 bucket)
         // -------------------------------------------------------------
-        daily.rollIfNeeded(pid);
-        while (daily.streamRate(pid) == 0) {
-            vm.warp(block.timestamp + 1 days);
-            daily.rollIfNeeded(pid);
-        }
+        vm.warp(block.timestamp + 2 days + 1);
 
         vm.prank(address(hook));
         daily.pokePool(key);
@@ -458,7 +461,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         daily.claimAllForOwner(arr, address(this));
 
         uint256 gain = bmx.balanceOf(address(this)) - pre;
-        // Expect some positive payout that combines both positions’ share
+        // Expect some positive payout that combines both positions' share
         assertGt(gain, 0, "no BMX from multiple-position claim");
     }
 

@@ -17,6 +17,7 @@ contract RangePositionLibraryTest is Test {
 
     uint128 internal constant LIQ = 500_000 ether;
     int24 internal constant TICK_SPACING = 60;
+    address internal constant TOK = address(0xBEEF);
 
     function setUp() public {
         vm.warp(1_700_000_000);
@@ -28,12 +29,15 @@ contract RangePositionLibraryTest is Test {
             liquidityDelta: int128(int256(uint256(LIQ))),
             tickSpacing: TICK_SPACING
         });
-        pool.modifyPositionLiquidity(p);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        pool.modifyPositionLiquidity(p, toks);
     }
 
     function _advance(uint256 secondsForward, uint256 streamRate) internal {
         vm.warp(block.timestamp + secondsForward);
-        pool.sync(streamRate, TICK_SPACING, 0);
+        address[] memory toks = new address[](1); toks[0] = TOK;
+        uint256[] memory amts = new uint256[](1); amts[0] = streamRate * secondsForward;
+        pool.sync(toks, amts, TICK_SPACING, 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -45,7 +49,7 @@ contract RangePositionLibraryTest is Test {
         _advance(50, streamRate); // accrue some rewards first
 
         // Accrue pending rewards for position
-        uint256 beforeCum = pool.cumulativeRplX128();
+        uint256 beforeCum = pool.cumulativeRplX128(TOK);
         pos.accrue(LIQ, beforeCum);
 
         // expected rewards: streamRate * dt = 100 tokens ; proportion = LIQ/LIQ so same
@@ -63,22 +67,22 @@ contract RangePositionLibraryTest is Test {
     function testAccrueZeroLiquidityOnlySnapshots() public {
         _advance(10, 1e18);
         uint256 before = pos.rewardsAccrued;
-        pos.accrue(0, pool.cumulativeRplX128());
+        pos.accrue(0, pool.cumulativeRplX128(TOK));
         assertEq(pos.rewardsAccrued, before);
         // snapshot updated – accrue after more time with liquidity
-        uint256 snap = pool.cumulativeRplX128();
+        uint256 snap = pool.cumulativeRplX128(TOK);
         _advance(5, 1e18);
-        pos.accrue(LIQ, pool.cumulativeRplX128());
-        uint256 expected = (pool.cumulativeRplX128() - snap) * LIQ / FixedPoint128.Q128;
+        pos.accrue(LIQ, pool.cumulativeRplX128(TOK));
+        uint256 expected = (pool.cumulativeRplX128(TOK) - snap) * LIQ / FixedPoint128.Q128;
         assertEq(pos.rewardsAccrued, expected + before);
     }
 
     function testAccrueNoDelta() public {
         _advance(20, 1e18);
-        pos.accrue(LIQ, pool.cumulativeRplX128());
+        pos.accrue(LIQ, pool.cumulativeRplX128(TOK));
         uint256 first = pos.rewardsAccrued;
         // call again without time progression
-        pos.accrue(LIQ, pool.cumulativeRplX128());
+        pos.accrue(LIQ, pool.cumulativeRplX128(TOK));
         assertEq(pos.rewardsAccrued, first);
     }
 
@@ -95,7 +99,7 @@ contract RangePositionLibraryTest is Test {
     function testAccrueClaimAccrue() public {
         uint256 streamRate = 1e18;
         _advance(60, streamRate); // 1 min accrual
-        pos.accrue(LIQ, pool.cumulativeRplX128());
+        pos.accrue(LIQ, pool.cumulativeRplX128(TOK));
         uint256 firstAcc = pos.rewardsAccrued;
         uint256 half = firstAcc / 2;
         // manually reduce accrued to simulate partial payout
@@ -106,7 +110,7 @@ contract RangePositionLibraryTest is Test {
         assertEq(pos.rewardsAccrued, 0);
         // advance more time and accrue again – should add on top
         _advance(30, streamRate);
-        pos.accrue(LIQ, pool.cumulativeRplX128());
+        pos.accrue(LIQ, pool.cumulativeRplX128(TOK));
         assertGt(pos.rewardsAccrued, 0);
     }
 

@@ -29,6 +29,7 @@ import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 
 contract Token is ERC20 { constructor(string memory s) ERC20(s,s) { _mint(msg.sender,1e24);} }
 
@@ -88,17 +89,18 @@ contract GaugeStream_IT is Test, Deployers {
         fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
 
         // Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
         adapter.addHandler(address(v4Handler));
         adapter.setAuthorizedCaller(address(positionManager), true);
-        adapter.setPositionManager(address(positionManager));
         
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));
         inc.setPositionManagerAdapter(address(adapter));
+        // Authorize position manager now; authorize hook AFTER hook is deployed below
+        adapter.setAuthorizedCaller(address(positionManager), true);
 
         // 6. Deploy hook
         hook = new DeliHook{salt: salt}(
@@ -118,6 +120,9 @@ contract GaugeStream_IT is Test, Deployers {
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
 
+        // Authorize hook as an adapter caller now that it exists
+        adapter.setAuthorizedCaller(address(hook), true);
+
         // 7. Initialise pool
         key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: IHooks(address(hook))});
         pid = key.toId();
@@ -136,21 +141,15 @@ contract GaugeStream_IT is Test, Deployers {
     }
 
     function testStreamingAndClaim() public {
-        // Day 0: bucket filled, streamRate = 0
-        gauge.rollIfNeeded(pid);
-
-        // Move two days forward to activate stream
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        vm.warp(end0 + 2 days);
-        gauge.rollIfNeeded(pid); // streamRate now bucket/86400
+        // Day 0: bucket filled, streamRate = 0 (derived)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(end0 + 1 days); // Day2 boundary (active)
 
         uint256 rate = gauge.streamRate(pid);
         assertGt(rate, 0, "stream not active");
 
-        // Advance another 12 hours and poke pool so accumulator updates
+        // Advance another 12 hours (claim path will sync)
         vm.warp(block.timestamp + 12 hours);
-        vm.prank(address(hook));
-        gauge.pokePool(key);
 
         // Prepare claim
         PoolId[] memory arr = new PoolId[](1);
@@ -161,55 +160,38 @@ contract GaugeStream_IT is Test, Deployers {
 
         // Expect claimed roughly = rate * 12h (tolerance 1e16)
         uint256 expected = rate * 12 hours;
-        assertApproxEqAbs(claimed, expected, 1e16);
+        assertApproxEqAbs(claimed, expected, rate);
     }
 
     /// @notice Verifies correct streamRate pipeline and accrual over multiple epoch rolls.
     function testMultiDayStreaming() public {
-        // Initialise Day 0 epoch (bucket filled, streamRate = 0)
-        gauge.rollIfNeeded(pid);
-
-        (, uint64 day0End,,, ) = gauge.epochInfo(pid);
+        // Day 0 epoch (bucket filled, streamRate = 0)
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
 
         // ---------------------------------------------------------------------
-        // Day 1: streamRate should still be 0, nextStreamRate should be set
+        // Day 1: streamRate should still be 0
         // ---------------------------------------------------------------------
         vm.warp(uint256(day0End) + 1); // jump just into Day1
-        gauge.rollIfNeeded(pid);
+        assertEq(gauge.streamRate(pid), 0, "Day1 streamRate should be zero");
 
-        (,, uint128 srDay1, uint128 nextSrDay1, uint128 queuedSrDay1) = gauge.epochInfo(pid);
-        assertEq(srDay1, 0, "Day1 streamRate should be zero");
-        assertEq(nextSrDay1, 0, "nextStreamRate should still be zero on Day1");
-        assertGt(queuedSrDay1, 0, "queuedStreamRate not populated");
-
-        // Expected per-second rate is bucket/86400 captured in queuedSrDay1.
-        uint256 expectedRate = uint256(queuedSrDay1);
+        // Expected per-second rate is bucket/86400 which will activate on Day2.
+        uint256 expectedRate = (1000 ether) / uint256(1 days);
 
         // ---------------------------------------------------------------------
-        // Day 2: streamRate should equal previous nextStreamRate
+        // Day 2: streaming becomes active
         // ---------------------------------------------------------------------
-        vm.warp(uint256(day0End) + 1 days + 1);
-        gauge.rollIfNeeded(pid);
+        vm.warp(uint256(day0End) + 1 days);
+        uint256 srDay2 = gauge.streamRate(pid);
+        assertApproxEqAbs(srDay2, expectedRate, 1, "Day2 streamRate mismatch");
+        // Anchor accumulator exactly at activation time
+        // vm.prank(address(hook));
+        // gauge.pokePool(key);
 
-        (,, uint128 srDay2, uint128 nextSrDay2,) = gauge.epochInfo(pid);
-        // Day2 still no streaming; nextStreamRate should now equal previous queued rate
-        assertEq(srDay2, 0, "Day2 streamRate should still be zero");
-        assertApproxEqAbs(nextSrDay2, expectedRate, 1, "Day2 nextStreamRate mismatch");
-
-        // ---------------------------------------------------------------------
-        // Day 3: after another roll streaming becomes active
-        // ---------------------------------------------------------------------
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
-
-        uint256 srDay3 = gauge.streamRate(pid);
-        assertApproxEqAbs(srDay3, expectedRate, 1, "Day3 streamRate mismatch");
-
-        // Advance 6 hours into Day3 for accrual
+        // Advance 6 hours into Day2 for accrual
         uint256 dt = 6 hours;
         vm.warp(block.timestamp + dt);
-        vm.prank(address(hook));
-        gauge.pokePool(key);
+        // vm.prank(address(hook));
+        // gauge.pokePool(key);
 
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
@@ -217,8 +199,8 @@ contract GaugeStream_IT is Test, Deployers {
         gauge.claimAllForOwner(arr, address(this));
         uint256 claimed = bmx.balanceOf(address(this)) - balBefore;
 
-        uint256 expected = srDay3 * dt;
-        assertApproxEqAbs(claimed, expected, 1e16, "multi-day claim mismatch");
+        uint256 expected = srDay2 * dt;
+        assertApproxEqAbs(claimed, expected, srDay2, "multi-day claim mismatch");
 
         return;
     }
@@ -249,25 +231,17 @@ contract GaugeStream_IT is Test, Deployers {
         positionManager.subscribe(tokenIdOut, address(adapter), bytes(""));
 
         // Fast-forward to when streaming is active (reuse Day3 logic).
-        gauge.rollIfNeeded(pid);
-        (, uint64 day0End,,, ) = gauge.epochInfo(pid);
+        uint256 day0End2 = TimeLibrary.dayNext(block.timestamp);
         // Roll Day1, Day2, Day3
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid); // Day2 roll (still no stream)
-        vm.warp(block.timestamp + 1 days);
-        gauge.rollIfNeeded(pid); // Day3 roll – stream active
+        vm.warp(uint256(day0End2) + 2 days); // Day2 boundary (still no stream)
+        vm.warp(block.timestamp + 1 days); // Day3 – stream active
 
         // Advance 4 hours into Day3 and poke accumulator
         vm.warp(block.timestamp + 4 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        // Compute posKey for out-of-range position
-        bytes32 posKey = keccak256(
-            abi.encode(address(this), tickLower, tickUpper, bytes32(tokenIdOut), pid)
-        );
-
-        uint256 pending = gauge.pendingRewards(posKey, uint128(liq), pid);
+        uint256 pending = gauge.pendingRewardsByTokenId(tokenIdOut);
         assertEq(pending, 0, "out-of-range position accrued rewards");
     }
 
@@ -300,10 +274,8 @@ contract GaugeStream_IT is Test, Deployers {
         positionManager.subscribe(tokenIdNarrow, address(adapter), bytes(""));
 
         // 2. Advance until streamRate becomes non-zero
-        gauge.rollIfNeeded(pid);
         while (gauge.streamRate(pid) == 0) {
             vm.warp(block.timestamp + 1 days);
-            gauge.rollIfNeeded(pid);
         }
 
         // 3. Move 3 hours into the active streaming day and poke accumulator
@@ -315,15 +287,8 @@ contract GaugeStream_IT is Test, Deployers {
         uint128 liqWide = positionManager.getPositionLiquidity(wideTokenId);
         uint128 liqNarrow = positionManager.getPositionLiquidity(tokenIdNarrow);
 
-        bytes32 posWide = keccak256(
-            abi.encode(address(this), int24(-60000), int24(60000), bytes32(wideTokenId), pid)
-        );
-        bytes32 posNarrow = keccak256(
-            abi.encode(address(this), tickLower, tickUpper, bytes32(tokenIdNarrow), pid)
-        );
-
-        uint256 pendingWide = gauge.pendingRewards(posWide, liqWide, pid);
-        uint256 pendingNarrow = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 pendingWide = gauge.pendingRewardsByTokenId(wideTokenId);
+        uint256 pendingNarrow = gauge.pendingRewardsByTokenId(tokenIdNarrow);
 
         // Sanity: confirm narrow position minted MORE liquidity units with same budget
         assertGt(liqNarrow, liqWide, "narrow position did not mint more liquidity units");

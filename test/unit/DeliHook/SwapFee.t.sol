@@ -86,9 +86,9 @@ contract DeliHook_SwapFeeTest is Test {
         uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
         assertEq(fp.lastAmount(), expected);
         // fee currency should be wBLT
-
-        // gauge side-effects
-        assertEq(daily.rollCalls(), 1);
+        
+        // no further asserts
+        // gauge side-effects (keeperless: only poke is required)
         assertEq(daily.pokeCalls(), 1);
         assertEq(inc.pokeCount(), 1);
     }

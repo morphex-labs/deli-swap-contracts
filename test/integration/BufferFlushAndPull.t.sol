@@ -265,7 +265,8 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         // 3. Configure buy-back pool
         fp.setBuybackPoolKey(canonicalKey);
 
-        uint256 bucketBefore = gauge.collectBucket(otherPoolId);
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bucketBefore = gauge.dayBuckets(canonicalKey.toId(), dayNow + 2);
 
         // 4. Flush – executes buyback using expected out parameter; 0 disables slippage check in this test
         fp.flushBuffer(otherPoolId, 0);
@@ -275,8 +276,8 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         // Note: pendingBmxForVoter may have small amount from internal swap fees
         assertGt(fp.pendingWbltForVoter(), 0, "should have fees from internal swaps");
 
-        // Gauge bucket increased (received BMX from buy-back) - rewards go to source pool
-        uint256 bucketAfter = gauge.collectBucket(otherPoolId);
+        // Gauge bucket increased (received BMX from buy-back)
+        uint256 bucketAfter = gauge.dayBuckets(canonicalKey.toId(), dayNow + 2);
         assertGt(bucketAfter, bucketBefore, "bucket not updated");
     }
 
@@ -302,10 +303,10 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         uint256 internalFee = (buybackPortion * 3000) / 1_000_000; // 0.3% of buyback
         voterPortion += (internalFee * 3) / 100;                   // 3% of the internal fee
 
-        // Gauge bucket received BMX from the buy-back. The precise BMX depends on pool price
-        // at execution time (which was moved by the prior swap). Assert it increased.
-        uint256 bucket = gauge.collectBucket(canonicalKey.toId());
-        assertGt(bucket, 0, "bucket should increase after buyback");
+         // Immediately credited to day+2 bucket (since fee is already BMX)
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bucket = gauge.dayBuckets(canonicalKey.toId(), dayNow + 2);
+        assertEq(bucket, buybackPortion, "bucket credit");
         // voter portion buffered in wBLT
         assertEq(fp.pendingWbltForVoter(), voterPortion, "voter wblt");
     }
@@ -332,7 +333,8 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buyback not cleared");
         // Note: pendingWbltForVoter will have fees from the internal buyback swap
         assertGt(fp.pendingWbltForVoter(), 0, "voter buf");
-        assertGt(gauge.collectBucket(otherPoolId), 0, "OTHER pool bucket empty");
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        assertGt(gauge.dayBuckets(canonicalKey.toId(), dayNow + 2), 0, "bucket empty");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -399,14 +401,15 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         fp.setBuybackPoolKey(canonicalKey);
         // Allow execution by not enforcing a high expected out
 
-        uint256 bucketBefore = gauge.collectBucket(otherPoolId);
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bucketBefore = gauge.dayBuckets(canonicalKey.toId(), dayNow + 2);
 
         // Should execute without reverting
         fp.flushBuffer(otherPoolId, 0);
 
         // Buffer cleared and gauge bucket credited (rewards go to source pool)
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not cleared");
-        uint256 bucketAfter = gauge.collectBucket(otherPoolId);
+        uint256 bucketAfter = gauge.dayBuckets(canonicalKey.toId(), dayNow + 2);
         assertGt(bucketAfter, bucketBefore, "bucket not increased");
     }
 } 

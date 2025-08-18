@@ -49,6 +49,9 @@ contract IncentiveGaugeFOTInvariant is Test {
         });
         pid = key.toId();
 
+        // Initialize pool state in the gauge once (hook-gated init)
+        gauge.initPool(key, 0);
+
         fot.approve(address(gauge), type(uint256).max);
 
         targetContract(address(this));
@@ -69,7 +72,7 @@ contract IncentiveGaugeFOTInvariant is Test {
                                  INVARIANT
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_fotAccounting() public {
+    function invariant_fotAccounting() public view {
         (uint256 rate,, uint256 remaining) = gauge.incentiveData(pid, IERC20(address(fot)));
         uint256 bal = fot.balanceOf(address(gauge));
 

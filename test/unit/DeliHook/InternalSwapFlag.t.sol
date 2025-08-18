@@ -85,9 +85,8 @@ contract DeliHook_InternalSwapFlagTest is Test {
         assertEq(fp.calls(), 1, "collectFee should be called once");
         assertTrue(fp.lastIsInternal(), "internal flag should be set");
         
-        // 2. Epoch roll and pool poke (gauges should be updated)
-        assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
-        assertEq(daily.pokeCalls(), 1, "daily gauge should be poked");
+        // 2. No pool poke on internal swap (and no roll call needed in keeperless model)
+        assertEq(daily.pokeCalls(), 0, "daily gauge should not be poked");
         
         // 3. IncentiveGauge poked
         assertEq(inc.pokeCount(), 1, "incentive gauge should be poked");
@@ -110,7 +109,7 @@ contract DeliHook_InternalSwapFlagTest is Test {
 
         // Should update gauges and collect regular fees
         assertEq(fp.calls(), 1, "regular fee should be collected");
-        assertEq(daily.rollCalls(), 1, "daily gauge should be rolled");
+        assertEq(fp.internalFeeCalls(), 0, "internal fee should not be collected");
         assertEq(daily.pokeCalls(), 1, "daily gauge should be poked");
         assertEq(inc.pokeCount(), 1, "incentive gauge should be poked");
     }
