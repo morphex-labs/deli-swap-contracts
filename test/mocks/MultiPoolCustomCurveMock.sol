@@ -27,7 +27,7 @@ contract MultiPoolCustomCurveMock is MultiPoolCustomCurve, ERC20 {
     // Track total supply per pool
     mapping(PoolId => uint256) public totalSupplyPerPool;
     
-    // Track reserves per pool for custom curve
+    // Legacy reserve trackers (not relied upon for calculations anymore). Kept for compatibility.
     mapping(PoolId => uint256) public reserve0;
     mapping(PoolId => uint256) public reserve1;
 
@@ -67,14 +67,18 @@ contract MultiPoolCustomCurveMock is MultiPoolCustomCurve, ERC20 {
     {
         PoolId poolId = key.toId();
         shares = params.liquidity;
-        
-        if (totalSupplyPerPool[poolId] == 0) {
+
+        uint256 supply = totalSupplyPerPool[poolId];
+        if (supply == 0) {
             return (0, 0, 0);
         }
-        
-        // Simple proportional removal
-        amount0 = (shares * reserve0[poolId]) / totalSupplyPerPool[poolId];
-        amount1 = (shares * reserve1[poolId]) / totalSupplyPerPool[poolId];
+
+        // Read current ERC-6909 claim balances directly from PoolManager to stay in sync with swaps
+        uint256 curReserve0 = poolManager.balanceOf(address(this), CurrencyLibrary.toId(key.currency0));
+        uint256 curReserve1 = poolManager.balanceOf(address(this), CurrencyLibrary.toId(key.currency1));
+
+        amount0 = (shares * curReserve0) / supply;
+        amount1 = (shares * curReserve1) / supply;
     }
 
     function _getAmountIn(PoolKey memory, AddLiquidityParams memory params)
@@ -111,12 +115,7 @@ contract MultiPoolCustomCurveMock is MultiPoolCustomCurve, ERC20 {
         returns (bytes memory, uint256)
     {
         (uint256 amount0, uint256 amount1, ) = _getAmountOut(key, params);
-        
-        // Update reserves
-        PoolId poolId = key.toId();
-        reserve0[poolId] -= amount0;
-        reserve1[poolId] -= amount1;
-        
+
         // Return the encoded amounts as negative int128 (following MultiPoolCustomCurve pattern)
         return (abi.encode(-amount0.toInt128(), -amount1.toInt128()), params.liquidity);
     }

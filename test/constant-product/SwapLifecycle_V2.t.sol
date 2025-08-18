@@ -30,6 +30,7 @@ import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
 import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
+import {PositionManagerAdapter} from "src/PositionManagerAdapter.sol";
 
 /// @notice Tests V2 constant product swap lifecycle, reserve tracking, and x*y=k invariant
 contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
@@ -116,6 +117,20 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         // Deploy and set V2PositionHandler
         v2Handler = new V2PositionHandler(address(hook));
         hook.setV2PositionHandler(address(v2Handler));
+        // Minimal adapter wiring so V2 handler can auto-subscribe synthetic positions
+        PositionManagerAdapter adapter = new PositionManagerAdapter(
+            address(gauge),
+            address(inc),
+            address(positionManager),
+            address(poolManager)
+        );
+        v2Handler.setPositionManagerAdapter(address(adapter));
+        adapter.addHandler(address(v2Handler));
+        adapter.setAuthorizedCaller(address(hook), true);
+        adapter.setAuthorizedCaller(address(v2Handler), true);
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        // Ensure DailyEpochGauge accepts adapter callbacks
+        gauge.setPositionManagerAdapter(address(adapter));
 
         // Initialize pool
         key = PoolKey({

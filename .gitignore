@@ -2,10 +2,6 @@
 cache/
 out/
 
-# Foundry snapshots
-snapshots/
-/snapshots
-
 # Ignores development (and goerli) broadcast logs
 broadcast/
 

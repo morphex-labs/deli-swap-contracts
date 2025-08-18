@@ -214,15 +214,14 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         // Now set the buyback pool key
         fp.setBuybackPoolKey(canonicalKey);
 
-        // Flush buffers – should execute buyback swap and stream BMX to gauge bucket
+        // Flush buffers – explicit keeper call to execute buyback swap and stream BMX to gauge bucket
         fp.flushBuffer(otherPoolId, 0);
 
         // Buffers cleared
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buyback buffer not cleared");
 
-        // Gauge bucket increased by ~buf * 97% (buyback share)
-        uint256 bucket = gauge.dayBuckets(pid, uint32(block.timestamp / 1 days) + 2);
-
+        // Gauge bucket increased (BMX amount depends on execution price). Credit goes to the source pool whose buffer was flushed.
+        uint256 bucket = gauge.dayBuckets(otherPoolId, uint32(block.timestamp / 1 days) + 2);
         assertGt(bucket, 0, "bucket not updated");
     }
 

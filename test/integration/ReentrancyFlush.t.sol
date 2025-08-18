@@ -224,7 +224,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         // Buffer cleared and gauge bucket credited
         assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not cleared");
         uint32 dayNow = uint32(block.timestamp / 1 days);
-        assertGt(gauge.dayBuckets(pid, dayNow + 2), 0, "bucket not credited");
+        // Bucket credit belongs to the source pool whose buffer was flushed (otherPoolId), not necessarily canonical pid
+        assertGt(gauge.dayBuckets(otherPoolId, dayNow + 2), 0, "bucket not credited");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -249,7 +250,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         // Set the pool ID for reentrancy attempt
         bmx.setPoolIdToFlush(canonicalKey.toId());
         
-        // Step 4: Flush buffers - this will trigger BMX->wBLT internal swap
+        // Step 4: Flush buffers - explicit keeper call triggers BMX->wBLT internal swap
         fp.flushBuffer(canonicalKey.toId(), 0);
         
         // Verify reentrancy was attempted and blocked

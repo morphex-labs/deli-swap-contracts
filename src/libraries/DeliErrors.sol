@@ -35,6 +35,7 @@ library DeliErrors {
     error InsufficientIncentive();
     error MustUseDynamicFee();
     error FinalizationInProgress();
+    error AlreadySet();
 
     // pool errors
     error PoolNotInitialized();

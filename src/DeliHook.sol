@@ -190,7 +190,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Set the dynamic fee
         poolManager.updateDynamicLPFee(key, derivedFee);
 
-        emit PoolFeeSet(pid, derivedFee);
+        emit PoolFeeSet(key.toId(), derivedFee);
 
         return BaseHook.afterInitialize.selector;
     }

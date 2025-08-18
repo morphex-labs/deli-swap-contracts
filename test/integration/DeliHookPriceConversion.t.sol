@@ -223,7 +223,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         // Ensure buyback pool is configured so auto-flush credits the gauge
         fp.setBuybackPoolKey(bmxKey);
 
-        uint256 bucketBefore = gauge.collectBucket(bmxKey.toId());
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bucketBefore = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // zeroForOne=false, exact input, settle token1 (wBLT)
         poolManager.unlock(abi.encode(SwapRequest({
             key: bmxKey,
@@ -246,7 +247,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
 
         // Manually flush BMX pool buffer to credit the gauge
         fp.flushBuffer(bmxKey.toId(), 0);
-        uint256 bucketAfter = gauge.collectBucket(bmxKey.toId());
+        uint256 bucketAfter = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // Bucket is denominated in BMX and depends on execution price; assert it increased
         assertGt(bucketAfter - bucketBefore, 0, "gauge bucket should increase");
         assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter buffer");
@@ -258,7 +259,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         // Ensure buyback pool is configured so auto-flush credits the gauge
         fp.setBuybackPoolKey(bmxKey);
 
-        uint256 bucketBefore = gauge.collectBucket(bmxKey.toId());
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 bucketBefore = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // zeroForOne=false, exact output, settle token1 (wBLT)
         poolManager.unlock(abi.encode(SwapRequest({
             key: bmxKey,
@@ -282,7 +284,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
 
         // Manually flush BMX pool buffer to credit the gauge
         fp.flushBuffer(bmxKey.toId(), 0);
-        uint256 bucketAfter = gauge.collectBucket(bmxKey.toId());
+        uint256 bucketAfter = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // Bucket depends on execution price; just assert it increased
         assertGt(bucketAfter - bucketBefore, 0, "gauge bucket should increase");
         assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.01e18, "wblt voter (no conversion)");

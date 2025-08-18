@@ -28,6 +28,7 @@ import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
+import {PositionManagerAdapter} from "src/PositionManagerAdapter.sol";
 
 /// @notice Tests multiple V2 pools managed by a single hook instance
 contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
@@ -124,6 +125,19 @@ contract MultiPoolV2_IT is Test, Deployers, IUnlockCallback {
         // Deploy and set V2PositionHandler
         v2Handler = new V2PositionHandler(address(hook));
         hook.setV2PositionHandler(address(v2Handler));
+        // Minimal adapter wiring for V2 handler
+        PositionManagerAdapter adapter = new PositionManagerAdapter(
+            address(gauge),
+            address(inc),
+            address(positionManager),
+            address(poolManager)
+        );
+        v2Handler.setPositionManagerAdapter(address(adapter));
+        adapter.addHandler(address(v2Handler));
+        adapter.setAuthorizedCaller(address(hook), true);
+        adapter.setAuthorizedCaller(address(v2Handler), true);
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        gauge.setPositionManagerAdapter(address(adapter));
 
         // Approve tokens to hook
         bmx.approve(address(hook), type(uint256).max);

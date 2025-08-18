@@ -1,0 +1,19 @@
+{
+  "adapter_notify_unsub_1": "227531",
+  "adapter_notify_unsub_2": "260228",
+  "adapter_notify_unsub_3": "263786",
+  "adapter_notify_unsub_3_worst": "297672",
+  "adapter_segments_daily_1": "88780",
+  "adapter_segments_daily_2": "88780",
+  "adapter_segments_daily_3": "88780",
+  "adapter_segments_incentive_1": "125079",
+  "adapter_segments_incentive_2": "157776",
+  "adapter_segments_incentive_3": "161334",
+  "adapter_unsubscribe_notify_multi_1": "238392",
+  "adapter_unsubscribe_notify_multi_2": "271089",
+  "adapter_unsubscribe_notify_multi_3": "274647",
+  "daily_only_unsubscribe_no_poke": "88293",
+  "incentive_only_unsubscribe_1": "123417",
+  "incentive_only_unsubscribe_2": "156114",
+  "incentive_only_unsubscribe_3": "159672"
+}
