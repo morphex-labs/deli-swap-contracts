@@ -61,9 +61,6 @@ contract DailyEpochGauge_EpochTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function testFastForwardMultipleDays() public view {
-        uint256 firstStart = TimeLibrary.dayStart(block.timestamp);
-        // simulate 3.5 days later
-        // (no warp in view)
         uint256 todayStart = TimeLibrary.dayStart(block.timestamp + 3 days + 12 hours);
         assertEq(todayStart + 1 days, todayStart + 1 days);
     }

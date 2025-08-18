@@ -68,6 +68,9 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         });
         
         // Create a V2 position to store the poolKey
+        // Seed slot0 so adapter's tick read succeeds during notifySubscribe, then call as hook
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(v2PoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(v2PoolKey, alice, 1000);
         
@@ -131,8 +134,12 @@ contract GetPoolKeyFromPositionInfoTest is Test {
         
         // Add liquidity to both pools
         vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(v2PoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
+        vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(v2PoolKey, alice, 1000);
         
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(v2PoolKey2.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(v2PoolKey2, alice, 2000);
         

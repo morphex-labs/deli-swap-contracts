@@ -332,8 +332,8 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         gauge.pokePool(key);
 
         // Get liquidity from V2PositionHandler synthetic positions
-        uint128 liqA = v2Handler.getPositionLiquidity(posA);
-        uint128 liqB = v2Handler.getPositionLiquidity(posB);
+        uint128 liqA = adapter.getPositionLiquidity(posA);
+        uint128 liqB = adapter.getPositionLiquidity(posB);
         // Note: Alice gets slightly less liquidity due to MINIMUM_LIQUIDITY lock on first mint
         assertApproxEqAbs(liqA, liqB, 1000, "liquidity mismatch");
 

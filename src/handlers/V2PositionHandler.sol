@@ -171,22 +171,17 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     }
 
     /// @inheritdoc IPositionHandler
-    function getPoolAndPositionInfo(uint256 tokenId)
+    function getPoolPositionAndLiquidity(uint256 tokenId)
         external
         view
         override
-        returns (PoolKey memory key, PositionInfo info)
+        returns (PoolKey memory key, PositionInfo info, uint128 liquidity)
     {
         SyntheticPosition storage pos = syntheticPositions[tokenId];
         if (!pos.exists) revert DeliErrors.PositionNotFound();
-
         key = pos.poolKey;
         info = _createPositionInfo(key);
-    }
-
-    /// @inheritdoc IPositionHandler
-    function getPositionLiquidity(uint256 tokenId) external view override returns (uint128) {
-        return syntheticPositions[tokenId].liquidity;
+        liquidity = pos.liquidity;
     }
 
     /// @inheritdoc IPositionHandler

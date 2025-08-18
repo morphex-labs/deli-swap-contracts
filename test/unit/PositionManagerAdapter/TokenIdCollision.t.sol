@@ -16,6 +16,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 contract TokenIdCollisionTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -78,10 +79,15 @@ contract TokenIdCollisionTest is Test {
             hooks: IHooks(address(mockV2Hook))
         });
         
+        // Seed slot0 then call handler as hook
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(mockPoolKey, alice, 1000);
         uint256 v2TokenId1 = v2Handler.v2TokenIds(mockPoolKey.toId(), alice);
         
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(mockPoolKey, bob, 2000);
         uint256 v2TokenId2 = v2Handler.v2TokenIds(mockPoolKey.toId(), bob);
@@ -123,6 +129,9 @@ contract TokenIdCollisionTest is Test {
             hooks: IHooks(address(mockV2Hook))
         });
         
+        // Seed slot0 then call handler as hook
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(mockPoolKey, alice, 1000);
         uint256 v2TokenId = v2Handler.v2TokenIds(mockPoolKey.toId(), alice);
@@ -136,6 +145,8 @@ contract TokenIdCollisionTest is Test {
         assertEq(baseId, 1, "First V2 position should have base tokenId 1");
         
         // Create another V2 position
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(mockPoolKey, bob, 2000);
         uint256 v2TokenId2 = v2Handler.v2TokenIds(mockPoolKey.toId(), bob);
@@ -164,6 +175,9 @@ contract TokenIdCollisionTest is Test {
             hooks: IHooks(address(mockV2Hook))
         });
         
+        // Seed slot0 then call handler as hook
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(mockPoolKey, alice, 1000);
         uint256 v2TokenId = v2Handler.v2TokenIds(mockPoolKey.toId(), alice);

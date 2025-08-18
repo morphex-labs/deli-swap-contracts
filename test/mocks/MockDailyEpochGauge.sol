@@ -60,9 +60,46 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         // No-op
     }
     
-    // Subscription callbacks (from ISubscriber interface)
-    function notifySubscribe(uint256, bytes memory) external override {}
-    function notifyUnsubscribe(uint256) external override {}
-    function notifyBurn(uint256, address, PositionInfo, uint256, BalanceDelta) external override {}
-    function notifyModifyLiquidity(uint256, int256, BalanceDelta) external override {}
+    // Context-based subscription callbacks (no-ops in mock)
+    function notifySubscribeWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        uint128,
+        address
+    ) external override {}
+
+    function notifyUnsubscribeWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyBurnWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        address,
+        int24,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyModifyLiquidityWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        int256,
+        uint128
+    ) external override {}
 } 

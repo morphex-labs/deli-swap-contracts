@@ -26,6 +26,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 contract TokenIdCollisionFuzzTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -159,6 +160,9 @@ contract TokenIdCollisionFuzzTest is Test {
             
             address user = address(uint160(bound(seed >> 32, 1, type(uint160).max)));
             
+            // Seed slot0 then call handler as hook
+            vm.prank(address(mockV2Hook));
+            mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(mockPoolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
             vm.prank(address(mockV2Hook));
             v2Handler.notifyAddLiquidity(mockPoolKey, user, 1000);
             tokenId = v2Handler.v2TokenIds(mockPoolKey.toId(), user);
@@ -197,6 +201,9 @@ contract TokenIdCollisionFuzzTest is Test {
             hooks: IHooks(address(mockV2Hook))
         });
         
+        // Seed slot0 then call handler as hook
+        vm.prank(address(mockV2Hook));
+        mockPoolManager.setPoolSlot0(bytes32(PoolId.unwrap(poolKey.toId())), TickMath.getSqrtPriceAtTick(0), 0);
         vm.prank(address(mockV2Hook));
         v2Handler.notifyAddLiquidity(poolKey, user, liquidity);
         uint256 tokenId = v2Handler.v2TokenIds(poolKey.toId(), user);

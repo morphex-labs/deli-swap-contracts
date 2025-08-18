@@ -100,6 +100,14 @@ library RangePool {
         }
     }
 
+    /// @notice Credit a single token amount to the pool cumulative without tick/bitmap adjustments.
+    /// @dev Used by Daily gauge on unsubscribe where tick does not change.
+    function creditSingleTokenNoTick(State storage self, address token, uint256 amount) internal {
+        // Move pool time forward and then credit the amount pro-rata if liquidity > 0
+        self.lastUpdated = uint64(block.timestamp);
+        _accumulateToken(self, token, amount);
+    }
+
     /*//////////////////////////////////////////////////////////////
                              LIQUIDITY OPS
     //////////////////////////////////////////////////////////////*/
@@ -153,6 +161,26 @@ library RangePool {
 
         if (params.tickLower <= self.tick && self.tick < params.tickUpper) {
             self.liquidity = LiquidityMath.addDelta(self.liquidity, liquidityDelta);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                      SOFT REMOVAL (UNSUBSCRIBE PATH)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Soft-remove liquidity at [tickLower, tickUpper) without tick bitmap flips.
+    ///         Updates per-tick net/gross and reduces active liquidity if in-range.
+    function queueRemoval(State storage self, int24 tickLower, int24 tickUpper, uint128 liquidityToRemove) internal {
+        if (liquidityToRemove == 0) return;
+        int128 delta = -SafeCast.toInt128(uint256(liquidityToRemove));
+
+        // Update lower and upper ticks (no bitmap flips / clears here)
+        updateTick(self, tickLower, delta, false);
+        updateTick(self, tickUpper, delta, true);
+
+        // Immediate in-range adjustment so future windows are fair
+        if (tickLower <= self.tick && self.tick < tickUpper) {
+            self.liquidity = LiquidityMath.addDelta(self.liquidity, delta);
         }
     }
 

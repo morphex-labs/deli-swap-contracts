@@ -5,6 +5,9 @@ import "forge-std/Test.sol";
 import "test/utils/Deployers.sol";
 import {EasyPosm} from "test/utils/libraries/EasyPosm.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {PositionInfo} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
+import {EfficientHashLib} from "lib/solady/src/utils/EfficientHashLib.sol";
 
 import "src/DeliHook.sol";
 import "src/DailyEpochGauge.sol";
@@ -203,17 +206,16 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        GAS: unsubscribe with multi-token incentives
+                            LOCAL HELPERS
     //////////////////////////////////////////////////////////////*/
-    function testGasUnsubscribeMultiToken() public {
-        // 1) Mint a fresh position and subscribe
-        uint256 tokenId;
+
+    function _mintAndSubscribe(int24 tickLower, int24 tickUpper, uint128 liqAmount) internal returns (uint256 tokenId) {
         (tokenId,) = EasyPosm.mint(
             positionManager,
             key,
-            -1800,
-            1800,
-            1e22,
+            tickLower,
+            tickUpper,
+            liqAmount,
             type(uint256).max,
             type(uint256).max,
             address(this),
@@ -221,13 +223,10 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             bytes("")
         );
         positionManager.subscribe(tokenId, address(adapter), bytes(""));
+    }
 
-        // 2) Activate daily stream and baseline incentive
-        _activateStream();
-
-        // 3) Add multiple concurrent incentive tokens
-        uint256 NUM = 10;
-        for (uint256 i; i < NUM; ++i) {
+    function _addIncentiveTokens(uint256 num) internal {
+        for (uint256 i; i < num; ++i) {
             MockERC20 t = new MockERC20(string(abi.encodePacked("INC", i)), string(abi.encodePacked("I", i)), 18);
             t.mint(address(this), 1e24);
             IERC20 it = IERC20(address(t));
@@ -236,16 +235,381 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
             t.approve(address(inc), amt);
             inc.createIncentive(key, it, amt);
         }
+    }
 
-        // 4) Move some time forward and poke so accumulators reflect incentives
+    function _prepareUnsubContext(uint256 tokenId) internal view returns (bytes memory) {
+        (PoolKey memory k, PositionInfo info) = adapter.getPoolAndPositionInfo(tokenId);
+        PoolId localPid = k.toId();
+        uint128 liq = adapter.getPositionLiquidity(tokenId);
+        bytes32 pidRaw = bytes32(PoolId.unwrap(localPid));
+        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
+        return abi.encode(
+            posKey,
+            pidRaw,
+            info.tickLower(),
+            info.tickUpper(),
+            liq
+        );
+    }
+
+    function _prepareUnsubArgs(uint256 tokenId)
+        internal
+        view
+        returns (bytes32 posKey, bytes32 pidRaw, int24 lower, int24 upper, uint128 liq)
+    {
+        (PoolKey memory k, PositionInfo info) = adapter.getPoolAndPositionInfo(tokenId);
+        PoolId localPid = k.toId();
+        liq = adapter.getPositionLiquidity(tokenId);
+        pidRaw = bytes32(PoolId.unwrap(localPid));
+        posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
+        lower = info.tickLower();
+        upper = info.tickUpper();
+    }
+
+    function _gasUnsubscribeIncentiveOnly(uint256 numTokens, string memory label) internal {
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        _activateStream();
+        if (numTokens == 3) {
+            // Add 3 while base is active (2 active + 1 queued), then expire base and promote queued
+            _addIncentiveTokens(3);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 2) {
+            // Add two incentives first (one active, one queued), then expire base to promote queued
+            _addIncentiveTokens(2);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 1) {
+            // Expire base first so exactly one incentive remains active after adding one
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+            _addIncentiveTokens(1);
+        } else {
+            // numTokens == 0: ensure base expired to isolate daily-only elsewhere
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+
+        // Ensure dt > 0 for IncentiveGauge at unsubscribe
         vm.warp(block.timestamp + 1 days);
         vm.prank(address(hook));
         inc.pokePool(key);
+        vm.warp(block.timestamp + 60);
 
-        // 5) Snapshot gas specifically for unsubscribe path (adapter.notifyUnsubscribe)
-        vm.startSnapshotGas("adapter_unsubscribe_notify_multi");
+        (bytes32 posKey, bytes32 pidRaw, int24 lower, int24 upper, uint128 liq) = _prepareUnsubArgs(tokenId);
+
+        // Sanity: ensure all incentive tokens are active and have non-zero dt
+        {
+            IERC20[] memory toks = inc.poolTokensOf(pid);
+            uint256 activeCount;
+            for (uint256 i; i < toks.length; ++i) {
+                (uint256 rate, uint256 fin, ) = inc.incentiveData(pid, toks[i]);
+                if (rate > 0 && fin > block.timestamp) {
+                    ++activeCount;
+                }
+            }
+            assertEq(activeCount, numTokens, "active incentive token count mismatch (incentive only)");
+            // base must be inactive in all incentive-only cases after we expired it
+            (uint256 baseRate,,) = inc.incentiveData(pid, wblt);
+            assertEq(baseRate, 0, "base token should not be active (incentive only)");
+        }
+
+        vm.startPrank(address(adapter));
+        vm.startSnapshotGas(label);
+        inc.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
+    }
+
+    function _gasUnsubscribeMultiToken(uint256 numTokens, string memory label) internal {
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        _activateStream();
+        if (numTokens == 3) {
+            _addIncentiveTokens(3);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 2) {
+            _addIncentiveTokens(2);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 1) {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+            _addIncentiveTokens(1);
+        } else {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+        
+        // Ensure dt > 0 for IncentiveGauge at unsubscribe
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(address(hook));
+        gauge.pokePool(key);
+        inc.pokePool(key);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 60);
+
+        // Sanity: ensure all incentive tokens are active and have non-zero dt
+        {
+            IERC20[] memory toks = inc.poolTokensOf(pid);
+            uint256 activeCount;
+            for (uint256 i; i < toks.length; ++i) {
+                (uint256 rate, uint256 fin, ) = inc.incentiveData(pid, toks[i]);
+                if (rate > 0 && fin > block.timestamp) {
+                    ++activeCount;
+                }
+            }
+            assertEq(activeCount, numTokens, "active incentive token count mismatch (adapter path)");
+            (uint256 baseRate,,) = inc.incentiveData(pid, wblt);
+            assertEq(baseRate, 0, "base token should not be active (adapter path)");
+        }
+
+        vm.startSnapshotGas(label);
         positionManager.unsubscribe(tokenId);
         vm.stopSnapshotGas();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        GAS: unsubscribe with multi-token incentives
+    //////////////////////////////////////////////////////////////*/
+    function testGasUnsubscribeMultiTokenOne() public {
+        _gasUnsubscribeMultiToken(1, "adapter_unsubscribe_notify_multi_1");
+    }
+
+    function testGasUnsubscribeMultiTokenTwo() public {
+        _gasUnsubscribeMultiToken(2, "adapter_unsubscribe_notify_multi_2");
+    }
+
+    function testGasUnsubscribeMultiTokenThree() public {
+        _gasUnsubscribeMultiToken(3, "adapter_unsubscribe_notify_multi_3");
+    }
+
+    /// Measure IncentiveGauge unsubscribe path only (bypassing Daily) to expose per-token gas sensitivity.
+    function testGasUnsubscribeIncentiveOnly() public {
+        _gasUnsubscribeIncentiveOnly(2, "incentive_only_unsubscribe_2");
+    }
+
+    /// Same as above but with a single extra incentive token to compare gas deltas.
+    function testGasUnsubscribeIncentiveOnly_OneToken() public {
+        _gasUnsubscribeIncentiveOnly(1, "incentive_only_unsubscribe_1");
+    }
+
+    function testGasUnsubscribeIncentiveOnly_ThreeTokens() public {
+        _gasUnsubscribeIncentiveOnly(3, "incentive_only_unsubscribe_3");
+    }
+
+    /// Measure DailyEpochGauge unsubscribe path only (bypassing Incentive) to expose daily gas cost.
+    function testGasUnsubscribeDailyOnly() public {
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        _activateStream();
+
+        // Ensure dt > 0 for DailyEpochGauge at unsubscribe
+        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 60);
+
+        (bytes32 posKey, bytes32 pidRaw, int24 lower, int24 upper, uint128 liq) = _prepareUnsubArgs(tokenId);
+
+        vm.startPrank(address(adapter));
+        vm.startSnapshotGas("daily_only_unsubscribe_no_poke");
+        gauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        GAS: adapter segments (daily vs incentive)
+    //////////////////////////////////////////////////////////////*/
+    function _gasAdapterSegments(uint256 numTokens, string memory labelDaily, string memory labelIncentive) internal {
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        _activateStream();
+        if (numTokens == 3) {
+            _addIncentiveTokens(3);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 2) {
+            _addIncentiveTokens(2);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 1) {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+            _addIncentiveTokens(1);
+        } else {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+
+        // Ensure dt > 0 for unsubscribe
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(address(hook));
+        gauge.pokePool(key);
+        inc.pokePool(key);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 60);
+
+        // Prepare shared args via adapter
+        (bytes32 posKey, bytes32 pidRaw, int24 lower, int24 upper, uint128 liq) = _prepareUnsubArgs(tokenId);
+
+        // Sanity: ensure all incentive tokens are active
+        {
+            IERC20[] memory toks = inc.poolTokensOf(pid);
+            uint256 activeCount;
+            for (uint256 i; i < toks.length; ++i) {
+                (uint256 rate, uint256 fin, ) = inc.incentiveData(pid, toks[i]);
+                if (rate > 0 && fin > block.timestamp) {
+                    ++activeCount;
+                }
+            }
+            assertEq(activeCount, numTokens, "active incentive token count mismatch (adapter segments)");
+            (uint256 baseRate,,) = inc.incentiveData(pid, wblt);
+            assertEq(baseRate, 0, "base token should not be active (adapter segments)");
+        }
+
+        // Measure daily segment
+        vm.startPrank(address(adapter));
+        vm.startSnapshotGas(labelDaily);
+        gauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
+
+        // Reconstruct context (unchanged) and measure incentive segment
+        vm.startPrank(address(adapter));
+        vm.startSnapshotGas(labelIncentive);
+        inc.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
+    }
+
+    function testGasAdapterSegmentsOne() public {
+        _gasAdapterSegments(1, "adapter_segments_daily_1", "adapter_segments_incentive_1");
+    }
+
+    function testGasAdapterSegmentsTwo() public {
+        _gasAdapterSegments(2, "adapter_segments_daily_2", "adapter_segments_incentive_2");
+    }
+
+    function testGasAdapterSegmentsThree() public {
+        _gasAdapterSegments(3, "adapter_segments_daily_3", "adapter_segments_incentive_3");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        GAS: adapter.notifyUnsubscribe direct
+    //////////////////////////////////////////////////////////////*/
+    function _gasAdapterNotifyUnsub(uint256 numTokens, string memory label) internal {
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        _activateStream();
+        if (numTokens == 3) {
+            _addIncentiveTokens(3);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 2) {
+            _addIncentiveTokens(2);
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        } else if (numTokens == 1) {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+            _addIncentiveTokens(1);
+        } else {
+            (, uint256 finish, ) = inc.incentiveData(pid, wblt);
+            if (finish > block.timestamp) vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+
+        // Ensure dt > 0 for IncentiveGauge/DailyEpochGauge at unsubscribe
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(address(hook));
+        inc.pokePool(key);
+        gauge.pokePool(key);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 60);
+
+        // Sanity: ensure all incentive tokens are active
+        {
+            IERC20[] memory toks = inc.poolTokensOf(pid);
+            uint256 activeCount;
+            for (uint256 i; i < toks.length; ++i) {
+                (uint256 rate, uint256 fin, ) = inc.incentiveData(pid, toks[i]);
+                if (rate > 0 && fin > block.timestamp) {
+                    ++activeCount;
+                }
+            }
+            assertEq(activeCount, numTokens, "active incentive token count mismatch (adapter notify)");
+            (uint256 baseRate,,) = inc.incentiveData(pid, wblt);
+            assertEq(baseRate, 0, "base token should not be active (adapter notify)");
+        }
+
+        vm.startPrank(address(positionManager));
+        vm.startSnapshotGas(label);
+        adapter.notifyUnsubscribe(tokenId);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
+    }
+
+    function testGasAdapterNotifyUnsubOne() public {
+        _gasAdapterNotifyUnsub(1, "adapter_notify_unsub_1");
+    }
+
+    function testGasAdapterNotifyUnsubTwo() public {
+        _gasAdapterNotifyUnsub(2, "adapter_notify_unsub_2");
+    }
+
+    function testGasAdapterNotifyUnsubThree() public {
+        _gasAdapterNotifyUnsub(3, "adapter_notify_unsub_3");
+    }
+
+    /// Worst-case parameters for unsubscribe gas: two extra incentive tokens (plus base wBLT from _activateStream),
+    /// large elapsed time without prior syncs to force Daily's multi-day integration and maximize cold reads.
+    /// to force Daily's multi-day integration during unsubscribe and maximize cold reads.
+    function testGasAdapterNotifyUnsubTwoWorst() public {
+        // 1) Mint and subscribe
+        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+
+        // 2) Activate Daily stream and base incentive, then add two extra incentive tokens (3 total incentives)
+        _activateStream();
+        _addIncentiveTokens(3);
+
+        // 3) Warp many days ahead to force DailyEpochGauge._amountOverWindow to iterate across many day boundaries
+        //    and ensure significant elapsed time for incentive calculations, without additional pokes.
+        vm.warp(block.timestamp + 6 days);
+
+        // 4) Measure only the adapter.notifyUnsubscribe path
+        vm.startPrank(address(positionManager));
+        vm.startSnapshotGas("adapter_notify_unsub_3_worst");
+        adapter.notifyUnsubscribe(tokenId);
+        vm.stopSnapshotGas();
+        vm.stopPrank();
     }
 
     /*//////////////////////////////////////////////////////////////

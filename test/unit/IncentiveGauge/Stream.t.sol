@@ -60,10 +60,6 @@ contract GaugeHarness is IncentiveGauge {
         ownerPositions[pid][owner].push(k);
     }
     
-    function addTokenToPool(PoolId pid, IERC20 token) external {
-        _addTokenToPool(pid, token);
-    }
-    
     function initializePool(PoolId pid, IERC20 /*tok*/, int24 tick) external {
         if (poolRewards[pid].lastUpdated == 0) {
             poolRewards[pid].initialize(tick);

@@ -324,6 +324,14 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         inc.createIncentive(key, iTokA, amtA);
         inc.createIncentive(key, iTokB, amtB);
 
+        // Now expire the pre-existing stream and poke so queued token is promoted into freed slot
+        {
+            (, uint256 finish, ) = inc.incentiveData(pid, rewardTok);
+            vm.warp(finish + 1);
+            vm.prank(address(hook));
+            inc.pokePool(key);
+        }
+
         // move forward 2 days and update pool accumulator once
         vm.warp(block.timestamp + 2 days);
         vm.prank(address(hook));
@@ -343,10 +351,10 @@ contract IncentiveAndDaily_IT is Test, Deployers {
     }
 
     /*//////////////////////////////////////////////////////////////
-            Gas sanity: 10 concurrent incentive tokens
+            Gas sanity: 2 concurrent incentive tokens
     //////////////////////////////////////////////////////////////*/
-    function testGasMultiTokenClaim() public {
-        uint256 NUM = 10;
+    function testMultiTokenClaim() public {
+        uint256 NUM = 2;
         IERC20[] memory toks = new IERC20[](NUM);
         for (uint256 i; i < NUM; ++i) {
             MockERC20 t = new MockERC20(string(abi.encodePacked("T", i)), string(abi.encodePacked("T", i)), 18);
@@ -369,7 +377,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         uint256 gasBefore = gasleft();
         inc.claimAllForOwner(arr, address(this));
         uint256 gasUsed = gasBefore - gasleft();
-        // Sanity threshold: < 2.8m gas for 10 tokens claim path
+        // Sanity threshold: < 2.8m gas for 2 tokens claim path
         assertLt(gasUsed, 2_800_000, "claim gas too high");
 
         // Ensure each token paid some amount > 0

@@ -237,7 +237,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         int24 lower = -600;
         int24 upper =  600;
 
-        uint256 chunk = swapIn / 4;          // start with 25% of the initial push
+        uint256 chunk = swapIn / 4; // start with 25% of the initial push
         uint8   steps = 0;
         while (true) {
             (, int24 t,,) = StateLibrary.getSlot0(poolManager, pid);
@@ -264,9 +264,6 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
 
     // Price below tickLower path – symmetry check
     function testPriceBelowLowerStopsAccrual() public {
-
-
-
         // push price BELOW lower boundary
         poolManager.unlock(abi.encode(address(bmx), 1e23)); // BMX -> wBLT drives price down
         (, int24 tickNow,,) = StateLibrary.getSlot0(poolManager, pid);
@@ -287,9 +284,6 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
 
     // Day-roll while out-of-range – ensure no accrual
     function testDayRollWhileOutOfRange() public {
-
-
-
         // Move above range
         poolManager.unlock(abi.encode(address(wblt), 1e23));
         (, int24 tickNow,,) = StateLibrary.getSlot0(poolManager, pid);
@@ -335,8 +329,6 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     function testCrossTickWithLiquidityChange() public {
         // Narrow position info
         uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-
-
 
         // 1. Move 30 minutes forward and poke so accumulator timestamp is not 0
         vm.warp(block.timestamp + 30 minutes);

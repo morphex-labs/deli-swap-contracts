@@ -37,18 +37,14 @@ contract V4PositionHandler is IPositionHandler {
     }
 
     /// @inheritdoc IPositionHandler
-    function getPoolAndPositionInfo(uint256 tokenId)
+    function getPoolPositionAndLiquidity(uint256 tokenId)
         external
         view
         override
-        returns (PoolKey memory key, PositionInfo info)
+        returns (PoolKey memory key, PositionInfo info, uint128 liquidity)
     {
-        return positionManager.getPoolAndPositionInfo(tokenId);
-    }
-
-    /// @inheritdoc IPositionHandler
-    function getPositionLiquidity(uint256 tokenId) external view override returns (uint128) {
-        return positionManager.getPositionLiquidity(tokenId);
+        (key, info) = positionManager.getPoolAndPositionInfo(tokenId);
+        liquidity = positionManager.getPositionLiquidity(tokenId);
     }
 
     /// @inheritdoc IPositionHandler
