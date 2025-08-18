@@ -26,6 +26,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
@@ -122,11 +123,12 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
         pid = key.toId();
+        // Initialize
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
         // 7. Mint wide-range position (always in-range)
@@ -419,6 +421,5 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     }
 
     // Dummy implementation to satisfy IFeeProcessor and avoid revert
-    function collectFee(PoolKey calldata, uint256) external override {}
-    function collectInternalFee(uint256) external override {}
+    function collectFee(PoolKey calldata, uint256, bool) external override {}
 } 

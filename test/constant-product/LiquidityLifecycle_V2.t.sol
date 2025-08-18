@@ -88,7 +88,7 @@ contract LiquidityLifecycle_V2_IT is Test, Deployers {
         );
         inc = new IncentiveGauge(poolManager, IPositionManagerAdapter(address(0)), predictedHook); // Temporary
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
 
         // Now deploy adapter with correct addresses

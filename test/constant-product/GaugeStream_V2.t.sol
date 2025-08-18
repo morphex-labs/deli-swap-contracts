@@ -125,7 +125,7 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
             address(inc)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
 
         hook.setFeeProcessor(address(fp));
