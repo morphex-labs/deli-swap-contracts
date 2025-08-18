@@ -112,7 +112,8 @@ contract VoterInvariant is Test {
         uint256 len = users.length;
         for (uint256 i; i < len; ++i) {
             address u = users[i];
-            (uint8 opt, uint256 weight, bool fromAuto) = voter.getUserVote(ep, u);
+            (uint8 opt, uint256 weight) = voter.getUserVote(ep, u);
+            (, bool fromAuto) = voter.autoVoteOf(u);
             if (weight == 0 || fromAuto) continue; // skip untallied auto-votes
             if (opt == 0) check0 += weight;
             else if (opt == 1) check1 += weight;

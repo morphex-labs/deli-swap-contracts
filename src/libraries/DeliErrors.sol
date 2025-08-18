@@ -32,7 +32,7 @@ library DeliErrors {
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
-    
+    error FinalizationInProgress();
     // pool errors
     error PoolNotInitialized();
     error InvalidTickSpacing();

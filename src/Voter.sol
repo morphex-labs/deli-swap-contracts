@@ -27,12 +27,14 @@ contract Voter is Ownable2Step {
                                STORAGE
     //////////////////////////////////////////////////////////////*/
 
-    uint8 private constant AUTO_FLAG = 4;
+    bool private finalizationInProgress;
+    address[] private autoVoterList;
 
     uint16[3] public options; // set in constructor (basis points)
     address public admin;
     address public safetyModule;
     IRewardDistributor public distributor;
+    uint256 public nextEpochToFinalize;
 
     IERC20 public immutable WETH;
     IERC20 public immutable SBF_BMX;
@@ -44,21 +46,20 @@ contract Voter is Ownable2Step {
         bool settled;
     }
 
-    mapping(uint256 => EpochData) public epochInfo;
-
-    // autoOption[address] = chosen option (0-2). 3 indicates auto-vote disabled / not set.
-    mapping(address => uint8) public autoOption;
-    // enumerable list of addresses that ever enabled auto-vote (may include disabled entries)
-    address[] private autoVoterList;
-    mapping(address => uint256) private autoIndex; // 1-based index in array; 0 means not present
-
-    // Track the explicit vote weight we added for each user per epoch so we can remove accurately on re-vote
+    mapping(uint256 => address[]) private pendingRemovals;
+    mapping(address => uint256) private autoIndex;
     mapping(uint256 => mapping(address => uint256)) private userVoteWeight;
-
-    mapping(uint256 => mapping(address => uint8)) public userChoice; // option per epoch per user (0-2, 3 = none)
-
-    // Tracks batch progress per epoch
     mapping(uint256 => uint256) private batchCursor;
+    mapping(uint256 => address[]) private manualVoters;
+    mapping(uint256 => bool) private autoVotingComplete;
+    mapping(uint256 => mapping(address => bool)) private isManualVoter;
+
+    /// @notice userChoice[epoch][address] = option per epoch per user (0-2, 3 = none)
+    mapping(uint256 => mapping(address => uint8)) public userChoice;
+    /// @notice epochInfo[epoch] = EpochData
+    mapping(uint256 => EpochData) public epochInfo;
+    /// @notice autoOption[address] = chosen option (0-2). 3 indicates auto-vote disabled / not set
+    mapping(address => uint8) public autoOption;
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
@@ -123,36 +124,23 @@ contract Voter is Ownable2Step {
     /// @notice Return a user's voting option and weight for a given epoch.
     /// @dev For auto-voters the weight is what was recorded during tally (0 until
     ///      that epoch is processed). Returns option=3 if the user has no vote.
-    function getUserVote(uint256 ep, address user)
-        external
-        view
-        returns (uint8 option, uint256 weight, bool fromAuto)
-    {
+    function getUserVote(uint256 ep, address user) external view returns (uint8 option, uint256 weight) {
         weight = userVoteWeight[ep][user];
 
         if (weight > 0) {
-            // Already tallied (manual or auto depending on userChoice value)
-            uint8 storedOpt = userChoice[ep][user];
-            if (storedOpt < 3) {
-                option = storedOpt;
-                fromAuto = false;
-            } else {
-                option = autoOption[user];
-                fromAuto = true;
-            }
-            return (option, weight, fromAuto);
+            // Already tallied - return stored option
+            option = userChoice[ep][user];
+            return (option, weight);
         }
 
-        // Not tallied yet – fall back to potential live auto-vote weight
-        uint8 opt = autoOption[user];
-        if (opt < 3) {
+        // Not tallied yet – check for potential live auto-vote
+        (uint8 opt, bool enabled) = autoVoteOf(user);
+        if (enabled) {
             option = opt;
             weight = SBF_BMX.balanceOf(user);
-            fromAuto = true;
         } else {
             option = 3;
             weight = 0;
-            fromAuto = false;
         }
     }
 
@@ -187,8 +175,14 @@ contract Voter is Ownable2Step {
     /// @notice Returns a user’s auto-vote setting.
     /// @return option 0-2 chosen option; 3 when disabled
     /// @return enabled True if auto-vote is currently active
-    function autoVoteOf(address user) external view returns (uint8 option, bool enabled) {
+    function autoVoteOf(address user) public view returns (uint8 option, bool enabled) {
         uint8 opt = autoOption[user];
+
+        // Check if user ever enabled auto-vote using autoIndex
+        if (autoIndex[user] == 0) {
+            return (3, false);
+        }
+
         enabled = opt < 3;
         option = enabled ? opt : 3;
     }
@@ -224,26 +218,47 @@ contract Voter is Ownable2Step {
         EpochData storage e = epochInfo[ep];
         if (e.settled) revert DeliErrors.AlreadySettled();
 
-        // Add auto-voter weights in batches; exit early if more remain
-        bool finished = _tallyAutoVotes(ep, maxBatch);
-        if (!finished) return;
+        finalizationInProgress = true;
 
-        // All auto-voters tallied – mark epoch settled going forward
-        e.settled = true;
-
-        // determine winner with lowest-index tie-break (optionWeight may have changed above)
-        uint8 win = 0;
-        if (e.optionWeight[1] > e.optionWeight[win]) win = 1;
-        if (e.optionWeight[2] > e.optionWeight[win]) win = 2;
-
-        uint256 toSafety = (e.totalWeth * options[win]) / 10_000;
-        uint256 toRewards = e.totalWeth - toSafety;
-        if (toSafety > 0) WETH.safeTransfer(safetyModule, toSafety);
-        if (toRewards > 0) {
-            WETH.safeTransfer(address(distributor), toRewards);
-            distributor.setTokensPerInterval(toRewards / TimeLibrary.WEEK);
+        // Process auto voters first
+        if (!autoVotingComplete[ep]) {
+            bool autoFinished = _tallyAutoVotes(ep, maxBatch);
+            if (autoFinished) {
+                autoVotingComplete[ep] = true;
+                batchCursor[ep] = 0; // Reset cursor for manual voters
+            }
+            return; // Exit after processing auto batch
         }
-        emit Finalize(ep, win, toSafety, toRewards);
+
+        // Process manual voters
+        bool manualFinished = _validateManualVoters(ep, maxBatch);
+
+        if (manualFinished) {
+            finalizationInProgress = false;
+            e.settled = true;
+
+            // determine winner with lowest-index tie-break
+            uint8 win = 0;
+            if (e.optionWeight[1] > e.optionWeight[win]) win = 1;
+            if (e.optionWeight[2] > e.optionWeight[win]) win = 2;
+
+            uint256 toSafety = (e.totalWeth * options[win]) / 10_000;
+            uint256 toRewards = e.totalWeth - toSafety;
+            if (toSafety > 0) WETH.safeTransfer(safetyModule, toSafety);
+            if (toRewards > 0) {
+                WETH.safeTransfer(address(distributor), toRewards);
+                distributor.setTokensPerInterval(toRewards / TimeLibrary.WEEK);
+            }
+            // Advance pointer to the earliest unsettled epoch. This handles
+            // out-of-order finalizations by skipping already-settled epochs.
+            while (epochInfo[nextEpochToFinalize].settled) {
+                unchecked {
+                    nextEpochToFinalize++;
+                }
+            }
+
+            emit Finalize(ep, win, toSafety, toRewards);
+        }
     }
 
     /// @notice Vote and optionally set auto-vote preference in one call.
@@ -255,28 +270,23 @@ contract Voter is Ownable2Step {
         _castVote(ep, msg.sender, option);
 
         if (enableAuto) {
-            // Enable or refresh auto-vote
+            // Enable or refresh auto-vote (always allowed)
             autoOption[msg.sender] = option;
             if (autoIndex[msg.sender] == 0) {
                 autoVoterList.push(msg.sender);
-                autoIndex[msg.sender] = autoVoterList.length; // 1-based
+                autoIndex[msg.sender] = autoVoterList.length;
             }
             emit AutoVoteUpdated(msg.sender, true, option);
         } else {
-            // Disable auto-vote if currently enabled
-            if (autoIndex[msg.sender] != 0) {
-                uint256 idx = autoIndex[msg.sender];
-                uint256 lastIdx = autoVoterList.length;
-                if (idx != lastIdx) {
-                    address lastAddr = autoVoterList[lastIdx - 1];
-                    autoVoterList[idx - 1] = lastAddr;
-                    autoIndex[lastAddr] = idx;
-                }
-                autoVoterList.pop();
-                delete autoIndex[msg.sender];
-                emit AutoVoteUpdated(msg.sender, false, autoOption[msg.sender]);
+            // Prevent disabling auto-vote during any finalization or when any epoch has ended but remains unfinalized
+            if (finalizationInProgress || _hasEndedUnfinalizedEpoch()) {
+                revert DeliErrors.FinalizationInProgress();
             }
-            autoOption[msg.sender] = 3; // disabled
+            // Disable auto-vote if currently enabled
+            uint256 idx = autoIndex[msg.sender];
+            if (idx != 0) {
+                _removeAutoVoter(msg.sender, idx - 1);
+            }
         }
     }
 
@@ -302,11 +312,17 @@ contract Voter is Ownable2Step {
         e.optionWeight[option] += newWeight;
         userChoice[ep][voter] = option;
         userVoteWeight[ep][voter] = newWeight;
+
+        // Track manual voter once per epoch
+        if (!isManualVoter[ep][voter]) {
+            manualVoters[ep].push(voter);
+            isManualVoter[ep][voter] = true;
+        }
+
         emit Vote(ep, voter, option, newWeight);
     }
 
     /// @dev Processes up to `maxBatch` auto-voters for `ep`, adding live balances to option weights.
-    /// @return finished True if all auto-voters have been processed for this epoch.
     function _tallyAutoVotes(uint256 ep, uint256 maxBatch) internal returns (bool finished) {
         EpochData storage e = epochInfo[ep];
         uint256 processed;
@@ -318,25 +334,31 @@ contract Voter is Ownable2Step {
 
             uint8 opt = autoOption[voterAddr];
             if (opt >= 3) continue; // disabled
-            // skip if user already has a recorded weight for this epoch (manual vote processed)
             if (userVoteWeight[ep][voterAddr] > 0) continue;
 
             uint256 bal = SBF_BMX.balanceOf(voterAddr);
             if (bal == 0) {
-                _removeAutoVoter(voterAddr, i);
+                // queue for removal instead of removing now
+                pendingRemovals[ep].push(voterAddr);
                 continue;
             }
             e.optionWeight[opt] += bal;
             userVoteWeight[ep][voterAddr] = bal;
-            userChoice[ep][voterAddr] = AUTO_FLAG; // mark as auto tally
+            userChoice[ep][voterAddr] = opt;
         }
+
         finished = (batchCursor[ep] >= autoVoterList.length);
+
+        // process removals only after loop is complete
+        if (finished && pendingRemovals[ep].length > 0) {
+            _processPendingRemovals(ep);
+        }
     }
 
     /// @dev Removes `addr` from autoVoterList using swap-pop and clears indexes.
     function _removeAutoVoter(address addr, uint256 idx) internal {
         uint256 last = autoVoterList.length;
-        if (idx != last) {
+        if (idx != last - 1) {
             address lastAddr = autoVoterList[last - 1];
             autoVoterList[idx] = lastAddr;
             autoIndex[lastAddr] = idx + 1;
@@ -345,6 +367,55 @@ contract Voter is Ownable2Step {
         delete autoIndex[addr];
         autoOption[addr] = 3;
         emit AutoVoteUpdated(addr, false, 3);
+    }
+
+    /// @dev Processes pending removals for `ep`.
+    function _processPendingRemovals(uint256 ep) internal {
+        address[] memory toRemove = pendingRemovals[ep];
+        for (uint256 i = 0; i < toRemove.length; i++) {
+            address addr = toRemove[i];
+            uint256 idx = autoIndex[addr];
+            if (idx > 0) {
+                _removeAutoVoter(addr, idx - 1);
+            }
+        }
+        delete pendingRemovals[ep];
+    }
+
+    /// @dev Returns true if there exists at least one epoch that has ended but is not yet finalized.
+    function _hasEndedUnfinalizedEpoch() internal view returns (bool) {
+        uint256 ep = nextEpochToFinalize;
+        // If already settled (or no epochs yet), no blocking needed
+        if (epochInfo[ep].settled) return false;
+        // Check if this epoch has ended
+        uint256 endTs = EPOCH_ZERO + (ep + 1) * TimeLibrary.WEEK;
+        return block.timestamp >= endTs;
+    }
+
+    /// @dev Validates manual voters for `ep`.
+    function _validateManualVoters(uint256 ep, uint256 maxBatch) internal returns (bool finished) {
+        address[] storage voters = manualVoters[ep];
+        uint256 processed = 0;
+        uint256 cursor = batchCursor[ep];
+        EpochData storage e = epochInfo[ep];
+
+        while (processed < maxBatch && cursor < voters.length) {
+            address voter = voters[cursor];
+            uint256 currentBal = SBF_BMX.balanceOf(voter);
+            uint256 recordedWeight = userVoteWeight[ep][voter];
+
+            if (currentBal < recordedWeight) {
+                uint8 option = userChoice[ep][voter];
+                e.optionWeight[option] -= (recordedWeight - currentBal);
+                userVoteWeight[ep][voter] = currentBal;
+            }
+
+            cursor++;
+            processed++;
+        }
+
+        batchCursor[ep] = cursor;
+        finished = (cursor >= voters.length);
     }
 
     /*//////////////////////////////////////////////////////////////
