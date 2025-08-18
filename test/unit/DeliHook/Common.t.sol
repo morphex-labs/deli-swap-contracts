@@ -13,6 +13,7 @@ import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {MockHookPoolManager} from "test/mocks/MockHookPoolManager.sol";
 import {MockDailyEpochGauge} from "test/mocks/MockDailyEpochGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
@@ -53,7 +54,7 @@ contract DeliHook_CommonTest is Test {
         key = PoolKey({
             currency0: Currency.wrap(c0),
             currency1: Currency.wrap(c1),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });

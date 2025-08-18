@@ -18,7 +18,6 @@ library DeliErrors {
 
     // state / config
     error AlreadySettled();
-    error AlreadySet();
     error InvalidBps();
     error InvalidOption();
     error InvalidPoolKey();
@@ -28,11 +27,14 @@ library DeliErrors {
     error SwapActive();
     error NoSwap();
     error Slippage();
+    error BelowMinimumThreshold();
     error NativeEthNotSupported();
     error WbltMissing();
     error ComponentNotDeployed();
     error EpochRunning();
+    error MustUseDynamicFee();
     error FinalizationInProgress();
+
     // pool errors
     error PoolNotInitialized();
     error InvalidTickSpacing();

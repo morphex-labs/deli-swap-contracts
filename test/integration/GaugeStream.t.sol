@@ -23,6 +23,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
@@ -84,7 +85,7 @@ contract GaugeStream_IT is Test, Deployers {
             IERC20(address(bmx)),
             address(inc)
         );
-        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
+        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
 
         // Deploy PositionManagerAdapter and V4PositionHandler
         adapter = new PositionManagerAdapter(address(gauge), address(inc));
@@ -118,7 +119,7 @@ contract GaugeStream_IT is Test, Deployers {
         gauge.setFeeProcessor(address(fp));
 
         // 7. Initialise pool
-        key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))});
+        key = PoolKey({currency0: Currency.wrap(address(bmx)), currency1: Currency.wrap(address(wblt)), fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: IHooks(address(hook))});
         pid = key.toId();
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 

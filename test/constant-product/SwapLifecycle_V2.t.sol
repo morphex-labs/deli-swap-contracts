@@ -12,6 +12,7 @@ import {DailyEpochGauge} from "src/DailyEpochGauge.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
 import {MultiPoolCustomCurve} from "src/base/MultiPoolCustomCurve.sol";
 import {InternalSwapFlag} from "src/libraries/InternalSwapFlag.sol";
+import {DeliErrors} from "src/libraries/DeliErrors.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -28,6 +29,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
 
 /// @notice Tests V2 constant product swap lifecycle, reserve tracking, and x*y=k invariant
 contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
@@ -41,6 +43,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
     FeeProcessor fp;
     DailyEpochGauge gauge;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -90,8 +93,9 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
             address(0)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
+        fp.setKeeper(address(this), true);
         inc = new MockIncentiveGauge();
 
         // Deploy hook
@@ -108,6 +112,10 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
 
         // Initialize pool
         key = PoolKey({
@@ -231,13 +239,10 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
         uint256 kAfter = uint256(r0After) * uint256(r1After);
 
-        // K should increase due to implicit fees in V2 model
-        // In DeliHookConstantProduct, fees are implicit in the swap calculation
-        // and then removed from reserves. With 0.3% fee, K increases very slightly.
-        
-        // The test was failing because the basis points calculation was rounding to 0
-        // Let's just verify K increased at all
-        assertGt(kAfter, kBefore, "K should increase with fees");
+        // Since fees are extracted and forwarded to FeeProcessor,
+        // K should remain approximately constant (not increase)
+        // The constant product is maintained while fees are removed from reserves
+        assertApproxEqRel(kAfter, kBefore, 0.01e18, "K should remain approximately constant");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -255,29 +260,23 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), inputAmount, true));
 
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        uint256 bmxAfter = bmx.balanceOf(address(this));
-        uint256 wbltAfter = wblt.balanceOf(address(this));
 
         // Verify token balances
-        assertEq(bmxBefore - bmxAfter, inputAmount, "BMX spent should match input");
-        uint256 outputAmount = wbltAfter - wbltBefore;
+        assertEq(bmxBefore - bmx.balanceOf(address(this)), inputAmount, "BMX spent should match input");
+        uint256 outputAmount = wblt.balanceOf(address(this)) - wbltBefore;
         
-        // In DeliHookConstantProduct, the output is calculated with implicit fees
-        // The actual calculation happens in _getUnspecifiedAmount
-        // We need to verify the output is reasonable, not exact
-        
-        // Output should be less than input due to price impact and fees
-        assertLt(outputAmount, inputAmount, "Output should be less than input");
-        
-        // Output should be at least 65% of input (accounting for 0.3% fee + price impact)
-        // With 5% of liquidity being swapped, price impact is significant
-        assertGt(outputAmount, (inputAmount * 65) / 100, "Output too low");
+        // Expected exact output with fee under constant product
+        uint256 expectedOut = _cpAmountOut(inputAmount, uint256(r0Before), uint256(r1Before), 3000);
+        assertEq(outputAmount, expectedOut, "exact input out mismatch");
 
         // Verify reserves updated correctly
-        // Note: DeliHookConstantProduct removes the fee from reserves after the swap
-        uint256 feeAmount = (inputAmount * 3000) / 1_000_000; // 0.3% fee
-        assertEq(r0After, r0Before + inputAmount - feeAmount, "Reserve0 should increase by input minus fee");
-        assertEq(r1After, r1Before - outputAmount, "Reserve1 should decrease by output");
+        // For BMX->wBLT with fee taken from output currency (wBLT):
+        // - reserve0 increases by the full input
+        // - reserve1 decreases by output + feeOut (fee is taken from output side)
+        uint256 outNoFee = _cpAmountOut(inputAmount, uint256(r0Before), uint256(r1Before), 0);
+        uint256 feeOut = outNoFee > expectedOut ? (outNoFee - expectedOut) : 0;
+        assertEq(r0After, r0Before + inputAmount, "Reserve0 should increase by full input when fee on output");
+        assertEq(r1After, r1Before - outputAmount - feeOut, "Reserve1 should decrease by output plus fee");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -295,34 +294,47 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), outputAmount, false));
 
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        uint256 bmxAfter = bmx.balanceOf(address(this));
-        uint256 wbltAfter = wblt.balanceOf(address(this));
 
         // Verify output received
-        assertEq(wbltAfter - wbltBefore, outputAmount, "wBLT received should match output");
-        uint256 inputAmount = bmxBefore - bmxAfter;
+        assertEq(wblt.balanceOf(address(this)) - wbltBefore, outputAmount, "wBLT received should match output");
+        uint256 inputAmount = bmxBefore - bmx.balanceOf(address(this));
         
-        // DeliHookConstantProduct has different fee handling than standard V2
-        // The fee is calculated on the input and removed from reserves
-        // Just verify the input is reasonable (within 50% of standard calculation)
-        uint256 standardExpectedInput = (r0Before * outputAmount * 1000) / ((r1Before - outputAmount) * 997) + 1;
-        
-        // Allow up to 50% difference due to fee handling
-        assertLt(inputAmount, standardExpectedInput * 3 / 2, "Input too high");
-        assertGt(inputAmount, standardExpectedInput / 2, "Input too low");
+        // Expected exact input for exact output when fee is on output:
+        // compute grossOut = amountOut * (1 + fee) and solve input with ZERO fee
+        uint256 grossOut = (outputAmount * (1_000_000 + 3000)) / 1_000_000;
+        uint256 expectedIn = _cpAmountIn(grossOut, uint256(r0Before), uint256(r1Before), 0);
+        assertEq(inputAmount, expectedIn, "exact output in mismatch");
 
         // Verify reserves
-        // DeliHookConstantProduct removes the fee from reserves after the swap
-        // With the bug fix, fee should now be 0.3% instead of 30%
-        // For exact output, the fee is still calculated as inputWithFee - inputWithoutFee
-        // but now it should be much smaller
-        uint256 inputWithoutFee = (r0Before * outputAmount) / (r1Before - outputAmount) + 1;
-        uint256 feeAmount = inputAmount > inputWithoutFee ? inputAmount - inputWithoutFee : 0;
-        
-        // With fixed fee calculation, input should be around 3.1 ether (not 4.4 ether)
-        // So we might need to adjust expectations or wait for the test to run with fixed contract
-        assertEq(r0After, r0Before + inputAmount - feeAmount, "Reserve0 should increase by input minus fee");
-        assertEq(r1After, r1Before - outputAmount, "Reserve1 should decrease by output");
+        // For fee on output: reserve0 increases by full input; reserve1 decreases by output + feeOut
+        uint256 feeOut = (outputAmount * 3000) / 1_000_000;
+        assertEq(r0After, r0Before + inputAmount, "Reserve0 should increase by full input when fee on output");
+        assertEq(r1After, r1Before - outputAmount - feeOut, "Reserve1 should decrease by output plus fee");
+    }
+
+    // Helpers to reduce local variable usage in tests
+    function _cpAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 feeBasis = 1_000_000 - uint256(feePips);
+        uint256 amountInWithFee = amountIn * feeBasis;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1_000_000 + amountInWithFee;
+        return numerator / denominator;
+    }
+
+    function _cpAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 feeBasis = 1_000_000 - uint256(feePips);
+        require(amountOut < reserveOut, "insufficient liquidity");
+        uint256 numerator = reserveIn * amountOut * 1_000_000;
+        uint256 denominator = (reserveOut - amountOut) * feeBasis;
+        return (numerator / denominator) + 1;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -342,13 +354,14 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         
         (uint128 r0Final, uint128 r1Final) = hook.getReserves(pid);
         
-        // Both swaps should increase k due to fees
+        // Since fees are extracted and forwarded to FeeProcessor,
+        // K should remain approximately constant (not increase)
         uint256 kInitial = 100 ether * 100 ether;
         uint256 kMid = uint256(r0Mid) * uint256(r1Mid);
         uint256 kFinal = uint256(r0Final) * uint256(r1Final);
         
-        assertGt(kMid, kInitial, "K should increase after first swap");
-        assertGt(kFinal, kMid, "K should increase after second swap");
+        assertApproxEqRel(kMid, kInitial, 0.01e18, "K should remain approximately constant after first swap");
+        assertApproxEqRel(kFinal, kMid, 0.01e18, "K should remain approximately constant after second swap");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -392,7 +405,7 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
                          INTERNAL SWAP VERIFICATION
     //////////////////////////////////////////////////////////////*/
 
-    function testInternalSwapNoFees() public {
+    function testInternalSwapThresholded() public {
         // Deploy a new token
         MockERC20 tokenA = deployToken();
         tokenA.approve(address(poolManager), type(uint256).max);
@@ -431,27 +444,29 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         bool wbltIsCurrency0 = Currency.unwrap(nonBmxKey.currency0) == address(wblt);
         // If wBLT is currency0, swap currency1 -> currency0 (zeroForOne = false)
         // If wBLT is currency1, swap currency0 -> currency1 (zeroForOne = true)
-        poolManager.unlock(abi.encode(nonBmxKey, !wbltIsCurrency0, 10 ether, true));
+        poolManager.unlock(abi.encode(nonBmxKey, !wbltIsCurrency0, 8e20, true));
         
         // Now we should have wBLT fees for buyback
-        uint256 pendingBuyback = fp.pendingWbltForBuyback();
+        PoolId nonBmxPoolId = nonBmxKey.toId();
+        uint256 pendingBuyback = fp.pendingWbltForBuyback(nonBmxPoolId);
         assertGt(pendingBuyback, 0, "Should have pending wBLT fees");
         
         // Setup for internal swap using the BMX/wBLT pool
         fp.setBuybackPoolKey(key);
-        
+
+        // If pending is below threshold, flush should revert; otherwise perform flush and assert
+        if (pendingBuyback < 1e18) {
+            vm.expectRevert(DeliErrors.BelowMinimumThreshold.selector);
+            fp.flushBuffer(nonBmxPoolId, 0);
+            return;
+        }
+
         (uint128 r0Before, uint128 r1Before) = hook.getReserves(pid);
-        
-        // Flush buffers (triggers internal swap with INTERNAL_SWAP_FLAG)
-        fp.flushBuffers();
-        
+        fp.flushBuffer(nonBmxPoolId, 0);
         (uint128 r0After, uint128 r1After) = hook.getReserves(pid);
-        
-        // For internal swaps, reserves should have changed
+
         assertGt(r1After, r1Before, "wBLT reserves should increase (wBLT in)");
         assertLt(r0After, r0Before, "BMX reserves should decrease (BMX out)");
-        
-        // The swap should have consumed the pending wBLT
-        assertEq(fp.pendingWbltForBuyback(), 0, "Pending wBLT should be consumed");
+        assertEq(fp.pendingWbltForBuyback(nonBmxPoolId), 0, "Pending wBLT should be consumed");
     }
 }

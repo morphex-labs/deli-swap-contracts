@@ -12,7 +12,6 @@ import "src/DailyEpochGauge.sol";
 
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
@@ -20,22 +19,26 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
-import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {MockIncentiveGauge} from "test/mocks/MockIncentiveGauge.sol";
+import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {BalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 
-interface IFlusher { function flushBuffers() external; }
+interface IFlusher { function flushBuffer(PoolId poolId, uint256 expectedBmxOut) external; }
 
 /*//////////////////////////////////////////////////////////////////////////
                                     REENTRANCY TEST
-  Ensures FeeProcessor.flushBuffers() cannot be re-entered while an internal
-  buy-back swap is in flight.  A malicious BMX token calls flushBuffers()
+  Ensures FeeProcessor.flushBuffer() cannot be re-entered while an internal
+  buy-back swap is in flight.  A malicious BMX token calls flushBuffer()
   during the ERC20.transfer triggered inside FeeProcessor._unlockCallback.
 //////////////////////////////////////////////////////////////////////////*/
 contract ReentrantBMX is MockERC20 {
     address public poolManager;
     IFlusher public fp;
     bool public reentered;
+    PoolId public poolIdToFlush;
 
     constructor(string memory name, address _pm) MockERC20(name, name, 18) {
         poolManager = _pm;
@@ -45,13 +48,17 @@ contract ReentrantBMX is MockERC20 {
     function setFeeProcessor(address _fp) external {
         fp = IFlusher(_fp);
     }
+    
+    function setPoolIdToFlush(PoolId _poolId) external {
+        poolIdToFlush = _poolId;
+    }
 
     function transfer(address to, uint256 amount) public override returns (bool) {
         // Attempt re-entrancy only when PoolManager is the msg.sender (i.e. inside take())
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
             // Expect revert with "swap-active" but ignore failure so transfer proceeds.
-            try fp.flushBuffers() { } catch { }
+            try fp.flushBuffer(poolIdToFlush, 0) { } catch { }
         }
         return super.transfer(to, amount);
     }
@@ -59,15 +66,16 @@ contract ReentrantBMX is MockERC20 {
     function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
         if (msg.sender == poolManager && !reentered && address(fp) != address(0)) {
             reentered = true;
-            try fp.flushBuffers() { } catch { }
+            try fp.flushBuffer(poolIdToFlush, 0) { } catch { }
         }
         return super.transferFrom(from, to, amount);
     }
 }
 
-contract FeeProcessor_Reentrancy_IT is Test, Deployers {
+contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using CurrencySettler for Currency;
+    using BalanceDeltaLibrary for BalanceDelta;
 
     // contracts
     DeliHook hook;
@@ -141,7 +149,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // 4. Deploy gauge & feeProcessor
         gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), expectedHook, IERC20(address(bmx)), address(0));
         inc = new MockIncentiveGauge();
-        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD));
+        fp = new FeeProcessor(poolManager, expectedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
+        fp.setKeeper(address(this), true);
 
         // Link feeProcessor to reentrant token so it can try re-enter
         bmx.setFeeProcessor(address(fp));
@@ -168,7 +177,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         canonicalKey = PoolKey({
             currency0: Currency.wrap(bmxIsToken0 ? address(bmx) : address(wblt)),
             currency1: Currency.wrap(bmxIsToken0 ? address(wblt) : address(bmx)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
@@ -177,10 +186,11 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         otherKey = PoolKey({
             currency0: Currency.wrap(otherIsToken0 ? address(other) : address(wblt)),
             currency1: Currency.wrap(otherIsToken0 ? address(wblt) : address(other)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
+        // Initialize pools
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
         EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
@@ -193,23 +203,27 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
     function testFlushReentrancyProtected() public {
         // Step 1: create wBLT buy-back buffer via OTHER -> wBLT swap
-        uint256 input = 1e17;
+        uint256 input = 4e20;
         poolManager.unlock(abi.encode(address(other), input));
-        assertGt(fp.pendingWbltForBuyback(), 0, "buffer not populated");
+        PoolId otherPoolId = otherKey.toId();
+        assertGt(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not populated");
 
         // Step 2: configure pool key and slippage tolerance
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(9900);
+        // slippage is passed per-call now
+        
+        // Set the pool ID for reentrancy attempt
+        bmx.setPoolIdToFlush(otherPoolId);
 
         // Step 3: flush – should succeed and token will attempt re-enter internally
-        fp.flushBuffers();
+        fp.flushBuffer(otherPoolId, 0);
 
         // Ensure re-entrancy attempt occurred and was blocked (flag set)
         assertTrue(bmx.reentered(), "no reentrancy attempt detected");
 
-        // Buffer cleared and gauge bucket credited
-        assertEq(fp.pendingWbltForBuyback(), 0, "buffer not cleared");
-        assertGt(gauge.collectBucket(pid), 0, "bucket not credited");
+        // Buffer cleared and gauge bucket credited for the source pool
+        assertEq(fp.pendingWbltForBuyback(otherPoolId), 0, "buffer not cleared");
+        assertGt(gauge.collectBucket(otherPoolId), 0, "bucket not credited");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -217,7 +231,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
     //////////////////////////////////////////////////////////////*/
     function testInternalSwapReentrancyProtected() public {
         // Step 1: Generate fees on BMX pool to trigger internal swap
-        uint256 input = 1e17;
+        uint256 input = 4e20;
         
         // Determine swap direction based on token ordering
         bool bmxIsToken0 = address(bmx) < address(wblt);
@@ -228,19 +242,20 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
         // Step 2: Configure buyback pool
         fp.setBuybackPoolKey(canonicalKey);
         
-        // Step 3: Check that we have pending BMX for voter (from the 3% split)
-        assertGt(fp.pendingBmxForVoter(), 0, "no BMX voter buffer");
+        // Step 3: Voter portion is tracked in wBLT buffer
+        assertGt(fp.pendingWbltForVoter(), 0, "no voter buffer");
+        
+        // Set the pool ID for reentrancy attempt
+        bmx.setPoolIdToFlush(canonicalKey.toId());
         
         // Step 4: Flush buffers - this will trigger BMX->wBLT internal swap
-        fp.flushBuffers();
+        fp.flushBuffer(canonicalKey.toId(), 0);
         
         // Verify reentrancy was attempted and blocked
         assertTrue(bmx.reentered(), "no reentrancy attempt during internal swap");
         
-        // Verify flush completed successfully
-        // Note: pendingBmxForVoter will have residual fee from internal swap (3% of 0.3%)
-        assertGt(fp.pendingBmxForVoter(), 0, "should have residual fee from internal swap");
-        assertLt(fp.pendingBmxForVoter(), 1e10, "residual should be small");
+        // Verify flush completed successfully; voter buffer remains in wBLT
+        assertGt(fp.pendingWbltForVoter(), 0, "voter buffer remains in wBLT");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -250,7 +265,7 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers {
     // The test uses the PoolManager.unlock pattern: it encodes (tokenIn, amount) and
     // expects this callback to perform an exact-input swap using the hook-instrumented
     // pools.  Logic mirrors other integration tests.
-    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+    function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         require(msg.sender == address(poolManager), "not PM");
 
         (address tokenIn, uint256 amountIn) = abi.decode(data, (address, uint256));

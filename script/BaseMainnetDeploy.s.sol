@@ -216,8 +216,7 @@ contract BaseMainnetDeploy is Script {
             deliHookAddress,
             WBLT,
             BMX,
-            IDailyEpochGauge(address(dailyEpochGauge)),
-            msg.sender // Using deployer as voter distributor for now
+            IDailyEpochGauge(address(dailyEpochGauge))
         );
         console.log("FeeProcessor deployed:", address(feeProcessor));
         
