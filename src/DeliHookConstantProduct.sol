@@ -184,19 +184,21 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         if (!(key.currency0 == Currency.wrap(WBLT) || key.currency1 == Currency.wrap(WBLT))) {
             revert DeliErrors.WbltMissing();
         }
+
         // V2 pools must use tick spacing 1 to avoid tick alignment issues
         if (key.tickSpacing != 1) revert DeliErrors.InvalidTickSpacing();
+        // Enforce fixed sqrtPrice at tick 0 (2^96) for V2 pools for consistency
+        if (sqrtPriceX96 != (uint160(1) << 96)) revert DeliErrors.InvalidSqrtPrice();
         // Enforce minimum fee of 0.1% (1000 in hundredths of basis points)
         if (key.fee < 1000) revert DeliErrors.InvalidFee();
+
         // Require all components to be deployed before pool creation
         if (address(dailyEpochGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(incentiveGauge) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(feeProcessor) == address(0)) revert DeliErrors.ComponentNotDeployed();
         if (address(v2PositionHandler) == address(0)) revert DeliErrors.ComponentNotDeployed();
 
-        PoolId poolId = key.toId();
-
-        emit PairCreated(poolId, key.currency0, key.currency1, key.fee);
+        emit PairCreated(key.toId(), key.currency0, key.currency1, key.fee);
 
         // Let the base class handle pool initialization tracking
         return super._beforeInitialize(sender, key, sqrtPriceX96);

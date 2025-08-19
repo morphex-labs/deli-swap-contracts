@@ -42,6 +42,7 @@ library DeliErrors {
     error PoolNotFound();
     error InvalidTickSpacing();
     error InvalidFee();
+    error InvalidSqrtPrice();
     error NoLiquidity();
     error InsufficientLiquidity();
     error InsufficientOutput();
