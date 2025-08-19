@@ -475,7 +475,7 @@ contract DailyEpochGauge is Ownable2Step {
         // Same day: single mulDiv
         if (dayStart0 == dayStart1) {
             uint256 amtSame = dayBuckets[pid][TimeLibrary.dayIndex(dayStart0)];
-            return amtSame == 0 ? 0 : FullMath.mulDiv(amtSame, t1 - t0, TimeLibrary.DAY);
+            return amtSame == 0 ? 0 : (amtSame * (t1 - t0)) / TimeLibrary.DAY;
         }
 
         uint32 d0 = TimeLibrary.dayIndex(dayStart0);
@@ -486,7 +486,7 @@ contract DailyEpochGauge is Ownable2Step {
         if (t0 > dayStart0) {
             uint256 amt0 = dayBuckets[pid][d0];
             if (amt0 > 0) {
-                total += FullMath.mulDiv(amt0, (dayStart0 + TimeLibrary.DAY) - t0, TimeLibrary.DAY);
+                total += (amt0 * ((dayStart0 + TimeLibrary.DAY) - t0)) / TimeLibrary.DAY;
             }
             unchecked {
                 startD = d0 + 1;
@@ -513,7 +513,7 @@ contract DailyEpochGauge is Ownable2Step {
         if (t1 > dayStart1) {
             uint256 amt1 = dayBuckets[pid][d1];
             if (amt1 > 0) {
-                total += FullMath.mulDiv(amt1, t1 - dayStart1, TimeLibrary.DAY);
+                total += (amt1 * (t1 - dayStart1)) / TimeLibrary.DAY;
             }
         }
     }
