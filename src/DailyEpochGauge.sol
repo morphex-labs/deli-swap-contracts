@@ -213,10 +213,7 @@ contract DailyEpochGauge is Ownable2Step {
         amount = _claimRewards(positionKey, to);
 
         // If fully unsubscribed and no pending exit debt, remove from index
-        if (
-            positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0
-                && exitMeta[positionKey] == 0
-        ) {
+        if (positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0 && exitMeta[positionKey] == 0) {
             _removePosition(pid, owner, positionKey);
         }
     }
@@ -275,9 +272,7 @@ contract DailyEpochGauge is Ownable2Step {
                 if (amt > 0) totalBmx += amt;
 
                 // If fully unsubscribed and no pending exit debt, remove from index (swap-pop)
-                if (
-                    positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0 && exitMeta[posKey] == 0
-                ) {
+                if (positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0 && exitMeta[posKey] == 0) {
                     _removePosition(pid, owner, posKey);
                     // Do not increment i; new element has been swapped into index i
                 } else {
@@ -483,15 +478,21 @@ contract DailyEpochGauge is Ownable2Step {
             TickRange storage tr = positionTicks[k];
             RangePosition.State storage ps = positionRewards[k];
             uint256 rangeRpl = pool.rangeRplX128(address(BMX), tr.lower, tr.upper);
-            uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+            uint256 delta;
+            unchecked {
+                delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+            }
             uint128 liq = positionLiquidity[k];
-            amount += ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
+            amount += ps.rewardsAccrued + FullMath.mulDiv(delta, liq, FixedPoint128.Q128);
             // Include deferred exit snapshot debt when liquidity is zero
             if (liq == 0) {
                 uint256 snap = exitCumRplX128[k];
                 if (snap != 0) {
-                    uint256 exitDelta = snap - ps.rewardsPerLiquidityLastX128;
-                    amount += (exitDelta * exitLiquidity[k]) / FixedPoint128.Q128;
+                    uint256 exitDelta;
+                    unchecked {
+                        exitDelta = snap - ps.rewardsPerLiquidityLastX128;
+                    }
+                    amount += FullMath.mulDiv(exitDelta, exitLiquidity[k], FixedPoint128.Q128);
                 }
             }
         }
