@@ -211,6 +211,14 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Claim and transfer
         amount = _claimRewards(positionKey, to);
+
+        // If fully unsubscribed and no pending exit debt, remove from index
+        if (
+            positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0
+                && exitMeta[positionKey] == 0
+        ) {
+            _removePosition(pid, owner, positionKey);
+        }
     }
 
     /// @notice Claim all accrued BMX (and incentive tokens) for every position an owner holds across multiple pools.
@@ -224,24 +232,38 @@ contract DailyEpochGauge is Ownable2Step {
 
             // Skip if owner has no positions in this pool
             bytes32[] storage keys = ownerPositions[pid][owner];
-            uint256 keyLen = keys.length;
-            if (keyLen == 0) continue;
+            if (keys.length == 0) continue;
 
             // Look up the pool key using the adapter's fallback mechanism for V2 pools
             PoolKey memory key = positionManagerAdapter.getPoolKeyFromPoolId(pid);
 
             // Accrue and claim BMX for every position key of this owner in the pool.
-            for (uint256 i; i < keyLen; ++i) {
+            uint256 i;
+            while (i < keys.length) {
                 bytes32 posKey = keys[i];
 
                 // Verify this position still belongs to the owner
                 uint256 tokenId = positionTokenIds[posKey];
-                if (tokenId == 0) continue; // Position was removed
+                if (tokenId == 0) {
+                    // Position was removed elsewhere; skip entry
+                    unchecked {
+                        ++i;
+                    }
+                    continue;
+                }
 
                 // Check ownership (use try-catch to handle burned tokens)
                 try positionManagerAdapter.ownerOf(tokenId) returns (address currentOwner) {
-                    if (currentOwner != owner) continue; // Skip if no longer owned
+                    if (currentOwner != owner) {
+                        unchecked {
+                            ++i;
+                        }
+                        continue; // Skip if no longer owned
+                    }
                 } catch {
+                    unchecked {
+                        ++i;
+                    }
                     continue; // Skip if token doesn't exist or ownerOf reverts
                 }
 
@@ -251,6 +273,18 @@ contract DailyEpochGauge is Ownable2Step {
 
                 uint256 amt = positionRewards[posKey].claim();
                 if (amt > 0) totalBmx += amt;
+
+                // If fully unsubscribed and no pending exit debt, remove from index (swap-pop)
+                if (
+                    positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0 && exitMeta[posKey] == 0
+                ) {
+                    _removePosition(pid, owner, posKey);
+                    // Do not increment i; new element has been swapped into index i
+                } else {
+                    unchecked {
+                        ++i;
+                    }
+                }
             }
         }
 
