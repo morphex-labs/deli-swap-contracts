@@ -602,14 +602,21 @@ contract IncentiveGauge is Ownable2Step {
             if (liq > 0) {
                 TickRange storage tr = positionTicks[positionKey];
                 uint256 rangeRpl = poolRewards[pid].rangeRplX128(address(token), tr.lower, tr.upper);
-                uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
-                amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
+                uint256 delta;
+                unchecked {
+                    delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+                }
+                amount = ps.rewardsAccrued + FullMath.mulDiv(delta, liq, FixedPoint128.Q128);
             } else {
                 // Include exit snapshot debt if present for this token
                 uint256 snap = exitSnapshots[positionKey][token];
                 if (snap != 0) {
-                    uint256 exitDelta = snap - ps.rewardsPerLiquidityLastX128;
-                    return ps.rewardsAccrued + (exitDelta * exitLiquidity[positionKey]) / FixedPoint128.Q128;
+                    uint256 exitDelta;
+                    unchecked {
+                        exitDelta = snap - ps.rewardsPerLiquidityLastX128;
+                    }
+                    return
+                        ps.rewardsAccrued + FullMath.mulDiv(exitDelta, exitLiquidity[positionKey], FixedPoint128.Q128);
                 }
                 amount = ps.rewardsAccrued;
             }
@@ -645,15 +652,21 @@ contract IncentiveGauge is Ownable2Step {
             // Include exit snapshot debt if present for this token
             uint256 snap = exitSnapshots[posKey][tok];
             if (snap != 0) {
-                uint256 exitDelta = snap - ps.rewardsPerLiquidityLastX128;
-                return ps.rewardsAccrued + (exitDelta * exitLiquidity[posKey]) / FixedPoint128.Q128;
+                uint256 exitDelta;
+                unchecked {
+                    exitDelta = snap - ps.rewardsPerLiquidityLastX128;
+                }
+                return ps.rewardsAccrued + FullMath.mulDiv(exitDelta, exitLiquidity[posKey], FixedPoint128.Q128);
             }
             return ps.rewardsAccrued;
         }
         TickRange storage tr = positionTicks[posKey];
         uint256 rangeRpl = poolRewards[pid].rangeRplX128(address(tok), tr.lower, tr.upper);
-        uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
-        return ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
+        uint256 delta;
+        unchecked {
+            delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+        }
+        return ps.rewardsAccrued + FullMath.mulDiv(delta, liq, FixedPoint128.Q128);
     }
 
     /// @dev internal helper to update pool state by pid
