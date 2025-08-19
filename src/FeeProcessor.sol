@@ -64,7 +64,6 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     bool public buybackPoolSet;
 
     // pending swap state
-    bool private _swapActive;
     uint256 private _pendingAmount;
     PoolId private _pendingSourcePool;
     uint256 private _expectedMinBmxOut;
@@ -270,21 +269,14 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
 
     /// @dev Initiates a WBLT -> BMX buyback swap for the specified amount.
     function _initiateSwap(uint256 amount) internal {
-        if (_swapActive) revert DeliErrors.SwapActive();
-        _swapActive = true;
+        // Track the amount to swap
         _pendingAmount = amount;
 
-        // Clear the buffer so a failed swap can safely re-credit it in the catch block
+        // Clear the buffer
         pendingWbltForBuyback[_pendingSourcePool] = 0;
 
-        // Check if we're already inside an unlock context
-        if (poolManager.isUnlocked()) {
-            // We're already unlocked, execute the swap directly
-            _executeSwap();
-        } else {
-            // Need to unlock first
-            poolManager.unlock("");
-        }
+        // Unlock and execute via callback
+        poolManager.unlock("");
     }
 
     /// @inheritdoc SafeCallback
@@ -297,7 +289,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     /// @dev Executes the pending swap operation, called from _unlockCallback or directly if already unlocked.
     function _executeSwap() internal {
         uint256 amtIn = _pendingAmount;
-        if (!_swapActive || amtIn == 0) revert DeliErrors.NoSwap();
+        if (amtIn == 0) revert DeliErrors.NoSwap();
 
         // Derive pool orientation helpers
         Currency c0 = buybackPoolKey.currency0;
@@ -316,7 +308,7 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
             sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
         });
 
-        // Execute the swap - any failures will be caught by the try-catch in collectFee()
+        // Execute the swap
         BalanceDelta delta = poolManager.swap(buybackPoolKey, sp, abi.encode(InternalSwapFlag.INTERNAL_SWAP_FLAG));
 
         // Determine output values & currency helpers
@@ -333,7 +325,6 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
         DAILY_GAUGE.addRewards(_pendingSourcePool, outAmt);
         emit BuybackExecuted(_pendingSourcePool, amtIn, outAmt);
 
-        _swapActive = false;
         _pendingAmount = 0;
 
         // If the pool's buffer is still zero after a successful buyback, remove it from the pending set
