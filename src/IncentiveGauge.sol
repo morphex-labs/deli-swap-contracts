@@ -875,10 +875,15 @@ contract IncentiveGauge is Ownable2Step {
 
         _snapshotExitOnUnsubscribe(pid, positionKey);
 
-        // Apply removal of liquidity in pool accounting
+        // Apply removal of liquidity in pool accounting with bitmap correctness
         if (liquidity != 0) {
-            // Lazy removal: queue range deltas; immediate in-range L is adjusted inside RangePool
-            poolRewards[pid].queueRemoval(tickLower, tickUpper, liquidity);
+            _applyLiquidityDeltaByPid(
+                pid,
+                tickLower,
+                tickUpper,
+                -SafeCast.toInt128(uint256(liquidity)),
+                false // removals: no per-token outside init writes
+            );
         }
 
         // Defer all claims for consistency; keep per-token state for later claim and prune

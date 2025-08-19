@@ -165,26 +165,6 @@ library RangePool {
     }
 
     /*//////////////////////////////////////////////////////////////
-                      SOFT REMOVAL (UNSUBSCRIBE PATH)
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Soft-remove liquidity at [tickLower, tickUpper) without tick bitmap flips.
-    ///         Updates per-tick net/gross and reduces active liquidity if in-range.
-    function queueRemoval(State storage self, int24 tickLower, int24 tickUpper, uint128 liquidityToRemove) internal {
-        if (liquidityToRemove == 0) return;
-        int128 delta = -SafeCast.toInt128(uint256(liquidityToRemove));
-
-        // Update lower and upper ticks (no bitmap flips / clears here)
-        updateTick(self, tickLower, delta, false);
-        updateTick(self, tickUpper, delta, true);
-
-        // Immediate in-range adjustment so future windows are fair
-        if (tickLower <= self.tick && self.tick < tickUpper) {
-            self.liquidity = LiquidityMath.addDelta(self.liquidity, delta);
-        }
-    }
-
-    /*//////////////////////////////////////////////////////////////
                          PRICE MOVEMENT HANDLER
     //////////////////////////////////////////////////////////////*/
 

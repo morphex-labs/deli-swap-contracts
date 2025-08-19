@@ -654,7 +654,15 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Soft removal and zero cached liquidity
         if (liquidity != 0) {
-            pool.queueRemoval(tickLower, tickUpper, liquidity);
+            pool.modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: tickLower,
+                    tickUpper: tickUpper,
+                    liquidityDelta: -SafeCast.toInt128(uint256(liquidity)),
+                    tickSpacing: poolTickSpacing[pid]
+                }),
+                new address[](0)
+            );
         }
         positionLiquidity[posKey] = 0;
     }
