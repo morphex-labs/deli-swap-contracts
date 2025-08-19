@@ -82,8 +82,8 @@ contract DailyEpochGauge is Ownable2Step {
     mapping(bytes32 => uint256) internal exitCumRplX128;
     mapping(bytes32 => uint128) internal exitLiquidity;
 
-    // Stale-unsubscribe deferral: pack tExit and pre-removal pool liquidity in one word
-    // Layout: lower 128 bits = liqPre (uint128), next 64 bits = tExit (uint64), high bits unused
+    // Stale-unsubscribe deferral: pack t0Stored (pool.lastUpdated at unsubscribe), tExit, and pre-removal pool liquidity
+    // Layout: [high 64 bits] = t0Stored (uint64), [next 64 bits] = tExit (uint64), [low 128 bits] = liqPre (uint128)
     mapping(bytes32 => uint256) internal exitMeta;
     // Base cumulative at unsubscribe time for order-independent finalize
     mapping(bytes32 => uint256) internal exitBaseCumX128;
@@ -401,14 +401,13 @@ contract DailyEpochGauge is Ownable2Step {
             return;
         }
 
-        RangePool.State storage pool = poolRewards[pid];
-        uint256 t0 = pool.lastUpdated;
+        uint64 t0Stored = uint64(meta >> 192);
         uint64 tExit = uint64(meta >> 128);
         uint128 liqPre = uint128(meta);
         uint256 baseCum = exitBaseCumX128[positionKey];
         uint256 snap = baseCum;
-        if (tExit > t0 && liqPre != 0) {
-            uint256 amtExit = _amountOverWindow(pid, t0, tExit);
+        if (tExit > t0Stored && liqPre != 0) {
+            uint256 amtExit = _amountOverWindow(pid, t0Stored, tExit);
             if (amtExit != 0) {
                 uint256 dExit = (amtExit << 128) / liqPre;
                 snap += dExit;
@@ -610,8 +609,8 @@ contract DailyEpochGauge is Ownable2Step {
             exitLiquidity[posKey] = liquidity;
         } else {
             // Stale path: defer exit snapshot; record exit info compactly and queue removal
-            // Pack: meta = (uint256(uint64(t1)) << 128) | uint256(uint128(pool.liquidity))
-            uint256 meta = (uint256(uint64(t1)) << 128) | uint256(pool.liquidity);
+            // Pack: [high 64]=t0 (pool.lastUpdated at unsubscribe), [next 64]=tExit (now), [low 128]=liqPre (pool.liquidity)
+            uint256 meta = (uint256(uint64(t0)) << 192) | (uint256(uint64(t1)) << 128) | uint256(pool.liquidity);
             exitMeta[posKey] = meta;
             exitBaseCumX128[posKey] = pool.cumulativeRplX128(address(BMX));
             // Always capture per-position liquidity for exit accrual during finalize
