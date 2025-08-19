@@ -831,17 +831,7 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = PoolId.wrap(poolIdRaw);
         TokenSet storage ts = poolTokenSet[pid];
 
-        // Early exit if no tokens
-        if (ts.count == 0) {
-            // Still need to track the position even if no tokens
-            RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
-            positionTicks[positionKey] = TickRange({lower: tickLower, upper: tickUpper});
-            positionTokenIds[positionKey] = tokenId;
-            // Update shared pool liquidity and tick topology even when there are no tokens yet
-            _applyLiquidityDeltaByPid(pid, tickLower, tickUpper, SafeCast.toInt128(uint256(liquidity)), false);
-            return;
-        }
-
+        // Add position and store tokenId
         RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
 
         // save tick range and tokenId
@@ -875,17 +865,7 @@ contract IncentiveGauge is Ownable2Step {
     ) external onlyPositionManagerAdapter {
         PoolId pid = PoolId.wrap(poolIdRaw);
 
-        // Early exit if no active incentive tokens; clean indices immediately
-        if (poolTokenSet[pid].count == 0) {
-            RangePosition.removePosition(
-                ownerPositions, positionLiquidity, pid, positionManagerAdapter.ownerOf(tokenId), positionKey
-            );
-            delete positionTicks[positionKey];
-            delete positionTokenIds[positionKey];
-            delete exitLiquidity[positionKey];
-            return;
-        }
-
+        // Snapshot exit rewards for each token
         _snapshotExitOnUnsubscribe(pid, positionKey);
 
         // Apply removal of liquidity in pool accounting
@@ -911,15 +891,6 @@ contract IncentiveGauge is Ownable2Step {
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
         PoolId pid = PoolId.wrap(poolIdRaw);
-
-        // Early exit if no tokens
-        if (poolTokenSet[pid].count == 0) {
-            RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
-            delete positionTicks[positionKey];
-            delete positionTokenIds[positionKey];
-            delete exitLiquidity[positionKey];
-            return;
-        }
 
         // Update pool state once (batched) using adapter-provided tick
         _updatePool(pid, currentTick);
@@ -955,11 +926,6 @@ contract IncentiveGauge is Ownable2Step {
 
         // Always update cached liquidity (keep position tracked even at 0)
         positionLiquidity[positionKey] = liquidityAfter;
-
-        // Early exit if no tokens
-        if (poolTokenSet[pid].count == 0) {
-            return;
-        }
 
         // Batch update pool once using adapter-provided tick
         _updatePool(pid, currentTick);
