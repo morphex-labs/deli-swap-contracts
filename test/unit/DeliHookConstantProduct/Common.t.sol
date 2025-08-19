@@ -85,8 +85,7 @@ contract DeliHookConstantProduct_TestBase is Test, Deployers {
             Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
             Hooks.BEFORE_SWAP_FLAG |
             Hooks.AFTER_SWAP_FLAG |
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
 
         (address hookAddress, bytes32 salt) = HookMiner.find(

@@ -163,7 +163,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         p.beforeSwap = true;
         p.afterSwap = true;
         p.beforeSwapReturnDelta = true;
-        p.afterSwapReturnDelta = true;
         return p;
     }
 
@@ -231,11 +230,6 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         // Calculate the implicit fee amount for V2 swaps
         _calculateImplicitFee(key, params);
 
-        // Enforce slippage using sqrtPriceLimitX96 against the virtual V2 price after this swap (including fee removal).
-        if (params.sqrtPriceLimitX96 != 0) {
-            _enforceVirtualPriceLimit(key, params);
-        }
-
         // Store parameters for afterSwap calculation
         _swapAmountSpecified = params.amountSpecified;
         _swapZeroForOne = params.zeroForOne;
@@ -247,7 +241,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     function _afterSwap(
         address, // sender
         PoolKey calldata key,
-        SwapParams calldata, // params
+        SwapParams calldata params,
         BalanceDelta, // swapDelta
         bytes calldata
     ) internal override returns (bytes4, int128) {
@@ -257,6 +251,11 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         // Calculate and update reserves
         _updateReservesAfterSwap(poolId, pool, key);
+
+        // Enforce slippage against final virtual V2 price using updated reserves
+        if (params.sqrtPriceLimitX96 != 0) {
+            _enforceVirtualPriceLimit(key, params);
+        }
 
         // Checkpoint pool
         dailyEpochGauge.pokePool(key);
@@ -487,53 +486,13 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     /// @dev Helper to enforce sqrtPriceLimitX96 slippage against virtual V2 price after applying swap and fee removal.
     ///      In contrast to Uniswap v4 and like v2, swaps will revert if price reaches the limit.
     function _enforceVirtualPriceLimit(PoolKey calldata key, SwapParams calldata params) private view {
-        PoolId poolId = key.toId();
-        V2Pool storage pool = pools[poolId];
-
-        bool exactInput = params.amountSpecified < 0;
-        bool zeroForOne = params.zeroForOne;
-        uint256 specifiedAmount = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
-        uint256 otherAmount = _getUnspecifiedAmount(key, params); // out if exact in, in if exact out
-
-        uint256 r0 = uint256(pool.reserve0);
-        uint256 r1 = uint256(pool.reserve1);
-        uint256 r0p;
-        uint256 r1p;
-
-        if (exactInput) {
-            if (zeroForOne) {
-                r0p = r0 + specifiedAmount;
-                r1p = r1 - otherAmount;
-            } else {
-                r0p = r0 - otherAmount;
-                r1p = r1 + specifiedAmount;
-            }
-        } else {
-            if (zeroForOne) {
-                r0p = r0 + otherAmount;
-                r1p = r1 - specifiedAmount;
-            } else {
-                r0p = r0 - specifiedAmount;
-                r1p = r1 + otherAmount;
-            }
-        }
-
-        // Apply fee removal as done in _updateReservesAfterSwap
-        if (_pendingFeeAmount > 0) {
-            if (_pendingFeeCurrency == key.currency0) {
-                r0p -= _pendingFeeAmount;
-            } else {
-                r1p -= _pendingFeeAmount;
-            }
-        }
-
-        // Compute price in Q128 then scale sqrt to Q96 to prevent overflow
-        uint256 priceAfterX128 = FullMath.mulDiv(r1p, uint256(1) << 128, r0p);
+        V2Pool storage pool = pools[key.toId()];
+        uint256 priceAfterX128 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 128, uint256(pool.reserve0));
         uint256 sqrtAfterX64 = Math.sqrt(priceAfterX128);
         uint160 sqrtAfterX96 = uint160(sqrtAfterX64 << 32);
         uint160 limit = params.sqrtPriceLimitX96;
 
-        if (zeroForOne) {
+        if (params.zeroForOne) {
             if (sqrtAfterX96 < limit) revert DeliErrors.Slippage();
         } else {
             if (sqrtAfterX96 > limit) revert DeliErrors.Slippage();
