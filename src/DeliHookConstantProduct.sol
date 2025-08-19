@@ -723,6 +723,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
     /// @notice Get the reserves of a pool
     /// @param poolId The pool ID to query
+    /// @return reserve0 The reserve of the first currency
+    /// @return reserve1 The reserve of the second currency
     function getReserves(PoolId poolId) external view returns (uint128, uint128) {
         V2Pool storage pool = pools[poolId];
         return (pool.reserve0, pool.reserve1);
@@ -730,6 +732,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
     /// @notice Get the total supply of a pool
     /// @param poolId The pool ID to query
+    /// @return totalSupply The total supply of the pool
     function getTotalSupply(PoolId poolId) external view returns (uint256) {
         return pools[poolId].totalSupply;
     }
@@ -737,6 +740,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     /// @notice Get the balance of a user in a pool
     /// @param poolId The pool ID to query
     /// @param account The address of the user to query
+    /// @return balance The balance of the user in the pool
     function balanceOf(PoolId poolId, address account) external view returns (uint256) {
         return liquidityShares[poolId][account];
     }
@@ -745,6 +749,10 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     /// @dev    Returns virtual sqrtPriceX96 derived from reserves; protocolFee and tick are always 0 for V2 pools;
     ///         lpFee is the per-pool LP fee.
     /// @param poolId The pool ID to query
+    /// @return sqrtPriceX96 The virtual sqrtPriceX96
+    /// @return tick The tick
+    /// @return protocolFee The protocol fee
+    /// @return lpFee The per-pool LP fee
     function getSlot0(IPoolManager, /*manager*/ PoolId poolId)
         external
         view
@@ -763,5 +771,158 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         uint256 priceX128 = FullMath.mulDiv(uint256(pool.reserve1), uint256(1) << 128, uint256(pool.reserve0));
         uint256 sqrtX64 = Math.sqrt(priceX128);
         sqrtPriceX96 = uint160(sqrtX64 << 32);
+    }
+
+    /// @notice Given some amount of an asset and pair reserves, returns an equivalent amount of the other asset (no fee)
+    /// @param amountA The amount of the first asset
+    /// @param reserveA The reserve of the first asset
+    /// @param reserveB The reserve of the second asset
+    /// @return amountB The amount of the second asset
+    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) external pure returns (uint256 amountB) {
+        if (amountA == 0) revert DeliErrors.ZeroAmount();
+        if (reserveA == 0 || reserveB == 0) revert DeliErrors.InsufficientLiquidity();
+        amountB = (amountA * reserveB) / reserveA;
+    }
+
+    /// @notice Ratio-only quote using live pool reserves (no fee)
+    /// @param key The pool key
+    /// @param zeroForOne Whether the input amount is in the zero or one currency
+    /// @param amountIn The input amount
+    /// @return amountOut The output amount
+    function quote(PoolKey memory key, bool zeroForOne, uint256 amountIn) external view returns (uint256 amountOut) {
+        if (amountIn == 0) revert DeliErrors.ZeroAmount();
+        V2Pool storage pool = pools[key.toId()];
+        if (pool.reserve0 == 0 || pool.reserve1 == 0) revert DeliErrors.NoLiquidity();
+        uint256 rIn = zeroForOne ? uint256(pool.reserve0) : uint256(pool.reserve1);
+        uint256 rOut = zeroForOne ? uint256(pool.reserve1) : uint256(pool.reserve0);
+        amountOut = (amountIn * rOut) / rIn;
+    }
+
+    /// @notice Math-only: maximum output amount for exact input at given reserves and fee
+    /// @param amountIn The input amount
+    /// @param reserveIn The input reserve
+    /// @param reserveOut The output reserve
+    /// @param feePips The fee in hundredths of a basis point
+    /// @return amountOut The output amount
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        external
+        pure
+        returns (uint256 amountOut)
+    {
+        if (amountIn == 0) revert DeliErrors.ZeroAmount();
+        if (reserveIn == 0 || reserveOut == 0) revert DeliErrors.InsufficientLiquidity();
+        // Delegate to internal constant-product helper by orienting reserves
+        amountOut = _getAmountOut(true, amountIn, reserveIn, reserveOut, feePips);
+    }
+
+    /// @notice Maximum output amount for exact input using live pool state
+    /// @param key The pool key
+    /// @param zeroForOne Whether the input amount is in the zero or one currency
+    /// @param amountIn The input amount
+    /// @return amountOut The output amount
+    function getAmountOut(PoolKey memory key, bool zeroForOne, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut)
+    {
+        if (amountIn == 0) revert DeliErrors.ZeroAmount();
+        V2Pool storage pool = pools[key.toId()];
+        if (pool.reserve0 == 0 || pool.reserve1 == 0) revert DeliErrors.NoLiquidity();
+        amountOut = _getAmountOut(zeroForOne, amountIn, pool.reserve0, pool.reserve1, key.fee);
+    }
+
+    /// @notice Math-only: required input amount for exact output at given reserves and fee (fee in input)
+    /// @param amountOut The output amount
+    /// @param reserveIn The input reserve
+    /// @param reserveOut The output reserve
+    /// @param feePips The fee in hundredths of a basis point
+    /// @return amountIn The input amount
+    function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut, uint24 feePips)
+        external
+        pure
+        returns (uint256 amountIn)
+    {
+        if (amountOut == 0) revert DeliErrors.ZeroAmount();
+        if (reserveIn == 0 || reserveOut == 0) revert DeliErrors.InsufficientLiquidity();
+        amountIn = _getAmountIn(true, amountOut, reserveIn, reserveOut, feePips);
+    }
+
+    /// @notice Required input amount for exact output using live pool state
+    /// @param key The pool key
+    /// @param zeroForOne Whether the output amount is in the zero or one currency
+    /// @param amountOut The output amount
+    /// @return amountIn The input amount
+    function getAmountIn(PoolKey memory key, bool zeroForOne, uint256 amountOut)
+        external
+        view
+        returns (uint256 amountIn)
+    {
+        if (amountOut == 0) revert DeliErrors.ZeroAmount();
+        V2Pool storage pool = pools[key.toId()];
+        if (pool.reserve0 == 0 || pool.reserve1 == 0) revert DeliErrors.NoLiquidity();
+
+        (bool feeFromOutput,) = _isFeeFromOutput(key, zeroForOne);
+        if (feeFromOutput) {
+            uint256 grossOut = FullMath.mulDiv(amountOut, 1_000_000 + uint256(key.fee), 1_000_000);
+            uint256 rOut = zeroForOne ? uint256(pool.reserve1) : uint256(pool.reserve0);
+            if (grossOut >= rOut) revert DeliErrors.InsufficientLiquidity();
+            amountIn = _getAmountIn(zeroForOne, grossOut, pool.reserve0, pool.reserve1, 0);
+        } else {
+            amountIn = _getAmountIn(zeroForOne, amountOut, pool.reserve0, pool.reserve1, key.fee);
+        }
+    }
+
+    /// @notice Multi-hop exact-input quote over a route of pools
+    /// @param amountIn The input amount
+    /// @param route The route of pools
+    /// @param zeroForOnes Whether the input amount is in the zero or one currency for each pool
+    /// @return amounts The amounts of each pool in the route
+    function getAmountsOut(uint256 amountIn, PoolKey[] calldata route, bool[] calldata zeroForOnes)
+        external
+        view
+        returns (uint256[] memory amounts)
+    {
+        uint256 n = route.length;
+        if (n == 0 || n != zeroForOnes.length) revert DeliErrors.NotAllowed();
+        amounts = new uint256[](n + 1);
+        amounts[0] = amountIn;
+        for (uint256 i; i < n; ++i) {
+            V2Pool storage pool = pools[route[i].toId()];
+            if (pool.reserve0 == 0 || pool.reserve1 == 0) revert DeliErrors.NoLiquidity();
+            amounts[i + 1] = _getAmountOut(zeroForOnes[i], amounts[i], pool.reserve0, pool.reserve1, route[i].fee);
+        }
+    }
+
+    /// @notice Multi-hop exact-output quote over a route of pools
+    /// @param amountOut The output amount
+    /// @param route The route of pools
+    /// @param zeroForOnes Whether the output amount is in the zero or one currency for each pool
+    /// @return amounts The amounts of each pool in the route
+    function getAmountsIn(uint256 amountOut, PoolKey[] calldata route, bool[] calldata zeroForOnes)
+        external
+        view
+        returns (uint256[] memory amounts)
+    {
+        uint256 n = route.length;
+        if (n == 0 || n != zeroForOnes.length) revert DeliErrors.NotAllowed();
+        amounts = new uint256[](n + 1);
+        amounts[n] = amountOut;
+        for (uint256 i = n; i > 0;) {
+            unchecked {
+                --i;
+            }
+            V2Pool storage pool = pools[route[i].toId()];
+            if (pool.reserve0 == 0 || pool.reserve1 == 0) revert DeliErrors.NoLiquidity();
+
+            (bool feeFromOutput,) = _isFeeFromOutput(route[i], zeroForOnes[i]);
+            if (feeFromOutput) {
+                uint256 grossOut = FullMath.mulDiv(amounts[i + 1], 1_000_000 + uint256(route[i].fee), 1_000_000);
+                uint256 rOut = zeroForOnes[i] ? uint256(pool.reserve1) : uint256(pool.reserve0);
+                if (grossOut >= rOut) revert DeliErrors.InsufficientLiquidity();
+                amounts[i] = _getAmountIn(zeroForOnes[i], grossOut, pool.reserve0, pool.reserve1, 0);
+            } else {
+                amounts[i] = _getAmountIn(zeroForOnes[i], amounts[i + 1], pool.reserve0, pool.reserve1, route[i].fee);
+            }
+        }
     }
 }
