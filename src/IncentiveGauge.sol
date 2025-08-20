@@ -109,6 +109,10 @@ contract IncentiveGauge is Ownable2Step {
     // per pool fixed-slot set of ACTIVE incentive tokens
     mapping(PoolId => TokenSet) internal poolTokenSet;
 
+    // registry of all tokens ever used by a pool
+    mapping(PoolId => IERC20[]) internal poolTokenRegistry;
+    mapping(PoolId => mapping(IERC20 => bool)) internal inRegistry;
+
     // whitelist of reward tokens
     mapping(IERC20 => bool) public whitelist;
 
@@ -227,14 +231,18 @@ contract IncentiveGauge is Ownable2Step {
         // pull tokens up-front
         rewardToken.safeTransferFrom(msg.sender, address(this), amount);
 
+        // register token in pool registry for future claims (active or inactive)
+        if (!inRegistry[pid][rewardToken]) {
+            inRegistry[pid][rewardToken] = true;
+            poolTokenRegistry[pid].push(rewardToken);
+        }
+
         // If token is already active, update as today
         TokenSet storage active = poolTokenSet[pid];
-        for (uint8 i; i < active.count; ++i) {
-            if (active.tokens[i] == rewardToken) {
-                uint128 newRate = _topUpActive(pid, rewardToken, amount);
-                emit IncentiveActivated(pid, rewardToken, amount, newRate);
-                return;
-            }
+        if (_isActiveToken(active, rewardToken)) {
+            uint128 newRate = _topUpActive(pid, rewardToken, amount);
+            emit IncentiveActivated(pid, rewardToken, amount, newRate);
+            return;
         }
 
         // Not currently active
@@ -288,8 +296,8 @@ contract IncentiveGauge is Ownable2Step {
             uint256 keyLen = keys.length;
             if (keyLen == 0) continue;
 
-            // Skip pools without active tokens
-            if (poolTokenSet[pid].count == 0) continue;
+            // Skip pools with neither active nor registered tokens
+            if (poolTokenSet[pid].count == 0 && poolTokenRegistry[pid].length == 0) continue;
 
             // Update pool once per pid
             _updatePoolByPid(pid);
@@ -418,21 +426,10 @@ contract IncentiveGauge is Ownable2Step {
         if (info.rewardRate > 0) {
             _updatePoolByPid(pid);
         }
-        
+
         // Re-validate that the token is still active after the pool update
         TokenSet storage active = poolTokenSet[pid];
-        bool stillActive;
-        uint8 n = active.count;
-        for (uint8 i; i < n;) {
-            if (active.tokens[i] == token) {
-                stillActive = true;
-                break;
-            }
-            unchecked {
-                ++i;
-            }
-        }
-        if (!stillActive) revert DeliErrors.NotAllowed();
+        if (!_isActiveToken(active, token)) revert DeliErrors.NotAllowed();
 
         uint256 leftover;
         if (block.timestamp < info.periodFinish) {
@@ -507,22 +504,36 @@ contract IncentiveGauge is Ownable2Step {
 
     /// @dev Helper to accrue and claim for a single position across all tokens
     function _accrueAndClaimForPosition(PoolId pid, bytes32 posKey, address ownerAddr) internal {
-        TokenSet storage ts = poolTokenSet[pid];
+        TokenSet storage active = poolTokenSet[pid];
         TickRange storage tr = positionTicks[posKey];
         uint128 liq = positionLiquidity[posKey];
         RangePool.State storage pool = poolRewards[pid];
-        uint8 n = ts.count;
-        for (uint8 t; t < n; ++t) {
-            IERC20 tok = ts.tokens[t];
-            RangePosition.State storage ps = positionRewards[posKey][tok];
-            uint256 rpl = pool.rangeRplX128(address(tok), tr.lower, tr.upper);
-            ps.accrue(liq, rpl);
-            uint256 amt = ps.claim();
-            if (amt > 0) {
-                tok.safeTransfer(ownerAddr, amt);
-                emit Claimed(ownerAddr, tok, amt);
+
+        IERC20[] storage reg = poolTokenRegistry[pid];
+        uint256 rlen = reg.length;
+        for (uint256 i; i < rlen; ++i) {
+            IERC20 tok = reg[i];
+            if (_isActiveToken(active, tok)) {
+                RangePosition.State storage ps = positionRewards[posKey][tok];
+                uint256 rpl = pool.rangeRplX128(address(tok), tr.lower, tr.upper);
+                ps.accrue(liq, rpl);
+            } else {
+                _finalizeExitForToken(pid, posKey, tok);
+            }
+            _claimRewards(posKey, tok, ownerAddr);
+        }
+    }
+
+    /// @dev Check if a token is active in the pool's active token set
+    function _isActiveToken(TokenSet storage active, IERC20 tok) private view returns (bool) {
+        uint8 n = active.count;
+        for (uint8 i; i < n;) {
+            if (active.tokens[i] == tok) return true;
+            unchecked {
+                ++i;
             }
         }
+        return false;
     }
 
     /// @dev Accrue across all tokens for a position
@@ -647,20 +658,21 @@ contract IncentiveGauge is Ownable2Step {
 
     /// @dev internal helper to compute pending list for one pool
     function _pendingRewardsForPool(PoolId pid, address owner) internal view returns (Pending[] memory list) {
-        TokenSet storage ts = poolTokenSet[pid];
-        uint8 tlen = ts.count;
-        list = new Pending[](tlen);
+        IERC20[] storage reg = poolTokenRegistry[pid];
+        uint256 regLen = reg.length;
+
+        list = new Pending[](regLen);
 
         bytes32[] storage keys = ownerPositions[pid][owner];
         uint256 klen = keys.length;
 
-        for (uint8 t; t < tlen; ++t) {
-            IERC20 tok = ts.tokens[t];
+        for (uint256 r; r < regLen; ++r) {
+            IERC20 tok = reg[r];
             uint256 total;
             for (uint256 i; i < klen; ++i) {
                 total += _pendingForPosTok(keys[i], tok, pid);
             }
-            list[t] = Pending({token: tok, amount: total});
+            list[r] = Pending({token: tok, amount: total});
         }
     }
 
