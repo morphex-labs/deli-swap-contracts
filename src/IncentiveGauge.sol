@@ -946,7 +946,6 @@ contract IncentiveGauge is Ownable2Step {
         RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
         delete positionTicks[positionKey];
         delete positionTokenIds[positionKey];
-        delete exitLiquidity[positionKey];
     }
 
     /// @notice Called by PositionManagerAdapter when a position's liquidity is modified (context-based).
