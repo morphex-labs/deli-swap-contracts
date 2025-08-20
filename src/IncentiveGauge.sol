@@ -271,7 +271,10 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = key.toId();
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
-        // Update pool state (by pid), finalize exit snapshot for this token, then accrue with current liquidity
+        // Update pool state (by pid).
+        // If the position has been unsubscribed for this token, any pending rewards are accrued
+        // via the per-token exit snapshot in _finalizeExitForToken(); ps.accrue below will then
+        // simply advance the snapshot when liquidity is zero.
         _updatePoolByPid(pid);
         _finalizeExitForToken(pid, positionKey, token);
         TickRange storage tr = positionTicks[positionKey];
@@ -317,7 +320,10 @@ contract IncentiveGauge is Ownable2Step {
                     continue; // Skip if token doesn't exist or ownerOf reverts
                 }
 
+                // Finalize any per-token exit snapshots for active tokens first (unsubscribed
+                // positions accrue via exit snapshots rather than live accrual here).
                 _finalizeExitForPosition(pid, posKey);
+                // Then handle accrual/claims across all registered tokens (active and inactive).
                 _accrueAndClaimForPosition(pid, posKey, owner);
             }
         }
