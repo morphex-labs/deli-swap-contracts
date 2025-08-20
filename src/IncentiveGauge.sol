@@ -418,6 +418,22 @@ contract IncentiveGauge is Ownable2Step {
         if (info.rewardRate > 0) {
             _updatePoolByPid(pid);
         }
+        
+        // Re-validate that the token is still active after the pool update
+        TokenSet storage active = poolTokenSet[pid];
+        bool stillActive;
+        uint8 n = active.count;
+        for (uint8 i; i < n;) {
+            if (active.tokens[i] == token) {
+                stillActive = true;
+                break;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        if (!stillActive) revert DeliErrors.NotAllowed();
+
         uint256 leftover;
         if (block.timestamp < info.periodFinish) {
             uint256 remainingTime = info.periodFinish - block.timestamp;
