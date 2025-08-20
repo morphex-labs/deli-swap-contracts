@@ -205,6 +205,10 @@ contract DailyEpochGauge is Ownable2Step {
         // Reconstruct the position key
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
+        // Capture if there was a deferred unsubscribe before finalization
+        bool hadUnsubExit =
+            (exitMeta[positionKey] != 0) || (exitLiquidity[positionKey] != 0) || (exitCumRplX128[positionKey] != 0);
+
         // Finalize any deferred/standard exit snapshot first, then sync and accrue
         _finalizeDeferredUnsubIfAny(pid, positionKey);
         _syncAndAccrue(key, pid, positionKey);
@@ -213,7 +217,10 @@ contract DailyEpochGauge is Ownable2Step {
         amount = _claimRewards(positionKey, to);
 
         // If fully unsubscribed and no pending exit debt, remove from index
-        if (positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0 && exitMeta[positionKey] == 0) {
+        if (
+            hadUnsubExit && positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0
+                && exitMeta[positionKey] == 0
+        ) {
             _removePosition(pid, owner, positionKey);
         }
     }
@@ -264,6 +271,10 @@ contract DailyEpochGauge is Ownable2Step {
                     continue; // Skip if token doesn't exist or ownerOf reverts
                 }
 
+                // Capture if there was a deferred unsubscribe before finalization
+                bool hadUnsubExit =
+                    (exitMeta[posKey] != 0) || (exitLiquidity[posKey] != 0) || (exitCumRplX128[posKey] != 0);
+
                 // Finalize deferred/standard exit snapshot (if any), then sync and accrue
                 _finalizeDeferredUnsubIfAny(pid, posKey);
                 _syncAndAccrue(key, pid, posKey);
@@ -271,8 +282,11 @@ contract DailyEpochGauge is Ownable2Step {
                 uint256 amt = positionRewards[posKey].claim();
                 if (amt > 0) totalBmx += amt;
 
-                // If fully unsubscribed and no pending exit debt, remove from index (swap-pop)
-                if (positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0 && exitMeta[posKey] == 0) {
+                // If fully unsubscribed and no pending exit debt, remove from index (swap-pop) only if unsub happened
+                if (
+                    hadUnsubExit && positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0
+                        && exitMeta[posKey] == 0
+                ) {
                     _removePosition(pid, owner, posKey);
                     // Do not increment i; new element has been swapped into index i
                 } else {
