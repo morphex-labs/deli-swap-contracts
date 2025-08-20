@@ -271,6 +271,9 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = key.toId();
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
+        // Detect unsubscribe evidence BEFORE finalization
+        bool hadUnsubExit = exitLiquidity[positionKey] != 0 || _hasExitSnapshots(pid, positionKey);
+
         // Update pool state (by pid).
         // If the position has been unsubscribed for this token, any pending rewards are accrued
         // via the per-token exit snapshot in _finalizeExitForToken(); ps.accrue below will then
@@ -284,6 +287,19 @@ contract IncentiveGauge is Ownable2Step {
 
         // Claim and transfer
         amount = _claimRewards(positionKey, token, to);
+
+        // If this was an unsubscribe path, attempt cleanup when all exit debt is cleared
+        if (hadUnsubExit) {
+            if (exitLiquidity[positionKey] != 0 && !_hasExitSnapshots(pid, positionKey)) {
+                exitLiquidity[positionKey] = 0;
+            }
+            if (positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0) {
+                // Remove from indices now that all exit debt is cleared
+                RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, positionKey);
+                delete positionTicks[positionKey];
+                delete positionTokenIds[positionKey];
+            }
+        }
     }
 
     /// @notice Claim all token rewards for an owner across multiple pools.
@@ -296,8 +312,7 @@ contract IncentiveGauge is Ownable2Step {
 
             // Skip if owner has no positions in this pool
             bytes32[] storage keys = ownerPositions[pid][owner];
-            uint256 keyLen = keys.length;
-            if (keyLen == 0) continue;
+            if (keys.length == 0) continue;
 
             // Skip pools with neither active nor registered tokens
             if (poolTokenSet[pid].count == 0 && poolTokenRegistry[pid].length == 0) continue;
@@ -305,26 +320,64 @@ contract IncentiveGauge is Ownable2Step {
             // Update pool once per pid
             _updatePoolByPid(pid);
 
-            // Accrue and claim for every position
-            for (uint256 i; i < keyLen; ++i) {
+            // Accrue and claim for every position (swap-pop safe loop)
+            uint256 i;
+            while (i < keys.length) {
                 bytes32 posKey = keys[i];
 
                 // Verify this position still belongs to the owner
                 uint256 tokenId = positionTokenIds[posKey];
-                if (tokenId == 0) continue; // Position was removed
+                if (tokenId == 0) {
+                    unchecked {
+                        ++i;
+                    }
+                    continue; // Position was removed elsewhere
+                }
 
                 // Check ownership (use try-catch to handle burned tokens)
                 try positionManagerAdapter.ownerOf(tokenId) returns (address currentOwner) {
-                    if (currentOwner != owner) continue; // Skip if no longer owned
+                    if (currentOwner != owner) {
+                        unchecked {
+                            ++i;
+                        }
+                        continue;
+                    }
                 } catch {
+                    unchecked {
+                        ++i;
+                    }
                     continue; // Skip if token doesn't exist or ownerOf reverts
                 }
+
+                // Detect unsubscribe evidence BEFORE finalization
+                bool hadUnsubExit = exitLiquidity[posKey] != 0 || _hasExitSnapshots(pid, posKey);
 
                 // Finalize any per-token exit snapshots for active tokens first (unsubscribed
                 // positions accrue via exit snapshots rather than live accrual here).
                 _finalizeExitForPosition(pid, posKey);
                 // Then handle accrual/claims across all registered tokens (active and inactive).
                 _accrueAndClaimForPosition(pid, posKey, owner);
+
+                // Decide removal: only after an actual unsubscribe and when all exit debt is cleared
+                if (hadUnsubExit) {
+                    if (exitLiquidity[posKey] != 0 && !_hasExitSnapshots(pid, posKey)) {
+                        exitLiquidity[posKey] = 0;
+                    }
+                    if (positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0) {
+                        // Remove from indices (swap-pop safe); do not increment i after removal
+                        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
+                        delete positionTicks[posKey];
+                        delete positionTokenIds[posKey];
+                    } else {
+                        unchecked {
+                            ++i;
+                        }
+                    }
+                } else {
+                    unchecked {
+                        ++i;
+                    }
+                }
             }
         }
     }
@@ -504,6 +557,16 @@ contract IncentiveGauge is Ownable2Step {
             poolTokenSet[pid].tokens[slotIndex] = qtok;
             emit IncentiveActivated(pid, qtok, qamt, qi.rewardRate);
             return true;
+        }
+        return false;
+    }
+
+    /// @dev Returns true if any per-token exit snapshot is present for the position.
+    function _hasExitSnapshots(PoolId pid, bytes32 posKey) internal view returns (bool) {
+        IERC20[] storage reg = poolTokenRegistry[pid];
+        uint256 len = reg.length;
+        for (uint256 i; i < len; ++i) {
+            if (exitSnapshots[posKey][reg[i]] != 0) return true;
         }
         return false;
     }
