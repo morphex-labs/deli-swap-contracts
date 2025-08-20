@@ -654,14 +654,14 @@ contract DailyEpochGauge is Ownable2Step {
                     pool.creditSingleTokenNoTick(address(BMX), amt);
                 }
             }
-            exitCumRplX128[posKey] = pool.cumulativeRplX128(address(BMX));
+            exitCumRplX128[posKey] = poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper);
             exitLiquidity[posKey] = liquidity;
         } else {
             // Stale path: defer exit snapshot; record exit info compactly and queue removal
             // Pack: [high 64]=t0 (pool.lastUpdated at unsubscribe), [next 64]=tExit (now), [low 128]=liqPre (pool.liquidity)
             uint256 meta = (uint256(uint64(t0)) << 192) | (uint256(uint64(t1)) << 128) | uint256(pool.liquidity);
             exitMeta[posKey] = meta;
-            exitBaseCumX128[posKey] = pool.cumulativeRplX128(address(BMX));
+            exitBaseCumX128[posKey] = poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper);
             // Always capture per-position liquidity for exit accrual during finalize
             exitLiquidity[posKey] = liquidity;
         }
