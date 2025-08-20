@@ -463,8 +463,12 @@ contract IncentiveGauge is Ownable2Step {
         while (q.length != 0) {
             IERC20 qtok = q[0];
             uint256 last = q.length - 1;
-            if (last != 0) {
-                q[0] = q[last];
+            // FIFO: shift-left the array and pop tail
+            for (uint256 i; i < last;) {
+                q[i] = q[i + 1];
+                unchecked {
+                    ++i;
+                }
             }
             q.pop();
             isQueued[pid][qtok] = false;
