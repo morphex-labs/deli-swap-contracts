@@ -311,19 +311,13 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external override onlyAuthorizedCaller {
-        // Pre-fetch context once via direct handler to avoid extra external self-calls
-        IPositionHandler handler = getHandler(tokenId);
-        (PoolKey memory key, PositionInfo info, uint128 liquidity) = handler.getPoolPositionAndLiquidity(tokenId);
+        // Build full context once and forward to both gauges
+        NotifyContext memory c = _buildContextFromToken(tokenId);
 
-        PoolId pid = key.toId();
-        bytes32 pidRaw = bytes32(PoolId.unwrap(pid));
-        int24 tickLower = info.tickLower();
-        int24 tickUpper = info.tickUpper();
-        // Pre-compute position key to avoid re-hashing in gauges
-        bytes32 posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
-
-        dailyEpochGauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, tickLower, tickUpper, liquidity);
-        incentiveGauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, tickLower, tickUpper, liquidity);
+        dailyEpochGauge.notifyUnsubscribeWithContext(
+            c.posKey, c.pidRaw, c.currentTick, c.owner, c.tickLower, c.tickUpper, c.liquidity
+        );
+        incentiveGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.owner, c.tickLower, c.tickUpper, c.liquidity);
     }
 
     /// @inheritdoc ISubscriber

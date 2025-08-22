@@ -52,9 +52,9 @@ contract MockIncentiveGauge is IIncentiveGauge {
     ) external override {}
 
     function notifyUnsubscribeWithContext(
-        uint256,
         bytes32,
         bytes32,
+        address,
         int24,
         int24,
         uint128

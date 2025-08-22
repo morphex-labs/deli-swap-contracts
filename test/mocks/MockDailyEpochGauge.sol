@@ -73,9 +73,10 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     ) external override {}
 
     function notifyUnsubscribeWithContext(
-        uint256,
         bytes32,
         bytes32,
+        int24,
+        address,
         int24,
         int24,
         uint128

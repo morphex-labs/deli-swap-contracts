@@ -26,9 +26,9 @@ interface IIncentiveGauge {
     ) external;
 
     function notifyUnsubscribeWithContext(
-        uint256 tokenId,
         bytes32 positionKey,
         bytes32 poolIdRaw,
+        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity

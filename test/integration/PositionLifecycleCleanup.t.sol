@@ -325,7 +325,8 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(label);
-        inc.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        // Adapter now builds and passes currentTick and owner internally. For direct call, supply owner and omit tokenId.
+        inc.notifyUnsubscribeWithContext(posKey, pidRaw, address(this), lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -428,7 +429,9 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         vm.startPrank(address(adapter));
         vm.startSnapshotGas("daily_only_unsubscribe_no_poke");
-        gauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        // Provide a plausible currentTick and owner for the gauge's context method
+        int24 currentTick = 0;
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick, address(this), lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -493,14 +496,15 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         // Measure daily segment
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(labelDaily);
-        gauge.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        int24 currentTick2 = 0;
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick2, address(this), lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
 
         // Reconstruct context (unchanged) and measure incentive segment
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(labelIncentive);
-        inc.notifyUnsubscribeWithContext(tokenId, posKey, pidRaw, lower, upper, liq);
+        inc.notifyUnsubscribeWithContext(posKey, pidRaw, address(this), lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -594,21 +598,25 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     /// large elapsed time without prior syncs to force Daily's multi-day integration and maximize cold reads.
     /// to force Daily's multi-day integration during unsubscribe and maximize cold reads.
     function testGasAdapterNotifyUnsubTwoWorst() public {
-        // 1) Mint and subscribe
+        // 1) Mint and subscribe two positions
         uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        uint256 tokenId2 = _mintAndSubscribe(-1800, 1800, 1e22);
 
         // 2) Activate Daily stream and base incentive, then add two extra incentive tokens (3 total incentives)
         _activateStream();
-        _addIncentiveTokens(3);
+        _addIncentiveTokens(10);
 
         // 3) Warp many days ahead to force DailyEpochGauge._amountOverWindow to iterate across many day boundaries
         //    and ensure significant elapsed time for incentive calculations, without additional pokes.
-        vm.warp(block.timestamp + 6 days);
+        vm.warp(block.timestamp + 4 days);
 
         // 4) Measure only the adapter.notifyUnsubscribe path
         vm.startPrank(address(positionManager));
-        vm.startSnapshotGas("adapter_notify_unsub_3_worst");
+        vm.startSnapshotGas("adapter_notify_unsub_2_worst_first");
         adapter.notifyUnsubscribe(tokenId);
+        vm.stopSnapshotGas();
+        vm.startSnapshotGas("adapter_notify_unsub_2_worst_second");
+        adapter.notifyUnsubscribe(tokenId2);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -644,26 +652,25 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         uint256 pendingBefore = gauge.pendingRewardsOwner(pid, address(this));
         assertGt(pendingBefore, 0, "no pending before unsubscribe");
 
-        // 4. Unsubscribe position – should trigger accumulator accrual & removal
-        // Capture gas for the unsubscribe path (adapter.notifyUnsubscribe) via section snapshot
+        // 4. Unsubscribe position – should trigger sync→accrue→remove→claim
+        uint256 bmxBeforeUnsub = bmx.balanceOf(address(this));
         vm.startSnapshotGas("adapter_unsubscribe_notify");
         positionManager.unsubscribe(tokenId);
         vm.stopSnapshotGas();
+        uint256 bmxAfterUnsub = bmx.balanceOf(address(this));
+        assertGt(bmxAfterUnsub - bmxBeforeUnsub, 0, "expected BMX claimed during unsubscribe");
 
-        // 5. After unsubscribe owner aggregate should be zero (index cleaned)
+        // 5. After unsubscribe owner aggregate should be zero and indices cleaned
         uint256 pendingAfter = gauge.pendingRewardsOwner(pid, address(this));
-        // With deferred claims, pending should still exist immediately after unsubscribe
-        assertGt(pendingAfter, 0, "no pending after unsubscribe");
+        assertEq(pendingAfter, 0, "pending not zero after unsubscribe");
 
-        // Claim should now transfer BMX and prune indices
+        // 6. Subsequent claim should pay nothing additional
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
-        uint256 balBefore = bmx.balanceOf(address(this));
+        uint256 bmxBeforeClaim = bmx.balanceOf(address(this));
         gauge.claimAllForOwner(arr, address(this));
-        uint256 balAfter = bmx.balanceOf(address(this));
-        assertGt(balAfter - balBefore, 0, "expected BMX claimed after deferred unsubscribe");
-        // Pending should now be zero and indices pruned
-        assertEq(gauge.pendingRewardsOwner(pid, address(this)), 0, "pending not cleaned after claim");
+        uint256 bmxAfterClaim = bmx.balanceOf(address(this));
+        assertEq(bmxAfterClaim - bmxBeforeClaim, 0, "unexpected BMX payout after unsubscribe claim");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -794,16 +801,17 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
 
         positionManager.unsubscribe(tokenId);
 
-        // Deferred claims: still pending until claimed
+        // Forfeiture model: pending should be zero immediately after unsubscribe
         uint256 pendingAfter = _totalPendingInc();
-        assertGt(pendingAfter, 0, "inc pending unexpectedly zero after unsubscribe");
+        assertEq(pendingAfter, 0, "inc pending should be zero after unsubscribe (forfeit)");
 
         // Claim and expect payout, then cleanup
         PoolId[] memory arr = new PoolId[](1);
         arr[0] = pid;
         uint256 balBefore = wblt.balanceOf(address(this));
         inc.claimAllForOwner(arr, address(this));
-        assertGt(wblt.balanceOf(address(this)) - balBefore, 0, "no inc payout after claim");
+        // No payout expected since rewards are forfeited on unsubscribe
+        assertEq(wblt.balanceOf(address(this)) - balBefore, 0, "unexpected inc payout after forfeit claim");
         assertEq(_totalPendingInc(), 0, "inc pending not zero after claim");
     }
 

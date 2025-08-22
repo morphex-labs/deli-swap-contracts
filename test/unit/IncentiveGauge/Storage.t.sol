@@ -71,11 +71,11 @@ contract IncentiveGaugeHarness is IncentiveGauge {
         positionLiquidity[posKey] = liquidity;
 
         // Accrue pending rewards before taking new snapshot
-        IncentiveGauge.TokenSet storage ts = poolTokenSet[pid];
-        uint8 len = ts.count;
-        for (uint8 i; i < len; ++i) {
+        IERC20[] storage reg = poolTokenRegistry[pid];
+        uint256 len = reg.length;
+        for (uint256 i; i < len; ++i) {
             // Accrue based on previous snapshot and existing liquidity
-            IERC20 tok = ts.tokens[i];
+            IERC20 tok = reg[i];
             RangePosition.State storage ps = positionRewards[posKey][tok];
             // accrue with old snapshot
             ps.accrue(positionLiquidity[posKey], poolRewards[pid].cumulativeRplX128(address(tok)));

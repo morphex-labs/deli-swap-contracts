@@ -42,7 +42,7 @@ contract DailyEpochGauge is Ownable2Step {
     using PoolIdLibrary for PoolKey;
 
     /*//////////////////////////////////////////////////////////////
-                                   STORAGE
+                                   STRUCTS
     //////////////////////////////////////////////////////////////*/
 
     // cache the tick range for every position key so we can compute in-range
@@ -53,10 +53,14 @@ contract DailyEpochGauge is Ownable2Step {
         int24 upper;
     }
 
-    IPositionManagerAdapter public positionManagerAdapter;
+    /*//////////////////////////////////////////////////////////////
+                                   STORAGE
+    //////////////////////////////////////////////////////////////*/
+
     IPoolManager public immutable POOL_MANAGER;
     IERC20 public immutable BMX;
 
+    IPositionManagerAdapter public positionManagerAdapter;
     address public feeProcessor;
     address public incentiveGauge;
 
@@ -69,24 +73,14 @@ contract DailyEpochGauge is Ownable2Step {
 
     // owner -> list of position keys per pool (for batched claims)
     mapping(PoolId => mapping(address => bytes32[])) internal ownerPositions;
-    // cached latest liquidity for each position key (needed by view helpers)
-    mapping(bytes32 => uint128) internal positionLiquidity;
 
-    mapping(address => bool) public isHook;
+    // pool/position data
+    mapping(bytes32 => uint128) internal positionLiquidity;
     mapping(bytes32 => TickRange) internal positionTicks;
     mapping(bytes32 => uint256) internal positionTokenIds;
-    // cache tickSpacing per pool to avoid external lookups on unsubscribe
     mapping(PoolId => int24) internal poolTickSpacing;
 
-    // Exit snapshots for unsubscribe finalization (BMX only)
-    mapping(bytes32 => uint256) internal exitCumRplX128;
-    mapping(bytes32 => uint128) internal exitLiquidity;
-
-    // Stale-unsubscribe deferral: pack t0Stored (pool.lastUpdated at unsubscribe), tExit, and pre-removal pool liquidity
-    // Layout: [high 64 bits] = t0Stored (uint64), [next 64 bits] = tExit (uint64), [low 128 bits] = liqPre (uint128)
-    mapping(bytes32 => uint256) internal exitMeta;
-    // Base cumulative at unsubscribe time for order-independent finalize
-    mapping(bytes32 => uint256) internal exitBaseCumX128;
+    mapping(address => bool) public isHook;
 
     /*//////////////////////////////////////////////////////////////
                                    EVENTS
@@ -205,24 +199,11 @@ contract DailyEpochGauge is Ownable2Step {
         // Reconstruct the position key
         bytes32 positionKey = EfficientHashLib.hash(bytes32(tokenId), bytes32(PoolId.unwrap(pid)));
 
-        // Capture if there was a deferred unsubscribe before finalization
-        bool hadUnsubExit =
-            (exitMeta[positionKey] != 0) || (exitLiquidity[positionKey] != 0) || (exitCumRplX128[positionKey] != 0);
-
-        // Finalize any deferred/standard exit snapshot first, then sync and accrue
-        _finalizeDeferredUnsubIfAny(pid, positionKey);
+        // Sync and accrue
         _syncAndAccrue(key, pid, positionKey);
 
         // Claim and transfer
         amount = _claimRewards(positionKey, to);
-
-        // If fully unsubscribed and no pending exit debt, remove from index
-        if (
-            hadUnsubExit && positionLiquidity[positionKey] == 0 && exitLiquidity[positionKey] == 0
-                && exitMeta[positionKey] == 0
-        ) {
-            _removePosition(pid, owner, positionKey);
-        }
     }
 
     /// @notice Claim all accrued BMX (and incentive tokens) for every position an owner holds across multiple pools.
@@ -271,28 +252,14 @@ contract DailyEpochGauge is Ownable2Step {
                     continue; // Skip if token doesn't exist or ownerOf reverts
                 }
 
-                // Capture if there was a deferred unsubscribe before finalization
-                bool hadUnsubExit =
-                    (exitMeta[posKey] != 0) || (exitLiquidity[posKey] != 0) || (exitCumRplX128[posKey] != 0);
-
-                // Finalize deferred/standard exit snapshot (if any), then sync and accrue
-                _finalizeDeferredUnsubIfAny(pid, posKey);
+                // Sync and accrue
                 _syncAndAccrue(key, pid, posKey);
 
                 uint256 amt = positionRewards[posKey].claim();
                 if (amt > 0) totalBmx += amt;
 
-                // If fully unsubscribed and no pending exit debt, remove from index (swap-pop) only if unsub happened
-                if (
-                    hadUnsubExit && positionLiquidity[posKey] == 0 && exitLiquidity[posKey] == 0
-                        && exitMeta[posKey] == 0
-                ) {
-                    _removePosition(pid, owner, posKey);
-                    // Do not increment i; new element has been swapped into index i
-                } else {
-                    unchecked {
-                        ++i;
-                    }
+                unchecked {
+                    ++i;
                 }
             }
         }
@@ -344,10 +311,13 @@ contract DailyEpochGauge is Ownable2Step {
         currentStreamRates = new uint256[](len);
         rewardsPerLiquidityX128s = new uint256[](len);
         activeLiquidities = new uint128[](len);
-        for (uint256 i; i < len; ++i) {
+        for (uint256 i; i < len;) {
             currentStreamRates[i] = streamRate(pids[i]);
             rewardsPerLiquidityX128s[i] = poolRewards[pids[i]].cumulativeRplX128(address(BMX));
             activeLiquidities[i] = poolRewards[pids[i]].liquidity;
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -373,14 +343,7 @@ contract DailyEpochGauge is Ownable2Step {
                     poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper) - ps.rewardsPerLiquidityLastX128;
                 amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
             } else {
-                // Add deferred exit snapshot debt if present
-                uint256 snap = exitCumRplX128[positionKey];
-                if (snap != 0) {
-                    uint256 exitDelta = snap - ps.rewardsPerLiquidityLastX128;
-                    amount = ps.rewardsAccrued + (exitDelta * exitLiquidity[positionKey]) / FixedPoint128.Q128;
-                } else {
-                    amount = ps.rewardsAccrued;
-                }
+                amount = ps.rewardsAccrued;
             }
         } catch {
             // Position doesn't exist
@@ -401,8 +364,11 @@ contract DailyEpochGauge is Ownable2Step {
     {
         uint256 len = pids.length;
         amounts = new uint256[](len);
-        for (uint256 i; i < len; ++i) {
+        for (uint256 i; i < len;) {
             amounts[i] = _pendingRewardsOwner(pids[i], owner);
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -419,50 +385,6 @@ contract DailyEpochGauge is Ownable2Step {
         TickRange storage tr = positionTicks[positionKey];
         uint128 liq = positionLiquidity[positionKey];
         positionRewards[positionKey].accrue(liq, poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper));
-    }
-
-    /// @dev Finalize exit snapshot (if any) by crediting owed amount at stored exit cumulative
-    function _finalizeExitIfAny(PoolId, bytes32 positionKey) internal {
-        uint128 liqExit = exitLiquidity[positionKey];
-        if (liqExit == 0) return;
-        uint256 exitCum = exitCumRplX128[positionKey];
-        RangePosition.State storage ps = positionRewards[positionKey];
-        uint256 delta = exitCum - ps.rewardsPerLiquidityLastX128;
-        if (delta != 0) {
-            ps.rewardsAccrued += FullMath.mulDiv(delta, liqExit, FixedPoint128.Q128);
-            ps.rewardsPerLiquidityLastX128 = exitCum;
-        }
-        delete exitLiquidity[positionKey];
-        delete exitCumRplX128[positionKey];
-    }
-
-    /// @dev Finalize any deferred unsubscribe for a position; ensures exit snapshot is set exactly
-    function _finalizeDeferredUnsubIfAny(PoolId pid, bytes32 positionKey) internal {
-        uint256 meta = exitMeta[positionKey];
-        if (meta == 0) {
-            _finalizeExitIfAny(pid, positionKey);
-            return;
-        }
-
-        uint64 t0Stored = uint64(meta >> 192);
-        uint64 tExit = uint64(meta >> 128);
-        uint128 liqPre = uint128(meta);
-        uint256 baseCum = exitBaseCumX128[positionKey];
-        uint256 snap = baseCum;
-        if (tExit > t0Stored && liqPre != 0) {
-            uint256 amtExit = _amountOverWindow(pid, t0Stored, tExit);
-            if (amtExit != 0) {
-                uint256 dExit = (amtExit << 128) / liqPre;
-                snap += dExit;
-            }
-        }
-
-        exitCumRplX128[positionKey] = snap;
-        delete exitMeta[positionKey];
-        delete exitBaseCumX128[positionKey];
-
-        // Finalize standard exit snapshot math if liquidity was captured earlier
-        _finalizeExitIfAny(pid, positionKey);
     }
 
     /// @dev internal: remove a positionKey from indices (swap-pop) and delete liquidity cache
@@ -487,7 +409,7 @@ contract DailyEpochGauge is Ownable2Step {
         RangePool.State storage pool = poolRewards[pid];
         bytes32[] storage keys = ownerPositions[pid][owner];
         uint256 len = keys.length;
-        for (uint256 i; i < len; ++i) {
+        for (uint256 i; i < len;) {
             bytes32 k = keys[i];
             TickRange storage tr = positionTicks[k];
             RangePosition.State storage ps = positionRewards[k];
@@ -498,16 +420,8 @@ contract DailyEpochGauge is Ownable2Step {
             }
             uint128 liq = positionLiquidity[k];
             amount += ps.rewardsAccrued + FullMath.mulDiv(delta, liq, FixedPoint128.Q128);
-            // Include deferred exit snapshot debt when liquidity is zero
-            if (liq == 0) {
-                uint256 snap = exitCumRplX128[k];
-                if (snap != 0) {
-                    uint256 exitDelta;
-                    unchecked {
-                        exitDelta = snap - ps.rewardsPerLiquidityLastX128;
-                    }
-                    amount += FullMath.mulDiv(exitDelta, exitLiquidity[k], FixedPoint128.Q128);
-                }
+            unchecked {
+                ++i;
             }
         }
     }
@@ -515,6 +429,10 @@ contract DailyEpochGauge is Ownable2Step {
     /// @dev Integrate day-bucket rates over [t0, t1) and return the total amount accrued.
     function _amountOverWindow(PoolId pid, uint256 t0, uint256 t1) internal view returns (uint256 total) {
         if (t1 <= t0) return 0;
+        // Gas-bounded horizon: with N+2 scheduling and no swaps during [t0,t1),
+        // streaming will be zero beyond t0+3 days. Clamp to avoid unbounded loops.
+        uint256 maxT1 = t0 + 3 * TimeLibrary.DAY;
+        if (t1 > maxT1) t1 = maxT1;
 
         // Compute day starts once
         uint256 dayStart0 = TimeLibrary.dayStart(t0);
@@ -631,44 +549,29 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper));
     }
 
-    /// @notice Optimized unsubscribe with pre-fetched context from adapter
-    /// @dev Typed args avoid dynamic-bytes packing/decoding overhead
+    /// @notice Unsubscribe with pre-fetched context: sync -> accrue -> remove and clean up
     function notifyUnsubscribeWithContext(
-        uint256, /*tokenId*/
         bytes32 posKey,
         bytes32 poolIdRaw,
+        int24 currentTick,
+        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
         PoolId pid = PoolId.wrap(poolIdRaw);
 
-        RangePool.State storage pool = poolRewards[pid];
-        uint256 t0 = pool.lastUpdated;
-        uint256 t1 = block.timestamp;
-        if (TimeLibrary.dayStart(t0) == TimeLibrary.dayStart(t1)) {
-            // Fast path: sync now and snapshot exit cumulative
-            if (t1 > t0) {
-                uint256 amt = _amountOverWindow(pid, t0, t1);
-                if (amt > 0) {
-                    pool.creditSingleTokenNoTick(address(BMX), amt);
-                }
-            }
-            exitCumRplX128[posKey] = poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper);
-            exitLiquidity[posKey] = liquidity;
-        } else {
-            // Stale path: defer exit snapshot; record exit info compactly and queue removal
-            // Pack: [high 64]=t0 (pool.lastUpdated at unsubscribe), [next 64]=tExit (now), [low 128]=liqPre (pool.liquidity)
-            uint256 meta = (uint256(uint64(t0)) << 192) | (uint256(uint64(t1)) << 128) | uint256(pool.liquidity);
-            exitMeta[posKey] = meta;
-            exitBaseCumX128[posKey] = poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper);
-            // Always capture per-position liquidity for exit accrual during finalize
-            exitLiquidity[posKey] = liquidity;
-        }
+        // 1) Sync pool to current time at adapter-provided currentTick
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
 
-        // Soft removal and zero cached liquidity
+        // 2) Accrue rewards with pre-removal liquidity to the position
+        positionRewards[posKey].accrue(
+            uint128(liquidity), poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper)
+        );
+
+        // 3) Remove liquidity from pool accounting
         if (liquidity != 0) {
-            pool.modifyPositionLiquidity(
+            poolRewards[pid].modifyPositionLiquidity(
                 RangePool.ModifyLiquidityParams({
                     tickLower: tickLower,
                     tickUpper: tickUpper,
@@ -678,7 +581,10 @@ contract DailyEpochGauge is Ownable2Step {
                 new address[](0)
             );
         }
-        positionLiquidity[posKey] = 0;
+
+        // 4) Claim any remaining rewards and clean up indices
+        _claimRewards(posKey, ownerAddr);
+        _removePosition(pid, ownerAddr, posKey);
     }
 
     /// @notice Called by PositionManagerAdapter when a position is burned (context-based).
