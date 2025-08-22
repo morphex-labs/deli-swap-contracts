@@ -100,14 +100,6 @@ library RangePool {
         }
     }
 
-    /// @notice Credit a single token amount to the pool cumulative without tick/bitmap adjustments.
-    /// @dev Used by Daily gauge on unsubscribe where tick does not change.
-    function creditSingleTokenNoTick(State storage self, address token, uint256 amount) internal {
-        // Move pool time forward and then credit the amount pro-rata if liquidity > 0
-        self.lastUpdated = uint64(block.timestamp);
-        _accumulateToken(self, token, amount);
-    }
-
     /*//////////////////////////////////////////////////////////////
                              LIQUIDITY OPS
     //////////////////////////////////////////////////////////////*/
