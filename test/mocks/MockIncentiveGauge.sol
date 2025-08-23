@@ -54,14 +54,12 @@ contract MockIncentiveGauge is IIncentiveGauge {
     function notifyUnsubscribeWithContext(
         bytes32,
         bytes32,
-        address,
         int24,
         int24,
         uint128
     ) external override {}
 
     function notifyBurnWithContext(
-        uint256,
         bytes32,
         bytes32,
         address,
@@ -72,7 +70,6 @@ contract MockIncentiveGauge is IIncentiveGauge {
     ) external override {}
 
     function notifyModifyLiquidityWithContext(
-        uint256,
         bytes32,
         bytes32,
         int24,

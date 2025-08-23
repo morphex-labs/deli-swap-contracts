@@ -83,7 +83,6 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     ) external override {}
 
     function notifyBurnWithContext(
-        uint256,
         bytes32,
         bytes32,
         address,
@@ -94,7 +93,6 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     ) external override {}
 
     function notifyModifyLiquidityWithContext(
-        uint256,
         bytes32,
         bytes32,
         int24,

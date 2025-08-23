@@ -28,14 +28,12 @@ interface IIncentiveGauge {
     function notifyUnsubscribeWithContext(
         bytes32 positionKey,
         bytes32 poolIdRaw,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
     ) external;
 
     function notifyBurnWithContext(
-        uint256 tokenId,
         bytes32 positionKey,
         bytes32 poolIdRaw,
         address ownerAddr,
@@ -46,7 +44,6 @@ interface IIncentiveGauge {
     ) external;
 
     function notifyModifyLiquidityWithContext(
-        uint256 tokenId,
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,

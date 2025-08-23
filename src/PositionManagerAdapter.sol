@@ -225,7 +225,11 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Build context from tokenId
-    function _buildContextFromToken(uint256 tokenId) internal view returns (NotifyContext memory ctx) {
+    function _buildContextFromToken(uint256 tokenId, bool includeOwner)
+        internal
+        view
+        returns (NotifyContext memory ctx)
+    {
         IPositionHandler handler = getHandler(tokenId);
         (PoolKey memory key, PositionInfo info, uint128 liq) = handler.getPoolPositionAndLiquidity(tokenId);
         PoolId pid = key.toId();
@@ -236,9 +240,11 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         ctx.tickUpper = info.tickUpper();
         ctx.posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
         ctx.liquidity = liq;
-        ctx.owner = handler.ownerOf(tokenId);
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        if (includeOwner) {
+            ctx.owner = handler.ownerOf(tokenId);
+        }
     }
 
     /// @dev Build context from PositionInfo
@@ -299,7 +305,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @inheritdoc ISubscriber
     function notifySubscribe(uint256 tokenId, bytes memory) external override onlyAuthorizedCaller {
         // Pre-fetch context once via direct handler to avoid extra external self-calls
-        NotifyContext memory c = _buildContextFromToken(tokenId);
+        NotifyContext memory c = _buildContextFromToken(tokenId, true);
 
         dailyEpochGauge.notifySubscribeWithContext(
             tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity, c.owner
@@ -312,12 +318,12 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external override onlyAuthorizedCaller {
         // Build full context once and forward to both gauges
-        NotifyContext memory c = _buildContextFromToken(tokenId);
+        NotifyContext memory c = _buildContextFromToken(tokenId, true);
 
         dailyEpochGauge.notifyUnsubscribeWithContext(
             c.posKey, c.pidRaw, c.currentTick, c.owner, c.tickLower, c.tickUpper, c.liquidity
         );
-        incentiveGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.owner, c.tickLower, c.tickUpper, c.liquidity);
+        incentiveGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.tickLower, c.tickUpper, c.liquidity);
     }
 
     /// @inheritdoc ISubscriber
@@ -332,10 +338,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         NotifyContext memory c = _buildContextFromInfo(tokenId, info);
 
         dailyEpochGauge.notifyBurnWithContext(
-            tokenId, c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
         );
         incentiveGauge.notifyBurnWithContext(
-            tokenId, c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
         );
     }
 
@@ -346,14 +352,14 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         onlyAuthorizedCaller
     {
         // Pre-fetch context once via direct handler to avoid extra external self-calls
-        NotifyContext memory c = _buildContextFromToken(tokenId);
+        NotifyContext memory c = _buildContextFromToken(tokenId, false);
 
         // Note: liquidityAfter comes from PositionManager; we forward it as-is
         dailyEpochGauge.notifyModifyLiquidityWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
         incentiveGauge.notifyModifyLiquidityWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
     }
 }

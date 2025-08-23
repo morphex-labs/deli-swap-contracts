@@ -326,7 +326,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(label);
         // Adapter now builds and passes currentTick and owner internally. For direct call, supply owner and omit tokenId.
-        inc.notifyUnsubscribeWithContext(posKey, pidRaw, address(this), lower, upper, liq);
+        inc.notifyUnsubscribeWithContext(posKey, pidRaw, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -504,7 +504,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         // Reconstruct context (unchanged) and measure incentive segment
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(labelIncentive);
-        inc.notifyUnsubscribeWithContext(posKey, pidRaw, address(this), lower, upper, liq);
+        inc.notifyUnsubscribeWithContext(posKey, pidRaw, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }

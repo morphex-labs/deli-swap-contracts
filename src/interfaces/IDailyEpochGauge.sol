@@ -35,7 +35,6 @@ interface IDailyEpochGauge {
     ) external;
 
     function notifyBurnWithContext(
-        uint256 tokenId,
         bytes32 posKey,
         bytes32 poolIdRaw,
         address ownerAddr,
@@ -46,7 +45,6 @@ interface IDailyEpochGauge {
     ) external;
 
     function notifyModifyLiquidityWithContext(
-        uint256 tokenId,
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,

@@ -73,6 +73,9 @@ contract DailyEpochGauge is Ownable2Step {
 
     // owner -> list of position keys per pool (for batched claims)
     mapping(PoolId => mapping(address => bytes32[])) internal ownerPositions;
+    // O(1) index: per posKey -> owner and idx+1
+    mapping(bytes32 => address) internal positionOwner;
+    mapping(bytes32 => uint256) internal positionIndex;
 
     // pool/position data
     mapping(bytes32 => uint128) internal positionLiquidity;
@@ -388,8 +391,8 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @dev internal: remove a positionKey from indices (swap-pop) and delete liquidity cache
-    function _removePosition(PoolId pid, address owner, bytes32 posKey) internal {
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, owner, posKey);
+    function _removePosition(PoolId pid, bytes32 posKey) internal {
+        RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, posKey);
         delete positionTicks[posKey];
         delete positionRewards[posKey];
         delete positionTokenIds[posKey];
@@ -541,7 +544,9 @@ contract DailyEpochGauge is Ownable2Step {
         );
 
         // Index position
-        RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, posKey, liquidity);
+        RangePosition.addPosition(
+            ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, owner, posKey, liquidity
+        );
         positionTokenIds[posKey] = tokenId;
         positionTicks[posKey] = TickRange({lower: tickLower, upper: tickUpper});
 
@@ -584,12 +589,11 @@ contract DailyEpochGauge is Ownable2Step {
 
         // 4) Claim any remaining rewards and clean up indices
         _claimRewards(posKey, ownerAddr);
-        _removePosition(pid, ownerAddr, posKey);
+        _removePosition(pid, posKey);
     }
 
     /// @notice Called by PositionManagerAdapter when a position is burned (context-based).
     function notifyBurnWithContext(
-        uint256, /*tokenId*/
         bytes32 posKey,
         bytes32 poolIdRaw,
         address ownerAddr,
@@ -625,12 +629,11 @@ contract DailyEpochGauge is Ownable2Step {
         _claimRewards(posKey, ownerAddr);
 
         // 4. Clean up position data
-        _removePosition(pid, ownerAddr, posKey);
+        _removePosition(pid, posKey);
     }
 
     /// @notice Called by PositionManagerAdapter when a position's liquidity is modified (context-based).
     function notifyModifyLiquidityWithContext(
-        uint256, /*tokenId*/
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,

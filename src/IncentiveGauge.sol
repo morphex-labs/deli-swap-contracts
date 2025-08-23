@@ -87,6 +87,9 @@ contract IncentiveGauge is Ownable2Step {
 
     // Track all positionKeys owned by a user per pool
     mapping(PoolId => mapping(address => bytes32[])) internal ownerPositions;
+    // O(1) index: per posKey -> owner and idx+1
+    mapping(bytes32 => address) internal positionOwner;
+    mapping(bytes32 => uint256) internal positionIndex;
     // Cache latest liquidity for each positionKey (token-agnostic)
     mapping(bytes32 => uint128) internal positionLiquidity;
 
@@ -681,7 +684,9 @@ contract IncentiveGauge is Ownable2Step {
         PoolId pid = PoolId.wrap(poolIdRaw);
 
         // Add position and store tokenId
-        RangePosition.addPosition(ownerPositions, positionLiquidity, pid, owner, positionKey, liquidity);
+        RangePosition.addPosition(
+            ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, owner, positionKey, liquidity
+        );
 
         // save tick range and tokenId
         positionTicks[positionKey] = TickRange({lower: tickLower, upper: tickUpper});
@@ -701,7 +706,6 @@ contract IncentiveGauge is Ownable2Step {
     function notifyUnsubscribeWithContext(
         bytes32 positionKey,
         bytes32 poolIdRaw,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -723,14 +727,13 @@ contract IncentiveGauge is Ownable2Step {
         positionLiquidity[positionKey] = 0;
 
         // Remove indices and cached metadata
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
+        RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, positionKey);
         delete positionTicks[positionKey];
         delete positionTokenIds[positionKey];
     }
 
     /// @notice Called by PositionManagerAdapter when a position is burned (context-based).
     function notifyBurnWithContext(
-        uint256, /*tokenId*/
         bytes32 positionKey,
         bytes32 poolIdRaw,
         address ownerAddr,
@@ -754,14 +757,13 @@ contract IncentiveGauge is Ownable2Step {
         _claimAcrossTokens(pid, positionKey, ownerAddr, true);
 
         // Remove position tracking
-        RangePosition.removePosition(ownerPositions, positionLiquidity, pid, ownerAddr, positionKey);
+        RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, positionKey);
         delete positionTicks[positionKey];
         delete positionTokenIds[positionKey];
     }
 
     /// @notice Called by PositionManagerAdapter when a position's liquidity is modified (context-based).
     function notifyModifyLiquidityWithContext(
-        uint256, /*tokenId*/
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,
