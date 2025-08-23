@@ -210,14 +210,9 @@ contract IncentiveGauge is Ownable2Step {
             poolTokenRegistry[pid].push(rewardToken);
         }
 
-        // If token has a live schedule, top-up; otherwise activate directly
-        if (incentives[pid][rewardToken].rewardRate > 0) {
-            uint128 newRate = _topUpActive(pid, rewardToken, amount);
-            emit IncentiveActivated(pid, rewardToken, amount, newRate);
-        } else {
-            uint128 rate = _activateIntoSlot(pid, rewardToken, amount);
-            emit IncentiveActivated(pid, rewardToken, amount, rate);
-        }
+        // Upsert incentive: activate or top-up existing schedule
+        uint128 rate = _upsertIncentive(pid, rewardToken, amount);
+        emit IncentiveActivated(pid, rewardToken, amount, rate);
     }
 
     /// @notice Claim accrued token rewards for a single position.
@@ -402,35 +397,27 @@ contract IncentiveGauge is Ownable2Step {
                                INTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Top up an already-active token incentive and recompute rate
-    function _topUpActive(PoolId pid, IERC20 token, uint256 addAmount) internal returns (uint128 newRate) {
+    /// @dev Activate a token if inactive, or top-up an active token and recompute rate
+    function _upsertIncentive(PoolId pid, IERC20 token, uint256 amount) internal returns (uint128 rate) {
         IncentiveInfo storage info = incentives[pid][token];
+
+        uint256 total = amount;
         if (info.rewardRate > 0) {
+            // For active schedules, first update pool accounting, then add leftover budget
             _updatePoolByPid(pid);
+            if (block.timestamp < info.periodFinish) {
+                uint256 remainingTime = info.periodFinish - block.timestamp;
+                uint256 leftover = remainingTime * info.rewardRate;
+                if (amount <= leftover) revert DeliErrors.InsufficientIncentive();
+                total += leftover;
+            }
         }
 
-        uint256 leftover;
-        if (block.timestamp < info.periodFinish) {
-            uint256 remainingTime = info.periodFinish - block.timestamp;
-            leftover = remainingTime * info.rewardRate;
-            if (addAmount <= leftover) revert DeliErrors.InsufficientIncentive();
-        }
-        uint256 newTotal = addAmount + leftover;
-        info.rewardRate = uint128(newTotal / TimeLibrary.WEEK);
-        info.periodFinish = uint64(block.timestamp + TimeLibrary.WEEK);
-        info.lastUpdate = uint64(block.timestamp);
-        info.remaining = uint128(newTotal);
-        return info.rewardRate;
-    }
-
-    /// @dev Activate a token and initialize its schedule
-    function _activateIntoSlot(PoolId pid, IERC20 token, uint256 amount) internal returns (uint128 rate) {
-        IncentiveInfo storage info = incentives[pid][token];
-        rate = uint128(amount / TimeLibrary.WEEK);
+        rate = uint128(total / TimeLibrary.WEEK);
         info.rewardRate = rate;
         info.periodFinish = uint64(block.timestamp + TimeLibrary.WEEK);
         info.lastUpdate = uint64(block.timestamp);
-        info.remaining = uint128(amount);
+        info.remaining = uint128(total);
     }
 
     /// @dev Helper to accrue and claim for a single position across all tokens
