@@ -342,9 +342,12 @@ contract DailyEpochGauge is Ownable2Step {
 
             if (liq > 0) {
                 TickRange storage tr = positionTicks[positionKey];
-                uint256 delta =
-                    poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper) - ps.rewardsPerLiquidityLastX128;
-                amount = ps.rewardsAccrued + (delta * liq) / FixedPoint128.Q128;
+                uint256 delta;
+                unchecked {
+                    delta =
+                        poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper) - ps.rewardsPerLiquidityLastX128;
+                }
+                amount = ps.rewardsAccrued + FullMath.mulDiv(delta, liq, FixedPoint128.Q128);
             } else {
                 amount = ps.rewardsAccrued;
             }
