@@ -8,6 +8,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {PositionInfo, PositionInfoLibrary} from "v4-periphery/src/libraries/PositionInfoLibrary.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 
 import {IPositionHandler} from "../interfaces/IPositionHandler.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
@@ -45,7 +46,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
     // Track which pools use V2
     mapping(PoolId => bool) public isV2Pool;
-    
+
     // Track PoolKey for each V2 pool to support getPoolKeyFromPositionInfo
     // Uses truncated poolId (bytes25) as key to match PositionInfo storage
     mapping(bytes25 => PoolKey) public poolKeysByTruncatedId;
@@ -69,7 +70,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     event V2PositionCreated(PoolId indexed poolId, address indexed owner, uint256 tokenId);
-    event V2PositionModified(PoolId indexed poolId, address indexed owner, uint256 tokenId, int256 liquidityDelta);
+    event V2PositionModified(PoolId indexed poolId, address indexed owner, uint256 tokenId, int128 liquidityDelta);
     event V2PositionRemoved(PoolId indexed poolId, address indexed owner, uint256 tokenId);
     event PositionManagerAdapterUpdated(address newAdapter);
 
@@ -114,10 +115,10 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     /// @notice Called by DeliHookConstantProduct when liquidity is added
     function notifyAddLiquidity(PoolKey calldata poolKey, address owner, uint128 liquidityDelta) external onlyV2Hook {
         if (address(positionManagerAdapter) == address(0)) revert DeliErrors.ComponentNotDeployed();
-        
+
         PoolId poolId = poolKey.toId();
         isV2Pool[poolId] = true;
-        
+
         // Store poolKey for this pool if not already stored
         // Use truncated poolId to match PositionInfo storage format
         bytes25 truncatedPoolId = bytes25(PoolId.unwrap(poolId));
@@ -132,7 +133,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
             tokenId = _createPosition(poolKey, poolId, owner, liquidityDelta);
         } else {
             // Existing position - modify liquidity
-            _modifyPosition(poolKey, poolId, owner, tokenId, int256(uint256(liquidityDelta)));
+            _modifyPosition(poolKey, poolId, owner, tokenId, SafeCast.toInt128(liquidityDelta));
         }
     }
 
@@ -153,7 +154,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
             _burnPosition(poolKey, poolId, owner, tokenId, pos.liquidity);
         } else {
             // Partial removal - modify liquidity
-            _modifyPosition(poolKey, poolId, owner, tokenId, -int256(uint256(liquidityDelta)));
+            _modifyPosition(poolKey, poolId, owner, tokenId, -SafeCast.toInt128(liquidityDelta));
         }
     }
 
@@ -195,7 +196,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     function handlerType() external pure override returns (string memory) {
         return "V2_CONSTANT_PRODUCT";
     }
-    
+
     /// @notice Get the PoolKey for a given truncated poolId
     /// @dev Returns the stored PoolKey as a proper memory struct
     /// @param truncatedPoolId The truncated poolId (bytes25) from PositionInfo
@@ -227,7 +228,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     }
 
     /// @dev Modify an existing position's liquidity
-    function _modifyPosition(PoolKey calldata, PoolId poolId, address owner, uint256 tokenId, int256 liquidityDelta)
+    function _modifyPosition(PoolKey calldata, PoolId poolId, address owner, uint256 tokenId, int128 liquidityDelta)
         internal
     {
         SyntheticPosition storage pos = syntheticPositions[tokenId];
@@ -235,16 +236,16 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
 
         // Update stored liquidity
         if (liquidityDelta < 0) {
-            uint256 decrease = uint256(-liquidityDelta);
+            uint128 decrease = SafeCast.toUint128(-liquidityDelta);
             if (decrease > pos.liquidity) revert DeliErrors.InsufficientLiquidity();
-            pos.liquidity -= uint128(decrease);
+            pos.liquidity -= decrease;
         } else {
-            pos.liquidity += uint128(uint256(liquidityDelta));
+            pos.liquidity += SafeCast.toUint128(liquidityDelta);
         }
 
         // Notify PositionManagerAdapter (guaranteed to be set due to check in notifyAddLiquidity)
         BalanceDelta delta = BalanceDelta.wrap(0); // No fees for V2
-        positionManagerAdapter.notifyModifyLiquidity(tokenId, liquidityDelta, delta);
+        positionManagerAdapter.notifyModifyLiquidity(tokenId, int256(liquidityDelta), delta);
 
         emit V2PositionModified(poolId, owner, tokenId, liquidityDelta);
     }
