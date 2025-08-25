@@ -724,9 +724,6 @@ contract IncentiveGauge is Ownable2Step {
         }
 
         // Forfeit: clear local position state and owner index
-        positionLiquidity[positionKey] = 0;
-
-        // Remove indices and cached metadata
         RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, positionKey);
         delete positionTicks[positionKey];
         delete positionTokenIds[positionKey];
