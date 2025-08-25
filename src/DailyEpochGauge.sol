@@ -95,6 +95,7 @@ contract DailyEpochGauge is Ownable2Step {
     event FeeProcessorUpdated(address newFeeProcessor);
     event HookAuthorised(address hook, bool enabled);
     event PositionManagerAdapterUpdated(address newAdapter);
+    event ForceUnsubscribed(address indexed owner, PoolId indexed pid, bytes32 posKey);
 
     /*//////////////////////////////////////////////////////////////
                                   CONSTRUCTOR
@@ -156,6 +157,49 @@ contract DailyEpochGauge is Ownable2Step {
         if (hook == address(0)) revert DeliErrors.ZeroAddress();
         isHook[hook] = enabled;
         emit HookAuthorised(hook, enabled);
+    }
+
+    /// @notice Admin-only function to forcibly unsubscribe and clean up a position
+    /// @dev Accrues and claims rewards to the stored owner, removes internal liquidity and indices
+    /// @param posKey The position key (hash of tokenId and poolId)
+    function adminForceUnsubscribe(bytes32 posKey) external onlyOwner {
+        uint256 tokenId = positionTokenIds[posKey];
+        // Skip if already removed
+        if (tokenId == 0) return;
+
+        // Derive pool id from stored tokenId via adapter
+        (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        PoolId pid = key.toId();
+
+        // Sync pool to current time and tick
+        _syncPoolState(key, pid);
+
+        // Accrue to the position with current liquidity
+        TickRange storage tr = positionTicks[posKey];
+        uint128 liq = positionLiquidity[posKey];
+        if (liq != 0) {
+            positionRewards[posKey].accrue(liq, poolRewards[pid].rangeRplX128(address(BMX), tr.lower, tr.upper));
+        }
+
+        // Remove internal liquidity from pool accounting
+        if (liq != 0) {
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: tr.lower,
+                    tickUpper: tr.upper,
+                    liquidityDelta: -SafeCast.toInt128(uint256(liq)),
+                    tickSpacing: poolTickSpacing[pid]
+                }),
+                new address[](0)
+            );
+        }
+
+        // Claim to stored owner and clean up
+        address owner = positionOwner[posKey];
+        _claimRewards(posKey, owner);
+        _removePosition(pid, posKey);
+
+        emit ForceUnsubscribed(owner, pid, posKey);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -567,9 +611,11 @@ contract DailyEpochGauge is Ownable2Step {
         int24 tickUpper,
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[posKey] == 0) return;
 
         // 1) Sync pool to current time at adapter-provided currentTick
+        PoolId pid = PoolId.wrap(poolIdRaw);
         _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
 
         // 2) Accrue rewards with pre-removal liquidity to the position
@@ -605,9 +651,11 @@ contract DailyEpochGauge is Ownable2Step {
         int24 tickUpper,
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[posKey] == 0) return;
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
+        PoolId pid = PoolId.wrap(poolIdRaw);
         _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
 
         // 1. Accrue rewards with current liquidity
@@ -645,9 +693,11 @@ contract DailyEpochGauge is Ownable2Step {
         int256 liquidityChange,
         uint128 liquidityAfter
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[posKey] == 0) return;
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
+        PoolId pid = PoolId.wrap(poolIdRaw);
         _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
 
         // Compute liquidity before the change using a cast-safe path

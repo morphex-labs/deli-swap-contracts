@@ -116,6 +116,7 @@ contract IncentiveGauge is Ownable2Step {
     event PositionManagerAdapterUpdated(address newAdapter);
     event IncentiveActivated(PoolId indexed pid, IERC20 indexed token, uint256 amount, uint256 rate);
     event IncentiveDeactivated(PoolId indexed pid, IERC20 indexed token);
+    event ForceUnsubscribed(address indexed owner, PoolId indexed pid, bytes32 posKey);
 
     /*//////////////////////////////////////////////////////////////
                                 CONSTRUCTOR
@@ -161,6 +162,44 @@ contract IncentiveGauge is Ownable2Step {
         if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
         positionManagerAdapter = IPositionManagerAdapter(_adapter);
         emit PositionManagerAdapterUpdated(_adapter);
+    }
+
+    /// @notice Admin-only function to forcibly unsubscribe and clean up a position
+    /// @dev Accrues across all registered tokens, claims to stored owner, removes internal liquidity and indices
+    /// @param posKey The position key (hash of tokenId and poolId)
+    function adminForceUnsubscribe(bytes32 posKey) external onlyOwner {
+        // Skip if already removed
+        if (positionTokenIds[posKey] == 0) return;
+
+        // Derive pool id from stored tokenId via adapter
+        uint256 tokenId = positionTokenIds[posKey];
+        (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
+        PoolId pid = key.toId();
+
+        // Update pool to latest tick and time so accruals are up-to-date
+        _updatePoolByPid(pid);
+
+        // Accrue across all tokens with current liquidity
+        TickRange storage tr = positionTicks[posKey];
+        uint128 liq = positionLiquidity[posKey];
+
+        _accrueAcrossTokens(pid, posKey, tr.lower, tr.upper, liq);
+
+        // Remove liquidity from pool accounting
+        if (liq != 0) {
+            _applyLiquidityDeltaByPid(pid, tr.lower, tr.upper, -SafeCast.toInt128(uint256(liq)), false);
+        }
+
+        // Claim all tokens to stored owner and clear per-token state
+        address owner = positionOwner[posKey];
+        _claimAcrossTokens(pid, posKey, owner, true);
+
+        // Remove indices and caches
+        RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, posKey);
+        delete positionTicks[posKey];
+        delete positionTokenIds[posKey];
+
+        emit ForceUnsubscribed(owner, pid, posKey);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -710,9 +749,11 @@ contract IncentiveGauge is Ownable2Step {
         int24 tickUpper,
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[positionKey] == 0) return;
 
         // Apply removal of liquidity in pool accounting
+        PoolId pid = PoolId.wrap(poolIdRaw);
         if (liquidity != 0) {
             _applyLiquidityDeltaByPid(
                 pid,
@@ -739,9 +780,11 @@ contract IncentiveGauge is Ownable2Step {
         int24 tickUpper,
         uint128 liquidity
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[positionKey] == 0) return;
 
         // Update pool state once (batched) using adapter-provided tick
+        PoolId pid = PoolId.wrap(poolIdRaw);
         _updatePool(pid, currentTick);
 
         // Batch accrue across all tokens, remove once
@@ -751,6 +794,7 @@ contract IncentiveGauge is Ownable2Step {
             _applyLiquidityDeltaByPid(pid, tickLower, tickUpper, -SafeCast.toInt128(uint256(liquidity)), false);
         }
 
+        // Claim rewards to stored owner
         _claimAcrossTokens(pid, positionKey, ownerAddr, true);
 
         // Remove position tracking
@@ -769,9 +813,11 @@ contract IncentiveGauge is Ownable2Step {
         int256 liquidityChange,
         uint128 liquidityAfter
     ) external onlyPositionManagerAdapter {
-        PoolId pid = PoolId.wrap(poolIdRaw);
+        // If already not tracked (force-unsubscribed) but still called, return
+        if (positionTokenIds[positionKey] == 0) return;
 
         // Always update cached liquidity
+        PoolId pid = PoolId.wrap(poolIdRaw);
         positionLiquidity[positionKey] = liquidityAfter;
 
         // Batch update pool once using adapter-provided tick
