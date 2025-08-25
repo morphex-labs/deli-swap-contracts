@@ -217,9 +217,10 @@ contract DeliHook is Ownable2Step, BaseHook {
         bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
 
         // Determine absolute amount of the specified token (v4 deltas are keyed to the specified token)
-        uint256 absAmountSpecified = exactInput
-            ? uint256(uint128(uint256(-params.amountSpecified)))
-            : uint256(uint128(uint256(params.amountSpecified)));
+        uint256 absAmountSpecified;
+        unchecked {
+            absAmountSpecified = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+        }
 
         // Get the current sqrt price and LP fee for this pool from PoolManager
         (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
@@ -227,7 +228,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Compute base fee in specified-token units
         // We first denominate the fee in the specified token, then convert to the
         // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
-        uint256 baseFeeSpecified = (absAmountSpecified * uint256(poolFee)) / 1_000_000;
+        uint256 baseFeeSpecified = FullMath.mulDiv(absAmountSpecified, uint256(poolFee), 1_000_000);
 
         // Identify fee token: always collect in wBLT
         bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
