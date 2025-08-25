@@ -416,11 +416,11 @@ contract IncentiveGauge is Ownable2Step {
             }
         }
 
-        rate = uint128(total / TimeLibrary.WEEK);
+        rate = SafeCast.toUint128(total / TimeLibrary.WEEK);
         info.rewardRate = rate;
         info.periodFinish = uint64(block.timestamp + TimeLibrary.WEEK);
         info.lastUpdate = uint64(block.timestamp);
-        info.remaining = uint128(total);
+        info.remaining = SafeCast.toUint128(total);
     }
 
     /// @dev Helper to accrue and claim for a single position across all tokens
