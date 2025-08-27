@@ -165,9 +165,11 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     /// @notice Admin-only function to forcibly unsubscribe and clean up a position
-    /// @dev Accrues across all registered tokens, claims to stored owner, removes internal liquidity and indices
+    /// @dev Accrues across all registered tokens, removes internal liquidity and indices.
+    ///      Optionally claims accrued rewards to the stored owner; otherwise forfeits them.
     /// @param posKey The position key (hash of tokenId and poolId)
-    function adminForceUnsubscribe(bytes32 posKey) external onlyOwner {
+    /// @param claimToOwner If true, transfer accrued rewards to the stored owner; if false, forfeit and clear.
+    function adminForceUnsubscribe(bytes32 posKey, bool claimToOwner) external onlyOwner {
         // Skip if already removed
         if (positionTokenIds[posKey] == 0) return;
 
@@ -190,9 +192,11 @@ contract IncentiveGauge is Ownable2Step {
             _applyLiquidityDeltaByPid(pid, tr.lower, tr.upper, -SafeCast.toInt128(uint256(liq)), false);
         }
 
-        // Claim all tokens to stored owner and clear per-token state
         address owner = positionOwner[posKey];
-        _claimAcrossTokens(pid, posKey, owner, true);
+        if (claimToOwner) {
+            // Claim all tokens to stored owner and clear per-token state
+            _claimAcrossTokens(pid, posKey, owner, true);
+        }
 
         // Remove indices and caches
         RangePosition.removePosition(ownerPositions, positionLiquidity, positionOwner, positionIndex, pid, posKey);
