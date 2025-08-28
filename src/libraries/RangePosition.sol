@@ -55,37 +55,49 @@ library RangePosition {
     // both gauges need. Keeping them here avoids code duplication.
 
     /// @notice Add a new positionKey to the owner index if it isn’t tracked yet and cache its liquidity.
+    ///         Uses stored owner and index (idx+1; 0 means absent) for O(1) removals.
     function addPosition(
         mapping(PoolId => mapping(address => bytes32[])) storage ownerPositions,
         mapping(bytes32 => uint128) storage liqCache,
+        mapping(bytes32 => address) storage positionOwner,
+        mapping(bytes32 => uint256) storage positionIndex,
         PoolId pid,
         address owner,
         bytes32 posKey,
         uint128 liquidity
     ) internal {
         if (liqCache[posKey] == 0) {
-            ownerPositions[pid][owner].push(posKey);
+            bytes32[] storage arr = ownerPositions[pid][owner];
+            arr.push(posKey);
+            positionOwner[posKey] = owner;
+            positionIndex[posKey] = arr.length; // store idx+1
         }
         liqCache[posKey] = liquidity;
     }
 
     /// @notice Remove a positionKey from owner index and delete its liquidity cache.
+    ///         O(1) swap-pop removal using stored owner and index; requires presence.
     function removePosition(
         mapping(PoolId => mapping(address => bytes32[])) storage ownerPositions,
         mapping(bytes32 => uint128) storage liqCache,
+        mapping(bytes32 => address) storage positionOwner,
+        mapping(bytes32 => uint256) storage positionIndex,
         PoolId pid,
-        address owner,
         bytes32 posKey
     ) internal {
         delete liqCache[posKey];
-        bytes32[] storage arr = ownerPositions[pid][owner];
-        uint256 len = arr.length;
-        for (uint256 i; i < len; ++i) {
-            if (arr[i] == posKey) {
-                arr[i] = arr[len - 1];
-                arr.pop();
-                break;
-            }
+        address storedOwner = positionOwner[posKey];
+        bytes32[] storage arr = ownerPositions[pid][storedOwner];
+        uint256 idx = positionIndex[posKey] - 1;
+        uint256 lastIndex = arr.length - 1;
+
+        if (idx != lastIndex) {
+            bytes32 lastKey = arr[lastIndex];
+            arr[idx] = lastKey;
+            positionIndex[lastKey] = idx + 1;
         }
+        arr.pop();
+        delete positionIndex[posKey];
+        delete positionOwner[posKey];
     }
 }

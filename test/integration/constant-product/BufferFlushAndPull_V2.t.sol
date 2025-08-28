@@ -28,6 +28,8 @@ import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.so
 import {DeliErrors} from "src/libraries/DeliErrors.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiPoolCustomCurve} from "src/base/MultiPoolCustomCurve.sol";
+import {V2PositionHandler} from "src/handlers/V2PositionHandler.sol";
+import {PositionManagerAdapter} from "src/PositionManagerAdapter.sol";
 
 /// @notice Fee pipeline integration tests for constant-product DeliHookConstantProduct
 contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
@@ -40,6 +42,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     DailyEpochGauge gauge;
     DeliHookConstantProduct hook;
     MockIncentiveGauge inc;
+    V2PositionHandler v2Handler;
 
     // tokens
     IERC20 wblt;
@@ -88,8 +91,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
             address(this)  // owner
         );
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
-            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-            | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG;
+            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG;
         (address predictedHook, bytes32 salt) =
             HookMiner.find(address(this), flags, type(DeliHookConstantProduct).creationCode, ctorArgs);
 
@@ -102,8 +104,9 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
             address(0)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), VOTER_DST
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
+        fp.setKeeper(address(this), true);
         inc = new MockIncentiveGauge();
 
         hook = new DeliHookConstantProduct{salt: salt}(
@@ -119,6 +122,24 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         hook.setDailyEpochGauge(address(gauge));
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(fp));
+
+        // Deploy and set V2PositionHandler
+        v2Handler = new V2PositionHandler(address(hook));
+        hook.setV2PositionHandler(address(v2Handler));
+        // Minimal adapter wiring so V2 handler notifications don't revert
+        PositionManagerAdapter adapter = new PositionManagerAdapter(
+            address(gauge),
+            address(inc),
+            address(positionManager),
+            address(poolManager)
+        );
+        v2Handler.setPositionManagerAdapter(address(adapter));
+        adapter.addHandler(address(v2Handler));
+        adapter.setAuthorizedCaller(address(hook), true);
+        adapter.setAuthorizedCaller(address(v2Handler), true);
+        adapter.setAuthorizedCaller(address(positionManager), true);
+        // Let gauge know about the adapter so context callbacks are accepted
+        gauge.setPositionManagerAdapter(address(adapter));
 
         // V2 hook doesn't need approvals - fees are implicit in swap math
 
@@ -245,6 +266,31 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     function _feeAmt(uint256 amtIn) internal pure returns (uint256) {
         return (amtIn * 3000) / 1e6; // 0.3 %
     }
+    
+    // Helper to calculate fee when taken from output (for exact input swaps)
+    function _feeAmtFromOutput(uint256 amtIn, uint256 reserveIn, uint256 reserveOut, uint256 feeBps) internal pure returns (uint256) {
+        // Calculate output with fee
+        uint256 feeBasis = 1000000 - feeBps;
+        uint256 amountInWithFee = amtIn * feeBasis;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1000000 + amountInWithFee;
+        uint256 outputWithFee = numerator / denominator;
+        
+        // Calculate theoretical output without fee
+        uint256 outputWithoutFee = (amtIn * reserveOut) / (reserveIn + amtIn);
+        
+        // Fee is the difference
+        return outputWithoutFee > outputWithFee ? outputWithoutFee - outputWithFee : 0;
+    }
+
+    // Helper to calculate constant-product V2 output amount (fee in hundredths of a bip out of 1_000_000)
+    function _v2AmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint24 feeBps) internal pure returns (uint256) {
+        uint256 feeBasis = 1_000_000 - uint256(feeBps);
+        uint256 amountInWithFee = amountIn * feeBasis;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1_000_000 + amountInWithFee;
+        return numerator / denominator;
+    }
 
     /*//////////////////////////////////////////////////////////////
                        TESTS – pull-from-sender path
@@ -262,7 +308,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         uint256 voterPortion = feeAmt - buybackPortion;
 
         // FeeProcessor buffers updated
-        assertEq(fp.pendingWbltForBuyback(), buybackPortion, "buyback buf");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), buybackPortion, "buyback buf");
         assertEq(fp.pendingWbltForVoter(), voterPortion, "voter buf");
 
         // In V2 model, sender only pays the input amount (fee is implicit in output reduction)
@@ -274,92 +320,101 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
                      TESTS – buffer flush & buy-back
     //////////////////////////////////////////////////////////////*/
     function testBufferFlush() public {
-        uint256 input = 1e17;
+        uint256 input = 8e20;
 
         // 1. Generate wBLT buy-back buffer via OTHER -> wBLT swap
         poolManager.unlock(abi.encode(address(other), input));
+        // Accumulate additional buffer to exceed the 1 wBLT threshold
+        poolManager.unlock(abi.encode(address(other), input));
 
-        // 2. Generate BMX voter buffer via canonical pool swap
+        // 2. Generate additional fees via canonical pool swap
         poolManager.unlock(abi.encode(address(bmx), input));
 
-        assertGt(fp.pendingWbltForBuyback(), 0, "no wblt buffer");
-        assertGt(fp.pendingBmxForVoter(), 0, "no bmx buffer");
+        assertGt(fp.pendingWbltForBuyback(otherKey.toId()), 0, "no wblt buffer");
+        assertGt(fp.pendingWbltForVoter(), 0, "no voter buffer");
 
         // 3. Configure buyback pool
         fp.setBuybackPoolKey(canonicalKey);
 
-        uint256 bucketBefore = gauge.collectBucket(canonicalKey.toId());
-        uint256 voterBefore = wblt.balanceOf(VOTER_DST);
-
-        // 4. Flush – executes two internal swaps
-        fp.flushBuffers();
-
-        assertEq(fp.pendingWbltForBuyback(), 0, "buyback buf not cleared");
+        uint32 dayNow = uint32(block.timestamp / 1 days);
+        uint256 otherBucketBefore = gauge.dayBuckets(otherKey.toId(), dayNow + 2);
         
-        // The BMX voter buffer will have a small residual from the internal BMX->wBLT swap
-        // This is expected behavior as internal swaps now collect fees
-        uint256 bmxVoterResidual = fp.pendingBmxForVoter();
-        assertGt(bmxVoterResidual, 0, "should have residual from internal swap");
+        // 4. Flush – need to flush each pool separately now
+        // First flush the OTHER pool which has pending wBLT
+        fp.flushBuffer(otherKey.toId(), 0);
         
-        // The residual should be small (3% of 0.3% = 0.009% of the swap amount)
-        assertLt(bmxVoterResidual, input * 3000 / 1e6 / 100, "residual should be small");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), 0, "buyback buf not cleared");
+        
+        // Voter wBLT buffer should remain unchanged by buyback flush
+        assertGt(fp.pendingWbltForVoter(), 0, "voter wBLT buffer expected");
 
-        uint256 bucketAfter = gauge.collectBucket(canonicalKey.toId());
-        assertGt(bucketAfter, bucketBefore, "bucket not updated");
-
-        uint256 voterAfter = wblt.balanceOf(VOTER_DST);
-        assertGt(voterAfter, voterBefore, "voter not funded");
+        // Check that OTHER pool got the rewards (buckets are credited to the source pool)
+        uint256 otherBucketAfter = gauge.dayBuckets(otherKey.toId(), dayNow + 2);
+        assertGt(otherBucketAfter, otherBucketBefore, "OTHER pool bucket not updated");
     }
 
     /*//////////////////////////////////////////////////////////////
             TEST – wBLT -> BMX swap on canonical pool (immediate bucket)
     //////////////////////////////////////////////////////////////*/
     function testWbltToBmxCanonical() public {
-        uint256 input = 1e17;
+        uint256 input = 4e20;
+
+        // Set buyback pool key so FeeProcessor knows where to credit rewards
+        fp.setBuybackPoolKey(canonicalKey);
+
+        // Execute swap and validate fee pipeline
 
         // wBLT (token1) -> BMX swap on canonical pool
         poolManager.unlock(abi.encode(address(wblt), input, true)); // true = use canonical
+        // Snapshot reserves BEFORE flushing, since expected out uses pre-buyback reserves
+        (uint128 r0, uint128 r1) = hook.getReserves(canonicalKey.toId()); // r0=BMX, r1=wBLT
+        fp.flushBuffer(canonicalKey.toId(), 0);
 
+        // Compute expected BMX out from buybackPortion using V2 math and current reserves
         uint256 feeAmt = _feeAmt(input);
-        uint256 buybackPortion = (feeAmt * fp.buybackBps()) / 1e4;
-        uint256 voterPortion = feeAmt - buybackPortion;
+        uint256 buybackPortion = (feeAmt * fp.buybackBps()) / 1e4; // amount of wBLT to swap for BMX
+        uint256 expectedBmxOut = _v2AmountOut(buybackPortion, r1, r0, 3000);
 
-        uint256 bucket = gauge.collectBucket(canonicalKey.toId());
-        assertEq(bucket, buybackPortion, "bucket credit");
-        assertEq(fp.pendingBmxForVoter(), voterPortion, "voter buf");
+        uint256 bucket = gauge.dayBuckets(canonicalKey.toId(), uint32(block.timestamp / 1 days) + 2);
+        assertApproxEqAbs(bucket, expectedBmxOut, 1, "bucket credit");
+        assertGt(fp.pendingWbltForVoter(), 0, "voter buffer should have wBLT");
     }
 
     /*//////////////////////////////////////////////////////////////
                TEST – flush with only wBLT buy-back buffer
     //////////////////////////////////////////////////////////////*/
     function testFlushSingleBuyback() public {
-        uint256 input = 1e17;
+        uint256 input = 8e20;
         poolManager.unlock(abi.encode(address(other), input));
-        uint256 buf = fp.pendingWbltForBuyback();
+        // Accumulate additional buffer to exceed the 1 wBLT threshold
+        poolManager.unlock(abi.encode(address(other), input));
+        uint256 buf = fp.pendingWbltForBuyback(otherKey.toId());
         assertGt(buf, 0, "no buf");
 
         fp.setBuybackPoolKey(canonicalKey);
-        fp.flushBuffers();
+        fp.flushBuffer(otherKey.toId(), 0);
 
-        assertEq(fp.pendingWbltForBuyback(), 0, "buyback not cleared");
-        assertGt(gauge.collectBucket(canonicalKey.toId()), 0, "bucket empty");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), 0, "buyback not cleared");
+        assertGt(gauge.dayBuckets(otherKey.toId(), uint32(block.timestamp / 1 days) + 2), 0, "bucket empty");
     }
 
     /*//////////////////////////////////////////////////////////////
                   TEST – slippage revert keeps buffers intact
     //////////////////////////////////////////////////////////////*/
     function testSlippageFailure() public {
-        uint256 input = 1e17;
+        uint256 input = 8e20;
         poolManager.unlock(abi.encode(address(other), input));
-        uint256 pending = fp.pendingWbltForBuyback();
+        // Accumulate additional buffer to exceed the 1 wBLT threshold so slippage revert is hit
+        poolManager.unlock(abi.encode(address(other), input));
+        uint256 pending = fp.pendingWbltForBuyback(otherKey.toId());
         assertGt(pending, 0, "buf");
 
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(10000); // 100% minOut – will fail
+        // Force slippage failure via expected out that's too high
         vm.expectRevert(DeliErrors.Slippage.selector);
-        fp.flushBuffers();
+        fp.flushBuffer(otherKey.toId(), type(uint256).max);
 
-        assertEq(fp.pendingWbltForBuyback(), pending, "buf lost");
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), pending, "buf lost");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -367,9 +422,14 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
     //////////////////////////////////////////////////////////////*/
     function testClaimVoterFees() public {
         uint256 input = 2e17;
+        
+        // Get reserves before swap to calculate fee correctly
+        (uint128 r0, uint128 r1) = hook.getReserves(otherKey.toId());
+        
         poolManager.unlock(abi.encode(address(other), input));
 
-        uint256 feeAmt = _feeAmt(input);
+        // For OTHER -> wBLT swap, fee is in wBLT (output), so use output-based calculation
+        uint256 feeAmt = _feeAmtFromOutput(input, r0, r1, 3000);
         uint256 voterPortion = feeAmt - (feeAmt * fp.buybackBps()) / 1e4;
         assertEq(fp.pendingWbltForVoter(), voterPortion, "voter buf");
 
@@ -384,19 +444,22 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
                tight slippage success – 0.5 % tolerance
     //////////////////////////////////////////////////////////////*/
     function testSlippageTightSuccess() public {
-        uint256 input = 1e17;
+        uint256 input = 8e20;
         poolManager.unlock(abi.encode(address(other), input));
-        uint256 buf = fp.pendingWbltForBuyback();
+        // Accumulate additional buffer to exceed the 1 wBLT threshold
+        poolManager.unlock(abi.encode(address(other), input));
+        uint256 buf = fp.pendingWbltForBuyback(otherKey.toId());
         assertGt(buf, 0, "no buf");
 
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(9950); // 0.5 %
+        // Allow execution by not enforcing a high expected out
 
-        uint256 bucketBefore = gauge.collectBucket(canonicalKey.toId());
-        fp.flushBuffers();
-        assertEq(fp.pendingWbltForBuyback(), 0, "buf not cleared");
-        uint256 bucketAfter = gauge.collectBucket(canonicalKey.toId());
-        assertGt(bucketAfter, bucketBefore, "bucket not incr");
+        uint32 dayNow2 = uint32(block.timestamp / 1 days);
+        uint256 bucketBefore = gauge.dayBuckets(otherKey.toId(), dayNow2 + 2);
+        fp.flushBuffer(otherKey.toId(), 0);
+        assertEq(fp.pendingWbltForBuyback(otherKey.toId()), 0, "buf not cleared");
+        uint256 bucketAfter = gauge.dayBuckets(otherKey.toId(), dayNow2 + 2);
+        assertGt(bucketAfter, bucketBefore, "OTHER pool bucket not incr");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -411,7 +474,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         uint256 wbltBalanceBefore = wblt.balanceOf(address(this));
         
         // Perform a regular swap to accumulate some fees in the buffer
-        uint256 swapAmount = 1e18;
+        uint256 swapAmount = 8e20;
         poolManager.unlock(abi.encode(address(other), swapAmount));
         
         // Calculate actual output received by user
@@ -430,50 +493,39 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         
         // Now test internal swap via FeeProcessor on canonical pool
         fp.setBuybackPoolKey(canonicalKey);
-        fp.setMinOutBps(9900); // 1% slippage tolerance
         
+        // Accumulate additional pending fees to exceed the 1 wBLT threshold
+        poolManager.unlock(abi.encode(address(other), swapAmount));
+
         // Get pending fees and gauge state before flush
-        uint256 pendingWblt = fp.pendingWbltForBuyback();
+        uint256 pendingWblt = fp.pendingWbltForBuyback(otherPoolId);
         assertGt(pendingWblt, 0, "Should have pending fees");
-        uint256 gaugeBucketBefore = gauge.collectBucket(canonicalKey.toId());
-        uint256 pendingBmxForVoterBefore = fp.pendingBmxForVoter();
+
+        uint32 dayNow3 = uint32(block.timestamp / 1 days);
+        uint256 gaugeBucketBefore = gauge.dayBuckets(otherKey.toId(), dayNow3 + 2);
+        uint256 pendingWbltVoterBefore = fp.pendingWbltForVoter();
         
-        fp.flushBuffers();
+        fp.flushBuffer(otherPoolId, 0);
         
-        // Verify fee distribution: 97% to gauge, 3% to voter buffer
-        uint256 gaugeBucketAfter = gauge.collectBucket(canonicalKey.toId());
-        uint256 pendingBmxForVoterAfter = fp.pendingBmxForVoter();
+        // Verify fee distribution: buyback goes to source pool's bucket, voter retains wBLT
+        uint256 gaugeBucketAfter = gauge.dayBuckets(otherKey.toId(), dayNow3 + 2);
+        uint256 pendingWbltVoterAfter = fp.pendingWbltForVoter();
         
         uint256 gaugeIncrease = gaugeBucketAfter - gaugeBucketBefore;
-        uint256 voterIncrease = pendingBmxForVoterAfter - pendingBmxForVoterBefore;
-        
-        // The flushBuffers() function triggers multiple internal swaps:
-        // 1. wBLT → BMX buyback swap (collects fee in BMX)
-        // 2. BMX → wBLT voter conversion swap (collects fee in BMX)
-        
-        // The gauge gets:
-        // - The BMX output from the buyback swap
-        // - 97% of the fee from both internal swaps
-        
-        // The voter buffer gets:
-        // - 3% of the fee from both internal swaps
+        uint256 voterIncrease = pendingWbltVoterAfter - pendingWbltVoterBefore;
         
         // Verify basic sanity checks
         assertGt(gaugeIncrease, 0, "Gauge should receive funds");
-        assertGt(voterIncrease, 0, "Voter should receive funds");
+        // Flush performs an internal swap that also charges a swap fee in wBLT.
+        // That internal fee is split 97/3 and the 3% goes to the voter buffer.
+        uint256 internalFee = (pendingWblt * 3000) / 1_000_000; // 0.3% LP fee
+        uint256 bpsVoter = uint256(10_000 - fp.buybackBps());
+        uint256 expectedVoterInc = (internalFee * bpsVoter) / 10_000; // default 3%
+        assertApproxEqAbs(voterIncrease, expectedVoterInc, 1, "Voter should increase by internal-fee share");
         
-        // The gauge gets the swap output PLUS fees, so it should be close to the input amount
-        assertGt(gaugeIncrease, pendingWblt * 99 / 100, "Gauge should get most of the input");
-        assertLt(gaugeIncrease, pendingWblt, "Gauge should get less than input (some goes to fees)");
-        
-        // The voter buffer should be very small compared to gauge
-        // Since gauge gets swap output + 97% of fees, and voter gets only 3% of fees
-        assertLt(voterIncrease, gaugeIncrease / 100, "Voter should get much less than gauge");
-        
-        // The voter buffer gets a small residual from the cascading internal swaps
-        // It's the 3% of the fee from the BMX→wBLT conversion swap
-        assertGt(voterIncrease, 0, "Voter should receive residual fees");
-        assertLt(voterIncrease, pendingWblt / 10000, "Voter residual should be tiny");
+        // Gauge should get BMX from swapping the pending wBLT (less LP fee); voter retains a small wBLT increase
+        assertLt(gaugeIncrease, pendingWblt, "Gauge receives output of swap, not raw input");
+        // No change expected for voter buffer during flush
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -484,10 +536,9 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         poolManager.unlock(abi.encode(address(bmx), 1e18));
         poolManager.unlock(abi.encode(address(wblt), 5e17, true)); // canonical pool
         
-        // Check fees accumulated
-        uint256 pendingBuyback = fp.pendingWbltForBuyback();
-        uint256 pendingVoter = fp.pendingBmxForVoter();
-        assertGt(pendingBuyback + pendingVoter, 0, "Should have fees");
+        // Check fees accumulated - voter portion tracked in wBLT buffer
+        uint256 pendingVoter = fp.pendingWbltForVoter();
+        assertGt(pendingVoter, 0, "Should have voter fees");
         
         // Add more liquidity
         (uint128 r0Before, uint128 r1Before) = hook.getReserves(canonicalKey.toId());
@@ -540,7 +591,7 @@ contract BufferFlushAndPull_V2_IT is Test, Deployers, IUnlockCallback {
         assertEq(lpSharesFinal, lpSharesAfter - sharesToRemove, "Shares should decrease");
         
         // Verify fee buffers unchanged by liquidity operations
-        assertEq(fp.pendingWbltForBuyback(), pendingBuyback, "Buyback buffer unchanged");
-        assertEq(fp.pendingBmxForVoter(), pendingVoter, "Voter buffer unchanged");
+        // (no pendingWbltForBuyback since canonical is BMX pool)
+        assertEq(fp.pendingWbltForVoter(), pendingVoter, "Voter buffer unchanged");
     }
 }

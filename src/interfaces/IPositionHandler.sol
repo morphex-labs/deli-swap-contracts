@@ -14,20 +14,16 @@ interface IPositionHandler {
     /// @param tokenId The position token ID to check
     /// @return True if this handler manages the tokenId
     function handlesTokenId(uint256 tokenId) external view returns (bool);
-    
-    /// @notice Get pool and position info for a tokenId
+
+    /// @notice Get pool, position info, and current liquidity in a single call
     /// @param tokenId The position token ID
     /// @return key The pool key
     /// @return info The position info (packed with tick ranges)
-    function getPoolAndPositionInfo(uint256 tokenId) 
-        external 
-        view 
-        returns (PoolKey memory key, PositionInfo info);
-    
-    /// @notice Get the current liquidity of a position
-    /// @param tokenId The position token ID
-    /// @return The current liquidity amount
-    function getPositionLiquidity(uint256 tokenId) external view returns (uint128);
+    /// @return liquidity The current liquidity amount
+    function getPoolPositionAndLiquidity(uint256 tokenId)
+        external
+        view
+        returns (PoolKey memory key, PositionInfo info, uint128 liquidity);
     
     /// @notice Get the owner of a position
     /// @param tokenId The position token ID

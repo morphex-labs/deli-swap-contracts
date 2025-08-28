@@ -36,6 +36,7 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {ISubscriber} from "v4-periphery/src/interfaces/ISubscriber.sol";
+import {TimeLibrary} from "src/libraries/TimeLibrary.sol";
 
 contract Token is ERC20 {
     constructor(string memory s) ERC20(s, s) {
@@ -97,8 +98,7 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
             address(this)  // owner
         );
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
-            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-            | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG;
+            | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG;
         (address predictedHook, bytes32 salt) =
             HookMiner.find(address(this), flags, type(DeliHookConstantProduct).creationCode, ctorArgs);
 
@@ -124,7 +124,7 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
             address(inc)
         );
         fp = new FeeProcessor(
-            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)), address(0xDEAD)
+            poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge))
         );
 
         hook.setFeeProcessor(address(fp));
@@ -133,14 +133,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         gauge.setFeeProcessor(address(fp));
         
         // Deploy PositionManagerAdapter and V2PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v2Handler = new V2PositionHandler(address(hook));
         
         // Register V2 handler and wire up the adapter
         adapter.addHandler(address(v2Handler));
         adapter.setAuthorizedCaller(address(hook), true);
         adapter.setAuthorizedCaller(address(v2Handler), true); // V2Handler needs to call adapter
-        adapter.setPositionManager(address(positionManager)); // Needed for IPoolKeys lookup
+        adapter.setAuthorizedCaller(address(positionManager), true); // allow PM calls if any
         
         // Set the V2 handler in the hook
         hook.setV2PositionHandler(address(v2Handler));
@@ -243,13 +243,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
                        Helper to activate stream
     //////////////////////////////////////////////////////////////*/
     function _activateStream() internal {
-        // Day 0 initialise (bucket queued, streamRate 0)
-        gauge.rollIfNeeded(pid);
-        (, uint64 end0,,,) = gauge.epochInfo(pid);
-        // fast-forward two days so streamRate becomes active
-        vm.warp(uint256(end0) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // Day 0 info (bucket queued, streamRate 0)
+        uint256 end0 = TimeLibrary.dayNext(block.timestamp);
+        // fast-forward to Day2 so streamRate becomes active
+        vm.warp(uint256(end0) + 1 days + 1);
         require(gauge.streamRate(pid) > 0, "stream inactive");
+        // Anchor accumulator at activation to avoid drift in expectations
+        vm.prank(address(hook));
+        gauge.pokePool(key);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -281,9 +282,7 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         require(activeLiquidity > 0, "No active liquidity");
         
         // Check if Alice has pending rewards before claiming
-        bytes32 posKeyA = keccak256(abi.encode(alice, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posA), pid));
-        uint128 liqA = v2Handler.getPositionLiquidity(posA);
-        uint256 pendingA = gauge.pendingRewards(posKeyA, liqA, pid);
+        uint256 pendingA = gauge.pendingRewardsByTokenId(posA);
         require(pendingA > 0, "No pending rewards for Alice");
 
         PoolId[] memory arr = new PoolId[](1);
@@ -297,42 +296,27 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
 
     /// @notice Verifies correct streamRate pipeline and accrual over multiple epoch rolls.
     function testMultiDayStreaming() public {
-        // Day0 – initialise epoch (bucket queued, streamRate = 0)
-        gauge.rollIfNeeded(pid);
-
-        (, uint64 day0End,,,) = gauge.epochInfo(pid);
+        // Day0 – epoch (bucket queued, streamRate = 0)
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
 
         // --------------------------------------------------
-        // Day1: streamRate still 0, queuedStreamRate populated
+        // Day1: streamRate still 0
         // --------------------------------------------------
         vm.warp(uint256(day0End) + 1); // just into Day1
-        gauge.rollIfNeeded(pid);
 
-        (,, uint128 srDay1, uint128 nextSrDay1, uint128 queuedSrDay1) = gauge.epochInfo(pid);
-        assertEq(srDay1, 0, "Day1 streamRate should be zero");
-        assertEq(nextSrDay1, 0, "Day1 nextStreamRate should be zero");
-        assertGt(queuedSrDay1, 0, "queuedStreamRate not set");
+        // On Day1, stream rate still 0
+        assertEq(gauge.streamRate(pid), 0, "Day1 streamRate should be zero");
 
-        uint256 expectedRate = uint256(queuedSrDay1);
+        // Expected per-second rate is bucket/86400 which will activate on Day2
+        uint256 expectedRate = (1000 ether) / uint256(1 days);
 
         // --------------------------------------------------
-        // Day2: still no streaming, nextStreamRate equals queued
+        // Day2: streaming becomes active
         // --------------------------------------------------
         vm.warp(uint256(day0End) + 1 days + 1);
-        gauge.rollIfNeeded(pid);
 
-        (,, uint128 srDay2, uint128 nextSrDay2,) = gauge.epochInfo(pid);
-        assertEq(srDay2, 0, "Day2 streamRate should be zero");
-        assertApproxEqAbs(nextSrDay2, expectedRate, 1, "Day2 nextStreamRate mismatch");
-
-        // --------------------------------------------------
-        // Day3: streaming becomes active
-        // --------------------------------------------------
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
-
-        uint256 srDay3 = gauge.streamRate(pid);
-        assertApproxEqAbs(srDay3, expectedRate, 1, "Day3 streamRate mismatch");
+        uint256 srDay2 = gauge.streamRate(pid);
+        assertApproxEqAbs(srDay2, expectedRate, 1, "Day2 streamRate mismatch");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -346,18 +330,14 @@ contract GaugeStream_V2Curve_IT is Test, Deployers, IUnlockCallback {
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        // compute pos keys - V2 positions are full-range (with tick spacing 1)
-        bytes32 posKeyA = keccak256(abi.encode(alice, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posA), pid));
-        bytes32 posKeyB = keccak256(abi.encode(bob, TickMath.MIN_TICK, TickMath.MAX_TICK, bytes32(posB), pid));
-
         // Get liquidity from V2PositionHandler synthetic positions
-        uint128 liqA = v2Handler.getPositionLiquidity(posA);
-        uint128 liqB = v2Handler.getPositionLiquidity(posB);
+        uint128 liqA = adapter.getPositionLiquidity(posA);
+        uint128 liqB = adapter.getPositionLiquidity(posB);
         // Note: Alice gets slightly less liquidity due to MINIMUM_LIQUIDITY lock on first mint
         assertApproxEqAbs(liqA, liqB, 1000, "liquidity mismatch");
 
-        uint256 pendingA = gauge.pendingRewards(posKeyA, liqA, pid);
-        uint256 pendingB = gauge.pendingRewards(posKeyB, liqB, pid);
+        uint256 pendingA = gauge.pendingRewardsByTokenId(posA);
+        uint256 pendingB = gauge.pendingRewardsByTokenId(posB);
         // Rewards should be proportional to liquidity
         // Since liqA is slightly less than liqB, pendingA should be slightly less than pendingB
         assertApproxEqRel(pendingA, pendingB, 0.0001e18, "pending rewards not proportional");

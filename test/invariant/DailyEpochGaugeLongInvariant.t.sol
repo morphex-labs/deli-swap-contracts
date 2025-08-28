@@ -34,9 +34,8 @@ contract DailyEpochGaugeLongInvariant is Test {
             address(0)
         );
 
-        // initialise epoch window
-        gauge.rollIfNeeded(PID);
-        (lastStart,, , ,) = gauge.epochInfo(PID);
+        // derived epoch window
+        lastStart = uint64(TimeLibrary.dayStart(block.timestamp));
 
         targetContract(address(this));
     }
@@ -58,13 +57,10 @@ contract DailyEpochGaugeLongInvariant is Test {
         uint256 secs = bound(extraSecs, 1, TimeLibrary.DAY);
         vm.warp(block.timestamp + dDays * TimeLibrary.DAY + secs);
 
-        // 3. compute rolls streamed BEFORE calling rollIfNeeded
-        gauge.rollIfNeeded(PID);
-
-        (uint64 start,, uint128 streamRate,,) = gauge.epochInfo(PID);
+        // 3. compute derived start from time
+        uint64 start = uint64(TimeLibrary.dayStart(block.timestamp));
         if (start > lastStart) {
-            uint256 rolls = (uint256(start) - uint256(lastStart)) / TimeLibrary.DAY;
-            // totalStreamed += lastStreamRate * TimeLibrary.DAY * rolls; // Removed
+            // note: derived model; no explicit rolling needed
             lastStart = start;
         }
         // lastStreamRate = streamRate; // Removed
@@ -74,21 +70,17 @@ contract DailyEpochGaugeLongInvariant is Test {
                                  INVARIANT
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_tokenConservation() public {
-        (
-            uint64 start,
-            uint64 end,
-            uint128 streamRate,
-            uint128 nextStreamRate,
-            uint128 queuedStreamRate
-        ) = gauge.epochInfo(PID);
-
+    function invariant_tokenConservation() public view {
+        // derive epoch window; assertions are pure view, no side effects
+        uint256 end = TimeLibrary.dayNext(block.timestamp);
+        uint256 streamRate = gauge.streamRate(PID);
+        // Next and queued are day+1 and day+2 buckets
+        uint32 d = TimeLibrary.dayCurrent();
         uint256 remainingCurrent = uint256(streamRate) * (end > block.timestamp ? end - block.timestamp : 0);
-        uint256 remainingNext    = uint256(nextStreamRate) * TimeLibrary.DAY;
-        uint256 remainingQueued  = uint256(queuedStreamRate) * TimeLibrary.DAY;
-        uint256 remainingBucket  = gauge.collectBucket(PID);
+        uint256 remainingNext    = gauge.dayBuckets(PID, d + 1);
+        uint256 remainingQueued  = gauge.dayBuckets(PID, d + 2);
 
-        uint256 accounted = remainingCurrent + remainingNext + remainingQueued + remainingBucket;
+        uint256 accounted = remainingCurrent + remainingNext + remainingQueued;
 
         // Invariant: gauge cannot create tokens out of thin air.
         assertLe(accounted, totalDeposited, "accounted exceeds deposits");

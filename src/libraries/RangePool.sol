@@ -25,16 +25,17 @@ library RangePool {
     struct TickInfo {
         uint128 liquidityGross; // total position liquidity referencing this tick
         int128 liquidityNet; // liquidity change when crossing this tick
-        uint256 rewardsPerLiquidityOutsideX128; // accumulator on the opposite side of tick
+        mapping(address => uint256) rewardsPerLiquidityOutsideX128; // per-token outside accumulator
     }
 
     // global pool state tracked by the gauge
     struct State {
-        uint256 rewardsPerLiquidityCumulativeX128; // global accumulator (monotonic)
+        // Per-token cumulative (inside). Name preserved per request.
+        mapping(address => uint256) rewardsPerLiquidityCumulativeX128; // token -> cumulative
         uint128 liquidity; // active liquidity (inside current tick)
         int24 tick; // active tick (inclusive)
         uint64 lastUpdated; // timestamp of last accumulator update
-        mapping(int24 => TickInfo) ticks; // tick <-> info mapping
+        mapping(int24 => TickInfo) ticks; // tick -> info mapping
         mapping(int16 => uint256) tickBitmap; // compressed bitmap of initialized ticks
     }
 
@@ -43,7 +44,11 @@ library RangePool {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Cumulative rewards per unit liquidity that accrued **inside** the specified tick span.
-    function rangeRplX128(State storage self, int24 tickLower, int24 tickUpper) internal view returns (uint256) {
+    function rangeRplX128(State storage self, address token, int24 tickLower, int24 tickUpper)
+        internal
+        view
+        returns (uint256)
+    {
         unchecked {
             if (tickLower >= tickUpper) return 0;
 
@@ -51,26 +56,27 @@ library RangePool {
             if (self.tick < tickLower) {
                 // Inside growth = rewards that accumulated below tickLower only
                 // = outsideLower - outsideUpper
-                return self.ticks[tickLower].rewardsPerLiquidityOutsideX128
-                    - self.ticks[tickUpper].rewardsPerLiquidityOutsideX128;
+                return self.ticks[tickLower].rewardsPerLiquidityOutsideX128[token]
+                    - self.ticks[tickUpper].rewardsPerLiquidityOutsideX128[token];
             }
 
             // Price above the range
             if (self.tick >= tickUpper) {
                 // Inside growth = rewards that accumulated above tickUpper only
                 // = outsideUpper - outsideLower
-                return self.ticks[tickUpper].rewardsPerLiquidityOutsideX128
-                    - self.ticks[tickLower].rewardsPerLiquidityOutsideX128;
+                return self.ticks[tickUpper].rewardsPerLiquidityOutsideX128[token]
+                    - self.ticks[tickLower].rewardsPerLiquidityOutsideX128[token];
             }
 
             // Price inside range
-            return self.rewardsPerLiquidityCumulativeX128 - self.ticks[tickUpper].rewardsPerLiquidityOutsideX128
-                - self.ticks[tickLower].rewardsPerLiquidityOutsideX128;
+            return self.rewardsPerLiquidityCumulativeX128[token]
+                - self.ticks[tickUpper].rewardsPerLiquidityOutsideX128[token]
+                - self.ticks[tickLower].rewardsPerLiquidityOutsideX128[token];
         }
     }
 
-    function cumulativeRplX128(State storage self) internal view returns (uint256) {
-        return self.rewardsPerLiquidityCumulativeX128;
+    function cumulativeRplX128(State storage self, address token) internal view returns (uint256) {
+        return self.rewardsPerLiquidityCumulativeX128[token];
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -86,19 +92,12 @@ library RangePool {
                           REWARD STREAM UPDATE
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Apply streaming rewards for the elapsed time window.
-    function accumulate(State storage self, uint256 streamRate) internal {
-        if (streamRate == 0) return; // short-circuit cheap path
-
-        uint256 dt = block.timestamp - uint256(self.lastUpdated);
-        if (dt == 0) return; // no time passed
-
-        self.lastUpdated = uint64(block.timestamp);
-
-        if (self.liquidity == 0) return; // avoid div-by-zero without adding garbage
-
-        uint256 rewards = streamRate * dt;
-        self.rewardsPerLiquidityCumulativeX128 += (rewards << 128) / self.liquidity;
+    function _accumulateToken(State storage self, address token, uint256 amount) private {
+        if (amount == 0) return;
+        if (self.liquidity == 0) return;
+        unchecked {
+            self.rewardsPerLiquidityCumulativeX128[token] += (amount << 128) / self.liquidity;
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -120,7 +119,9 @@ library RangePool {
     }
 
     /// @notice Add/remove liquidity for a position and update tick bitmaps as needed.
-    function modifyPositionLiquidity(State storage self, ModifyLiquidityParams memory params) internal {
+    function modifyPositionLiquidity(State storage self, ModifyLiquidityParams memory params, address[] memory tokens)
+        internal
+    {
         int128 liquidityDelta = params.liquidityDelta;
         int24 tickLower = params.tickLower;
         int24 tickUpper = params.tickUpper;
@@ -133,9 +134,15 @@ library RangePool {
 
             if (state.flippedLower) {
                 self.tickBitmap.flipTick(tickLower, params.tickSpacing);
+                if (liquidityDelta > 0) {
+                    _initTickOutsideForTokens(self, tickLower, tokens);
+                }
             }
             if (state.flippedUpper) {
                 self.tickBitmap.flipTick(tickUpper, params.tickSpacing);
+                if (liquidityDelta > 0) {
+                    _initTickOutsideForTokens(self, tickUpper, tokens);
+                }
             }
         }
 
@@ -154,7 +161,7 @@ library RangePool {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Move the pool’s notion of the active tick and update liquidity accordingly.
-    function adjustToTick(State storage self, int24 tickSpacing, int24 tick) internal {
+    function adjustToTick(State storage self, int24 tickSpacing, int24 tick, address[] memory tokens) internal {
         int24 currentTick = self.tick;
         int128 liquidityChange = 0;
         bool lte = tick <= currentTick;
@@ -169,8 +176,7 @@ library RangePool {
                 }
 
                 if (initialized) {
-                    int128 liquidityNet =
-                        RangePool._applyCrossTick(self, nextTick, self.rewardsPerLiquidityCumulativeX128);
+                    int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
                     liquidityChange -= liquidityNet;
                 }
                 currentTick = nextTick - 1;
@@ -186,8 +192,7 @@ library RangePool {
                 }
 
                 if (initialized) {
-                    int128 liquidityNet =
-                        RangePool._applyCrossTick(self, nextTick, self.rewardsPerLiquidityCumulativeX128);
+                    int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
                     liquidityChange += liquidityNet;
                 }
                 currentTick = nextTick;
@@ -213,12 +218,6 @@ library RangePool {
         liquidityGrossAfter = LiquidityMath.addDelta(liquidityGrossBefore, liquidityDelta);
         flipped = (liquidityGrossAfter == 0) != (liquidityGrossBefore == 0);
 
-        if (liquidityGrossBefore == 0) {
-            if (tick <= self.tick) {
-                info.rewardsPerLiquidityOutsideX128 = self.rewardsPerLiquidityCumulativeX128;
-            }
-        }
-
         int128 liquidityNet = upper ? liquidityNetBefore - liquidityDelta : liquidityNetBefore + liquidityDelta;
         assembly ("memory-safe") {
             sstore(info.slot, or(and(liquidityGrossAfter, 0xffffffffffffffffffffffffffffffff), shl(128, liquidityNet)))
@@ -229,20 +228,31 @@ library RangePool {
         delete self.ticks[tick];
     }
 
-    function _applyCrossTick(State storage self, int24 tick, uint256 rewardsPerLiquidityCumulativeX128)
+    function _flipOutsideForTokens(State storage self, int24 tick, address[] memory tokens)
         internal
         returns (int128 liquidityNet)
     {
         unchecked {
             TickInfo storage info = self.ticks[tick];
-
             if (info.liquidityGross == 0) {
                 return 0;
             }
-
-            info.rewardsPerLiquidityOutsideX128 =
-                rewardsPerLiquidityCumulativeX128 - info.rewardsPerLiquidityOutsideX128;
+            for (uint256 i; i < tokens.length; ++i) {
+                address tok = tokens[i];
+                uint256 outside = info.rewardsPerLiquidityOutsideX128[tok];
+                info.rewardsPerLiquidityOutsideX128[tok] = self.rewardsPerLiquidityCumulativeX128[tok] - outside;
+            }
             liquidityNet = info.liquidityNet;
+        }
+    }
+
+    function _initTickOutsideForTokens(State storage self, int24 tick, address[] memory tokens) internal {
+        if (tick <= self.tick) {
+            TickInfo storage info = self.ticks[tick];
+            for (uint256 i; i < tokens.length; ++i) {
+                address tok = tokens[i];
+                info.rewardsPerLiquidityOutsideX128[tok] = self.rewardsPerLiquidityCumulativeX128[tok];
+            }
         }
     }
 
@@ -252,23 +262,34 @@ library RangePool {
 
     /// @notice High-level helper used by gauges: initialise (if needed), accumulate rewards and adjust to new tick.
     /// @param self        Pool state storage pointer.
-    /// @param streamRate  Tokens per second to credit (0 allowed).
+    /// @param perTokenAmounts  Token amounts accrued over the window since last update (0 allowed).
     /// @param tickSpacing Pool tick spacing (passed to adjustToTick).
     /// @param activeTick  Current active tick from PoolManager.slot0.
-    function sync(State storage self, uint256 streamRate, int24 tickSpacing, int24 activeTick) internal {
+    function sync(
+        State storage self,
+        address[] memory tokens,
+        uint256[] memory perTokenAmounts,
+        int24 tickSpacing,
+        int24 activeTick
+    ) internal {
         // Bootstrap state on first touch so accumulate sees dt = 0
         if (self.lastUpdated == 0) {
             self.initialize(activeTick);
             // no need to accumulate or adjust because lastUpdated = now and tick == activeTick
             return;
         }
+        // 1. Update lastUpdated and credit per-token amounts
+        self.lastUpdated = uint64(block.timestamp);
 
-        // 1. Credit rewards for elapsed time
-        self.accumulate(streamRate);
-
-        // 2. If price moved out of current range adjust liquidity & tick
+        if (self.liquidity > 0) {
+            uint256 len = tokens.length;
+            for (uint256 i; i < len; ++i) {
+                _accumulateToken(self, tokens[i], perTokenAmounts[i]);
+            }
+        }
+        // 2. If price moved out of current range adjust liquidity & tick, flipping per-token outside
         if (activeTick != self.tick) {
-            self.adjustToTick(tickSpacing, activeTick);
+            self.adjustToTick(tickSpacing, activeTick, tokens);
         }
     }
 }

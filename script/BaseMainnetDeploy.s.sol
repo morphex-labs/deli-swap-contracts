@@ -13,8 +13,8 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolIdLibrary, PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
-import {Actions} from "v4-periphery/src/libraries/Actions.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -162,8 +162,7 @@ contract BaseMainnetDeploy is Script {
             Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
             Hooks.BEFORE_SWAP_FLAG | 
             Hooks.AFTER_SWAP_FLAG | 
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
         
         bytes memory ctorArgs = abi.encode(
@@ -216,8 +215,7 @@ contract BaseMainnetDeploy is Script {
             deliHookAddress,
             WBLT,
             BMX,
-            IDailyEpochGauge(address(dailyEpochGauge)),
-            msg.sender // Using deployer as voter distributor for now
+            IDailyEpochGauge(address(dailyEpochGauge))
         );
         console.log("FeeProcessor deployed:", address(feeProcessor));
         
@@ -237,7 +235,9 @@ contract BaseMainnetDeploy is Script {
         // 9. Now deploy PositionManagerAdapter with gauge addresses
         positionManagerAdapter = new PositionManagerAdapter(
             address(dailyEpochGauge),
-            address(incentiveGauge)
+            address(incentiveGauge),
+            address(positionManager),
+            address(poolManager)
         );
         console.log("PositionManagerAdapter deployed:", address(positionManagerAdapter));
     }
@@ -305,7 +305,6 @@ contract BaseMainnetDeploy is Script {
         positionManagerAdapter.setAuthorizedCaller(address(positionManager), true);
         positionManagerAdapter.setAuthorizedCaller(address(deliHookConstantProduct), true);
         positionManagerAdapter.setAuthorizedCaller(address(v2Handler), true);
-        positionManagerAdapter.setPositionManager(address(positionManager));
         
         // Update gauges with adapter (they were deployed with address(0))
         dailyEpochGauge.setPositionManagerAdapter(address(positionManagerAdapter));
@@ -330,7 +329,7 @@ contract BaseMainnetDeploy is Script {
         v4PoolKey = PoolKey({
             currency0: Currency.wrap(WBLT < USDC ? WBLT : USDC),
             currency1: Currency.wrap(WBLT < USDC ? USDC : WBLT),
-            fee: 3000, // 0.3%
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, // dynamic fee; DeliHook will set based on tickSpacing
             tickSpacing: 60,
             hooks: IHooks(address(deliHook))
         });
@@ -350,6 +349,11 @@ contract BaseMainnetDeploy is Script {
         
         poolManager.initialize(v2PoolKey, TickMath.getSqrtPriceAtTick(0));
         console.log("V2 pool initialized (wBLT/BMX)");
+
+        // Configure FeeProcessor manual buyback settings now that pools exist
+        feeProcessor.setBuybackPoolKey(v2PoolKey);
+        feeProcessor.setKeeper(msg.sender, true);
+        console.log("FeeProcessor buyback pool set to V2 BMX/wBLT and keeper authorized");
     }
     
     function _performOperations() internal {
@@ -365,6 +369,9 @@ contract BaseMainnetDeploy is Script {
         // V2 Operations
         console.log("\n--- V2 Operations (wBLT/BMX) ---");
         _performV2Operations();
+
+        // Flush FeeProcessor buyback buffers (test mode: no slippage enforcement)
+        _flushBuybackBuffers();
     }
     
     function _approveTokens() internal {
@@ -468,6 +475,21 @@ contract BaseMainnetDeploy is Script {
         bool zeroForOne = Currency.unwrap(v2PoolKey.currency0) == BMX;
         _swap(v2PoolKey, zeroForOne, -0.05 ether);
         console.log("   Swap completed");
+    }
+
+    function _flushBuybackBuffers() internal {
+        console.log("\n=== Flushing Buyback Buffers (test, minOut = 0) ===");
+        PoolId[] memory pids = new PoolId[](2);
+        pids[0] = v4PoolKey.toId();
+        pids[1] = v2PoolKey.toId();
+
+        uint256[] memory minOuts = new uint256[](2);
+        minOuts[0] = 0; // no slippage enforcement for tests
+        minOuts[1] = 0; // no slippage enforcement for tests
+
+        // As keeper (we authorized msg.sender earlier), flush all available buffers
+        feeProcessor.flushBuffers(pids, minOuts);
+        console.log("Buyback buffers flushed");
     }
     
     function _setupIncentives() internal {

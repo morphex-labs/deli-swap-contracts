@@ -18,4 +18,14 @@ library TimeLibrary {
     function dayNext(uint256 timestamp) internal pure returns (uint256) {
         return timestamp - (timestamp % DAY) + DAY;
     }
+
+    /// @dev Returns the day index since Unix epoch for `timestamp`.
+    function dayIndex(uint256 timestamp) internal pure returns (uint32) {
+        return uint32(timestamp / DAY);
+    }
+
+    /// @dev Returns the current day index since Unix epoch.
+    function dayCurrent() internal view returns (uint32) {
+        return uint32(block.timestamp / DAY);
+    }
 }

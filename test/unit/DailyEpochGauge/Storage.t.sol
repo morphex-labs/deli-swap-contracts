@@ -17,12 +17,14 @@ contract MockToken2 is ERC20 {
 
 /// @dev Harness exposing internal storage setters
 contract GaugeHarness is DailyEpochGauge {
+    using RangePool for RangePool.State;
+    
     constructor(address _fp, address _pm, address _posMgr, address _hook, IERC20 _bmx)
         DailyEpochGauge(_fp, IPoolManager(_pm), IPositionManagerAdapter(_posMgr), _hook, _bmx, address(0)) {}
 
     // direct mutate helpers --------------------------------------------------
     function setPoolRpl(PoolId pid, uint256 rpl) external {
-        poolRewards[pid].rewardsPerLiquidityCumulativeX128 = rpl;
+        poolRewards[pid].rewardsPerLiquidityCumulativeX128[address(BMX)] = rpl;
     }
 
     function setPositionState(bytes32 key, uint256 paidRpl, uint256 accrued, uint128 liq) external {
@@ -39,6 +41,21 @@ contract GaugeHarness is DailyEpochGauge {
     // new helper to set tick range for a position key so that pending helpers behave correctly
     function setTickRange(bytes32 key, int24 lower, int24 upper) external {
         positionTicks[key] = TickRange({lower: lower, upper: upper});
+    }
+    
+    // Test helper for unit tests using synthetic position keys
+    function pendingRewards(bytes32 posKey, uint128 liquidity, PoolId pid) external view returns (uint256) {
+        RangePool.State storage pool = poolRewards[pid];
+        TickRange storage tr = positionTicks[posKey];
+        RangePosition.State storage ps = positionRewards[posKey];
+        uint256 rangeRpl = pool.rangeRplX128(address(BMX), tr.lower, tr.upper);
+        uint256 delta = rangeRpl - ps.rewardsPerLiquidityLastX128;
+        return ps.rewardsAccrued + (delta * liquidity) / FixedPoint128.Q128;
+    }
+    
+    // Test helper for claiming with synthetic position keys
+    function claim(address recipient, bytes32 posKey) external returns (uint256) {
+        return _claimRewards(posKey, recipient);
     }
 }
 

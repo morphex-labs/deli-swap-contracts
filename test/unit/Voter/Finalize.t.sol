@@ -75,8 +75,10 @@ contract Voter_FinalizeTest is Test {
 
         // warp > 1 week to allow finalize
         vm.warp(block.timestamp + 8 days);
-        vm.prank(user1);
-        voter.finalize(0, 10);
+        vm.startPrank(user1);
+        voter.finalize(0, 10); // process auto voters
+        voter.finalize(0, 10); // process manual voters
+        vm.stopPrank();
 
         assertEq(weth.balanceOf(safety), expectSafety, "safety balance");
         assertEq(weth.balanceOf(address(dist)), expectRewards, "distributor balance");
@@ -103,8 +105,10 @@ contract Voter_FinalizeTest is Test {
 
         // warp > 1 week
         vm.warp(block.timestamp + 8 days);
-        vm.prank(user1);
-        voter.finalize(0, 10);
+        vm.startPrank(user1);
+        voter.finalize(0, 10); // process auto voters
+        voter.finalize(0, 10); // process manual voters
+        vm.stopPrank();
 
         // Option0 (10%) should win due to lower index tie-break
         uint256 total = 2 ether;
@@ -122,10 +126,10 @@ contract Voter_FinalizeTest is Test {
 
     function testFinalizeDoubleReverts() public {
         vm.warp(block.timestamp + 8 days);
-        vm.prank(user1);
-        voter.finalize(0, 10);
+        vm.startPrank(user1);
+        voter.finalize(0, 10); // process auto voters
+        voter.finalize(0, 10); // process manual voters
 
-        vm.prank(user1);
         vm.expectRevert(DeliErrors.AlreadySettled.selector);
         voter.finalize(0, 10);
     }
@@ -136,7 +140,7 @@ contract Voter_FinalizeTest is Test {
             address acc = address(uint160(uint256(0x1000) + i));
             sbf.mintExternal(acc, 1 ether);
             vm.prank(acc);
-            voter.vote(0, true);
+            voter.vote(0, false);
         }
 
         // Admin deposit
@@ -147,14 +151,14 @@ contract Voter_FinalizeTest is Test {
         vm.warp(block.timestamp + 8 days);
 
         // First finalize with small batch (5) – should not finish all
-        vm.prank(user1);
-        voter.finalize(0, 5);
+        vm.startPrank(user1);
+        voter.finalize(0, 5); // process auto voters
+        voter.finalize(0, 5); // process manual voters
 
         // Distributor should still be empty because epoch not settled yet
         assertEq(dist.lastTokensPerInterval(), 0, "no rewards until full tally");
 
         // Now finalize remaining voters with bigger batch
-        vm.prank(user1);
         voter.finalize(0, 20);
 
         // Rewards should now be emitted

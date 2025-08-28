@@ -26,6 +26,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {HookMiner} from "lib/uniswap-hooks/lib/v4-periphery/src/utils/HookMiner.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
@@ -90,13 +91,12 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, bmx, address(inc));
 
         // 5. Deploy PositionManagerAdapter and V4PositionHandler
-        adapter = new PositionManagerAdapter(address(gauge), address(inc));
+        adapter = new PositionManagerAdapter(address(gauge), address(inc), address(positionManager), address(poolManager));
         v4Handler = new V4PositionHandler(address(positionManager));
         
         // Register V4 handler and wire up the adapter
         adapter.addHandler(address(v4Handler));
         adapter.setAuthorizedCaller(address(positionManager), true);
-        adapter.setPositionManager(address(positionManager));
 
         // 6. Deploy hook
         hook = new DeliHook{salt: salt}(
@@ -112,6 +112,8 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         hook.setFeeProcessor(address(this)); // prevent zero-address take
         hook.setIncentiveGauge(address(inc));
         gauge.setFeeProcessor(address(this)); // dummy authorised sender for addRewards
+        // Now authorize hook after it exists
+        adapter.setAuthorizedCaller(address(hook), true);
 
         // Update gauges to use the adapter
         gauge.setPositionManagerAdapter(address(adapter));
@@ -121,11 +123,12 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         key = PoolKey({
             currency0: Currency.wrap(address(bmx)),
             currency1: Currency.wrap(address(wblt)),
-            fee: 3000,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
         pid = key.toId();
+        // Initialize
         poolManager.initialize(key, TickMath.getSqrtPriceAtTick(0));
 
         // 7. Mint wide-range position (always in-range)
@@ -164,12 +167,10 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.prank(address(this));
         gauge.addRewards(pid, bucket);
 
-        // Roll Day0 epoch so queuedRate set
-        gauge.rollIfNeeded(pid);
-        (, uint64 day0End,,, ) = gauge.epochInfo(pid);
-        // Warp two days to activate streamRate
-        vm.warp(uint256(day0End) + 2 days);
-        gauge.rollIfNeeded(pid);
+        // Day0 info
+        uint256 day0End = TimeLibrary.dayNext(block.timestamp);
+        // Warp to Day2 to activate streamRate
+        vm.warp(uint256(day0End) + 1 days + 1);
         require(gauge.streamRate(pid) > 0, "stream inactive");
     }
 
@@ -177,20 +178,13 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
                         TEST LOGIC
     //////////////////////////////////////////////////////////////*/
     function testInRangeOutOfRangeAccrual() public {
-        // Record liquidity and position keys
-        uint128 liqWide = positionManager.getPositionLiquidity(tokenWide);
-        uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-
-        bytes32 posWide = keccak256(abi.encode(address(this), int24(-60000), int24(60000), bytes32(tokenWide), pid));
-        bytes32 posNarrow = keccak256(abi.encode(address(this), int24(-600), int24(600), bytes32(tokenNarrow), pid));
-
         // Advance 3 hours and poke so rewards accrue while both in-range
         vm.warp(block.timestamp + 3 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        uint256 preWide = gauge.pendingRewards(posWide, liqWide, pid);
-        uint256 preNarrow = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 preWide = gauge.pendingRewardsByTokenId(tokenWide);
+        uint256 preNarrow = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertGt(preNarrow, 0, "narrow should have accrued initially");
 
         // ------------------------------------------------------------
@@ -210,8 +204,8 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.prank(address(hook));
         gauge.pokePool(key);
 
-        uint256 postWide = gauge.pendingRewards(posWide, liqWide, pid);
-        uint256 postNarrow = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 postWide = gauge.pendingRewardsByTokenId(tokenWide);
+        uint256 postNarrow = gauge.pendingRewardsByTokenId(tokenNarrow);
 
         // Wide should have accrued additional rewards
         assertGt(postWide - preWide, 0, "wide did not accrue after move");
@@ -221,14 +215,11 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
 
     // Leave range (price above upper) then re-enter; accrual pauses & resumes
     function testLeaveAndReEnterRange() public {
-        uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-        bytes32 posNarrow = keccak256(abi.encode(address(this), int24(-600), int24(600), bytes32(tokenNarrow), pid));
-
         // 1. accrue 1h while in-range
         vm.warp(block.timestamp + 1 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 inRange1 = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 inRange1 = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertGt(inRange1, 0, "no accrual initial");
 
         // 2. push price ABOVE tickUpper so narrow is out-of-range
@@ -241,14 +232,14 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.warp(block.timestamp + 2 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 outOfRange = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 outOfRange = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertApproxEqAbs(outOfRange, inRange1, 1e12, "accrued while out-of-range");
 
         // 3. Bring the price back *into* the narrow range using adaptive swaps.
         int24 lower = -600;
         int24 upper =  600;
 
-        uint256 chunk = swapIn / 4;          // start with 25% of the initial push
+        uint256 chunk = swapIn / 4; // start with 25% of the initial push
         uint8   steps = 0;
         while (true) {
             (, int24 t,,) = StateLibrary.getSlot0(poolManager, pid);
@@ -269,15 +260,12 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.warp(block.timestamp + 1 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 backInRange = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 backInRange = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertGt(backInRange - outOfRange, 0, "accrual did not resume");
     }
 
     // Price below tickLower path – symmetry check
     function testPriceBelowLowerStopsAccrual() public {
-        uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-        bytes32 posNarrow = keccak256(abi.encode(address(this), int24(-600), int24(600), bytes32(tokenNarrow), pid));
-
         // push price BELOW lower boundary
         poolManager.unlock(abi.encode(address(bmx), 1e23)); // BMX -> wBLT drives price down
         (, int24 tickNow,,) = StateLibrary.getSlot0(poolManager, pid);
@@ -287,39 +275,35 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.warp(block.timestamp + 2 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 pending = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 pending = gauge.pendingRewardsByTokenId(tokenNarrow);
         // advance another 2h while still out-of-range
         vm.warp(block.timestamp + 2 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 pending2 = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 pending2 = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertApproxEqAbs(pending, pending2, 1e12, "accrual while below range");
     }
 
     // Day-roll while out-of-range – ensure no accrual
     function testDayRollWhileOutOfRange() public {
-        uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-        bytes32 posNarrow = keccak256(abi.encode(address(this), int24(-600), int24(600), bytes32(tokenNarrow), pid));
-
         // Move above range
         poolManager.unlock(abi.encode(address(wblt), 1e23));
         (, int24 tickNow,,) = StateLibrary.getSlot0(poolManager, pid);
         require(tickNow > 600, "price not above");
 
-        // warp to epoch end + 1 and roll gauge
-        (, uint64 epochEnd,,,) = gauge.epochInfo(pid);
-        vm.warp(uint256(epochEnd) + 1);
-        gauge.rollIfNeeded(pid);
+        // warp to epoch end + 1
+        uint256 epochEnd = TimeLibrary.dayNext(block.timestamp);
+        vm.warp(epochEnd + 1);
 
         // poke pool after roll – should still be out-of-range
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 afterRoll = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 afterRoll = gauge.pendingRewardsByTokenId(tokenNarrow);
         // wait some hours
         vm.warp(block.timestamp + 4 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 later = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 later = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertApproxEqAbs(afterRoll, later, 1e12, "accrued during out-of-range day");
     }
 
@@ -347,7 +331,6 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     function testCrossTickWithLiquidityChange() public {
         // Narrow position info
         uint128 liqNarrow = positionManager.getPositionLiquidity(tokenNarrow);
-        bytes32 posNarrow = keccak256(abi.encode(address(this), int24(-600), int24(600), bytes32(tokenNarrow), pid));
 
         // 1. Move 30 minutes forward and poke so accumulator timestamp is not 0
         vm.warp(block.timestamp + 30 minutes);
@@ -387,7 +370,7 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
         vm.warp(block.timestamp + 1 hours);
         vm.prank(address(hook));
         gauge.pokePool(key);
-        uint256 pending = gauge.pendingRewards(posNarrow, liqNarrow, pid);
+        uint256 pending = gauge.pendingRewardsByTokenId(tokenNarrow);
         assertGt(pending, 0, "rewards did not resume");
     }
 
@@ -438,6 +421,5 @@ contract InRangeAccounting_IT is Test, Deployers, IUnlockCallback, IFeeProcessor
     }
 
     // Dummy implementation to satisfy IFeeProcessor and avoid revert
-    function collectFee(PoolKey calldata, uint256) external override {}
-    function collectInternalFee(uint256) external override {}
+    function collectFee(PoolKey calldata, uint256, bool) external override {}
 } 

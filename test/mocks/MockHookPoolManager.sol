@@ -20,6 +20,14 @@ contract MockHookPoolManager {
     uint256 public settleCalls;
     struct TakeCall { Currency currency; address to; uint256 amount; }
     TakeCall public lastTake;
+    
+    // Store pool fees for testing
+    mapping(bytes32 => uint24) public poolFees;
+    // Optional override for sqrtPriceX96 (global for tests)
+    uint160 public sqrtPriceX96Override;
+    
+    // Pools slot from StateLibrary
+    bytes32 constant POOLS_SLOT = bytes32(uint256(6));
 
     // --------------- IPoolManager minimal ----------------
     function sync(Currency currency) external {
@@ -42,6 +50,11 @@ contract MockHookPoolManager {
             }
             IERC20(token).transfer(to, amount);
         }
+    }
+
+    /// @notice Test helper to override the simulated sqrtPriceX96 returned by extsload
+    function setSqrtPriceX96(uint160 v) external {
+        sqrtPriceX96Override = v;
     }
 
     // ------------------------------------------------------------------
@@ -88,13 +101,34 @@ contract MockHookPoolManager {
     function mint(address, uint256, uint256) external {}
     function burn(address, uint256, uint256) external {}
     function clear(Currency, uint256) external {}
-    function updateDynamicLPFee(PoolKey memory, uint24) external {}
+    function updateDynamicLPFee(PoolKey memory key, uint24 fee) external {
+        bytes32 poolId = keccak256(abi.encode(key));
+        poolFees[poolId] = fee;
+    }
 
     // ------------------------------------------------------------------
     // extsload helpers (unused by our mock but required by libraries)
     // ------------------------------------------------------------------
-    function extsload(bytes32) external view returns (bytes32) {
-        return bytes32(0);
+    function extsload(bytes32 slot) external view returns (bytes32) {
+        // StateLibrary.getSlot0 expects slot0 data packed as:
+        // Bits 0-159: sqrtPriceX96 (160 bits)
+        // Bits 160-183: tick (24 bits)  
+        // Bits 184-207: protocolFee (24 bits)
+        // Bits 208-231: lpFee (24 bits)
+        // Bits 232-255: empty (24 bits)
+        
+        // Return a slot0 with fee of 3000 (0.3%) and configurable sqrtPriceX96
+        uint256 sqrtPriceX96 = sqrtPriceX96Override != 0 ? sqrtPriceX96Override : (1 << 96); // price = 1 by default
+        int256 tick = 0;
+        uint256 protocolFee = 0;
+        uint256 lpFee = 3000; // 0.3%
+        
+        uint256 packedSlot = sqrtPriceX96 | 
+                            (uint256(uint24(int24(tick))) << 160) |
+                            (protocolFee << 184) |
+                            (lpFee << 208);
+        
+        return bytes32(packedSlot);
     }
     function extsload(bytes32, uint256 nSlots) external view returns (bytes32[] memory arr) {
         arr = new bytes32[](nSlots);

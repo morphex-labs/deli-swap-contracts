@@ -11,7 +11,7 @@ import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 contract MockDailyEpochGauge is IDailyEpochGauge {
     mapping(PoolId => uint256) public rewards;
 
-    uint256 public rollCalls;
+    uint256 public rollCalls; // kept for backward compat assertions in some tests
     uint256 public pokeCalls;
 
     // ---------------------------------------------------------------------
@@ -25,7 +25,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
     // Unused interface functions – empty implementations
     // ---------------------------------------------------------------------
 
-    function rollIfNeeded(PoolId /* poolId */ ) external override { rollCalls += 1; }
+    function rollIfNeeded(PoolId /* poolId */ ) external { rollCalls += 1; }
 
     function pokePool(PoolKey calldata /* key */ ) external override { pokeCalls += 1; }
 
@@ -44,7 +44,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         // no-op
     }
 
-    function claim(address /* to */ , bytes32 /* positionKey */ ) external override returns (uint256) {
+    function claim(uint256 /* tokenId */ , address /* to */ ) external override returns (uint256) {
         return 0;
     }
 
@@ -56,13 +56,49 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         return 0;
     }
 
-    function initPool(PoolId pid, int24 initialTick) external override {
+    function initPool(PoolKey memory key, int24 initialTick) external override {
         // No-op
     }
     
-    // Subscription callbacks (from ISubscriber interface)
-    function notifySubscribe(uint256, bytes memory) external override {}
-    function notifyUnsubscribe(uint256) external override {}
-    function notifyBurn(uint256, address, PositionInfo, uint256, BalanceDelta) external override {}
-    function notifyModifyLiquidity(uint256, int256, BalanceDelta) external override {}
+    // Context-based subscription callbacks (no-ops in mock)
+    function notifySubscribeWithContext(
+        uint256,
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        uint128,
+        address
+    ) external override {}
+
+    function notifyUnsubscribeWithContext(
+        bytes32,
+        bytes32,
+        int24,
+        address,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyBurnWithContext(
+        bytes32,
+        bytes32,
+        address,
+        int24,
+        int24,
+        int24,
+        uint128
+    ) external override {}
+
+    function notifyModifyLiquidityWithContext(
+        bytes32,
+        bytes32,
+        int24,
+        int24,
+        int24,
+        int256,
+        uint128
+    ) external override {}
 } 
