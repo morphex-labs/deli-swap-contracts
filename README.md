@@ -42,7 +42,7 @@ forge test --match-path test/integration/constant-product/*.sol # V2 hook integr
 Deli Swap is a new DeFi protocol that extends Uniswap v4's capabilities with sophisticated fee distribution mechanisms and liquidity incentives. The protocol implements two distinct AMM models:
 
 1. **Concentrated Liquidity (V4-style)**: Through `DeliHook` - maintains Uniswap v4's capital efficiency
-2. **Constant Product (V2-style)**: Through `DeliHookConstantProduct` - offers simplified x*y=k pools
+2. **Constant Product (V2-style)**: Through `DeliHookConstantProduct` - offers simplified x\*y=k pools
 
 Both models integrate with a unified fee distribution system where keepers convert collected fees to BMX tokens via buyback swaps, which then stream to liquidity providers over 24-hour epochs.
 
@@ -110,47 +110,47 @@ flowchart LR
     classDef rewardStyle fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#ffffff
     classDef govStyle fill:#db2777,stroke:#be185d,stroke-width:2px,color:#ffffff
     classDef handlerStyle fill:#0891b2,stroke:#0e7490,stroke-width:2px,color:#ffffff
-    
+
     %% User entry points
     U[👤 User]
-    
+
     %% Core Uniswap V4
     subgraph V4["🏛️ Uniswap V4"]
         PM[PoolManager]
         POS[PositionManager]
     end
-    
+
     %% Hooks
     subgraph HOOKS["🎣 Hooks"]
-        DH[DeliHook<br/>V4 Pools]
-        DHCP[DeliHookConstantProduct<br/>V2-style Pools]
+        DH["DeliHook<br/>V4 Pools"]
+        DHCP["DeliHookConstantProduct<br/>V2-style Pools"]
     end
-    
+
     %% Position Management System
     subgraph POSITIONS["📍 Position Management"]
-        PMA[PositionManagerAdapter<br/>Router]
+        PMA["PositionManagerAdapter<br/>Router"]
         subgraph HANDLERS[" "]
             V4H[V4PositionHandler]
             V2H[V2PositionHandler]
         end
     end
-    
+
     %% Fee Processing
-    FP[💰 FeeProcessor<br/>97% / 3% split]
-    
+    FP["💰 FeeProcessor<br/>97% / 3% split"]
+
     %% Rewards
     subgraph REWARDS["📊 Rewards"]
-        DEG[DailyEpochGauge<br/>BMX streaming]
-        IG[IncentiveGauge<br/>Extra tokens]
+        DEG["DailyEpochGauge<br/>BMX streaming"]
+        IG["IncentiveGauge<br/>Extra tokens"]
     end
-    
+
     %% Governance
     subgraph GOV["🗳️ Governance"]
         V[Voter]
         SM[Safety Module]
         RD[Reward Distributor]
     end
-    
+
     %% Apply styles
     class U userStyle
     class PM,POS coreStyle
@@ -159,42 +159,42 @@ flowchart LR
     class DEG,IG rewardStyle
     class PMA,V4H,V2H handlerStyle
     class V,SM,RD govStyle
-    
+
     %% User interactions
     U -->|swap| PM
     U -->|V4 liquidity| POS
     U -->|V2 liquidity| DHCP
     U -->|claim| DEG
     U -->|vote| V
-    
+
     %% Swap flow
     PM -->|execute| DH
     PM -->|execute| DHCP
-    
+
     %% Fee flow
     DH -->|collect fees| FP
     DHCP -->|collect fees| FP
     FP -->|97% BMX| DEG
     FP -->|3% wBLT| V
-    
+
     %% Position event routing
     POS -->|events| PMA
     PMA -->|routes| V4H
     PMA -->|routes| V2H
-    
+
     %% Direct hook notifications (V2 only)
     DHCP -.->|notify| V2H
-    
+
     %% Handler subscriptions
     V4H -->|subscribe| DEG
     V4H -->|subscribe| IG
     V2H -->|subscribe| DEG
     V2H -->|subscribe| IG
-    
+
     %% Governance flow
     V -->|distribute| SM
     V -->|distribute| RD
-    
+
     %% Hook updates gauges
     DH -.->|update| DEG
     DHCP -.->|update| DEG
@@ -250,7 +250,7 @@ src/
 ## 📜 Core Contracts
 
 - **DeliHook** - V4 concentrated liquidity hook with tick spacing-based fee determination
-- **DeliHookConstantProduct** - V2-style x*y=k AMM with synthetic position tracking
+- **DeliHookConstantProduct** - V2-style x\*y=k AMM with synthetic position tracking
 - **DailyEpochGauge** - BMX reward streaming (24h epochs, N+2 day pipeline)
 - **FeeProcessor** - Fee collection, configurable split, keeper-based buyback execution
 - **IncentiveGauge** - Additional ERC20 rewards (7-day streaming, seamless top-ups, forfeits on position unsubscribe)
@@ -285,23 +285,24 @@ src/
 
 ## 🔀 Hook Comparison
 
-| Feature | DeliHook (V4) | DeliHookConstantProduct (V2-style) |
-|---------|---------------|-------------------------------------|
-| **AMM Model** | Concentrated liquidity | Constant product (x*y=k) |
-| **Position Type** | NFT with tick ranges | Synthetic IDs (mapping-based) |
-| **Fee Determination** | Tick spacing mapping | Pool creator sets (min 0.1%) |
-| **Fee Collection** | Explicit calculation | Implicit in swap formula |
-| **Fee Currency** | Always wBLT | Always wBLT |
-| **Liquidity Ranges** | Customizable | Full-range only |
-| **Pool Fee Range** | 0.01% - 2.5% (via tick spacing) | ≥ 0.1% and < 100% |
-| **Initial Price** | Any | sqrtPrice = 2^96 (tick 0) |
-| **Position Tracking** | V4PositionHandler | V2PositionHandler |
+| Feature               | DeliHook (V4)                   | DeliHookConstantProduct (V2-style) |
+| --------------------- | ------------------------------- | ---------------------------------- |
+| **AMM Model**         | Concentrated liquidity          | Constant product (x\*y=k)          |
+| **Position Type**     | NFT with tick ranges            | Synthetic IDs (mapping-based)      |
+| **Fee Determination** | Tick spacing mapping            | Pool creator sets (min 0.1%)       |
+| **Fee Collection**    | Explicit calculation            | Implicit in swap formula           |
+| **Fee Currency**      | Always wBLT                     | Always wBLT                        |
+| **Liquidity Ranges**  | Customizable                    | Full-range only                    |
+| **Pool Fee Range**    | 0.01% - 2.5% (via tick spacing) | ≥ 0.1% and < 100%                  |
+| **Initial Price**     | Any                             | sqrtPrice = 2^96 (tick 0)          |
+| **Position Tracking** | V4PositionHandler               | V2PositionHandler                  |
 
 ## 🔄 System Flows
 
 ### Swap Fee Collection Flow
 
 **Key Implementation Details:**
+
 - DeliHook (V4) determines fee from tick spacing mapping
 - DeliHookConstantProduct (V2) uses pool-creator-set fee (min 0.1%)
 - DeliHook (V4) uses the LP-fee override flag to zero the PoolManager LP fee
@@ -315,36 +316,36 @@ src/
 flowchart TB
     Start([User Initiates Swap]) --> PM[PoolManager]
     PM --> Hook{Hook Type?}
-    
+
     Hook -->|V4 Pools| DH[DeliHook]
     Hook -->|V2 Pools| DHCP[DeliHookConstantProduct]
-    
-    DH --> CalcFee1[Calculate Fee<br/>from Swap Amount]
-    DHCP --> CalcFee2[Extract Implicit Fee<br/>from x*y=k]
-    
-    CalcFee1 --> FP[FeeProcessor<br/>Receives wBLT Fee]
+
+    DH --> CalcFee1["Calculate Fee<br/>from Swap Amount"]
+    DHCP --> CalcFee2["Extract Implicit Fee<br/>from x*y=k"]
+
+    CalcFee1 --> FP["FeeProcessor<br/>Receives wBLT Fee"]
     CalcFee2 --> FP
-    
+
     FP --> Split[Split Fee]
-    
+
     Split --> Buyback[97% to Buyback Buffer]
     Split --> VoterBuffer[3% to Voter Buffer]
-    
+
     Buyback --> FlushCheck{Buffer ≥ 1 wBLT?}
-    
-    FlushCheck -->|Yes| KeeperFlush[Keeper Calls<br/>flushBuffer()]
-    FlushCheck -->|No| Accumulate[Accumulate in<br/>Pool Buffer]
-    
-    KeeperFlush --> SwapBMX[Swap wBLT → BMX<br/>via PoolManager<br/>Flag: 0xDE1ABEEF]
-    
+
+    FlushCheck -->|Yes| KeeperFlush["Keeper Calls<br/>flushBuffer()"]
+    FlushCheck -->|No| Accumulate["Accumulate in<br/>Pool Buffer"]
+
+    KeeperFlush --> SwapBMX["Swap wBLT → BMX<br/>via PoolManager<br/>Flag: 0xDE1ABEEF"]
+
     SwapBMX --> DEG[DailyEpochGauge]
-    VoterBuffer --> Voter[Voter Contract<br/>Weekly Claims]
-    
+    VoterBuffer --> Voter["Voter Contract<br/>Weekly Claims"]
+
     DEG --> Queue[Queue for Day N+2]
-    Queue --> Stream[Stream to LPs<br/>over 24 hours]
-    
-    Voter --> GOV[Weekly Distribution<br/>to Safety Module &<br/>Reward Distributor]
-    
+    Queue --> Stream["Stream to LPs<br/>over 24 hours"]
+
+    Voter --> GOV["Weekly Distribution<br/>to Safety Module &<br/>Reward Distributor"]
+
     %% Define styles with good contrast
     classDef startStyle fill:#4a5568,stroke:#2d3748,stroke-width:3px,color:#ffffff
     classDef hookStyle fill:#7c3aed,stroke:#6d28d9,stroke-width:2px,color:#ffffff
@@ -353,7 +354,7 @@ flowchart TB
     classDef govStyle fill:#db2777,stroke:#be185d,stroke-width:2px,color:#ffffff
     classDef processStyle fill:#2563eb,stroke:#1d4ed8,stroke-width:2px,color:#ffffff
     classDef decisionStyle fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#ffffff
-    
+
     class Start startStyle
     class DH,DHCP hookStyle
     class FP,WBLTPath,BMXPath,Buyback,Buyback2 feeStyle
@@ -368,23 +369,23 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph DEG["📊 DailyEpochGauge (BMX)"]
-        D1[Day N<br/>Fees Collected] --> D2[Day N+1<br/>Queued]
-        D2 --> D3[Day N+2<br/>Stream 24h]
+        D1["Day N<br/>Fees Collected"] --> D2["Day N+1<br/>Queued"]
+        D2 --> D3["Day N+2<br/>Stream 24h"]
     end
-    
+
     subgraph IG["🎁 IncentiveGauge (Other)"]
-        I1[Tokens<br/>Deposited] --> I2[Immediate<br/>7-day Stream]
+        I1["Tokens<br/>Deposited"] --> I2["Immediate<br/>7-day Stream"]
     end
-    
-    D3 --> LP[💰 LPs earn<br/>in-range only]
+
+    D3 --> LP["💰 LPs earn<br/>in-range only"]
     I2 --> LP
-    
+
     %% Define styles with good contrast
     classDef gaugeStyle fill:#dc2626,stroke:#b91c1c,stroke-width:2px,color:#ffffff
     classDef incentiveStyle fill:#059669,stroke:#047857,stroke-width:2px,color:#ffffff
     classDef lpStyle fill:#7c3aed,stroke:#6d28d9,stroke-width:2px,color:#ffffff
     classDef processStyle fill:#2563eb,stroke:#1d4ed8,stroke-width:2px,color:#ffffff
-    
+
     class DEG gaugeStyle
     class IG incentiveStyle
     class LP lpStyle
@@ -448,22 +449,26 @@ test/
 ## 🛠 Governance & Admin Functions
 
 ### Fee Management
+
 - **Fee Split**: `FeeProcessor.setBuybackBps()` - Adjust buyback/voter split (0-10,000)
 - **Pool Fees**: `DeliHook.setPoolFee()` - V4 owner may override dynamic fee for specific pools (0.01%-3%)
 - **Voter Fee Claims**: `FeeProcessor.claimVoterFees()` - Transfer accumulated voter wBLT to target address
 - **Token Recovery**: `FeeProcessor.sweepERC20()` - Recover mistaken tokens (excludes BMX/wBLT)
 
 ### Position & Reward Management
+
 - **Force Unsubscribe**: Both gauges support `adminForceUnsubscribe()` to remove stuck positions
 - **Token Whitelist**: `IncentiveGauge.setWhitelist()` - Manage allowed reward tokens
 - **Handler Registry**: `PositionManagerAdapter.addHandler/removeHandler()` - Manage position handlers
 
 ### Voting System
+
 - **Voting Options**: `Voter.setOptions()` - Configure distribution percentages
 - **Admin Deposit**: `Voter.deposit()` - Admin deposits WETH for epoch
 - **Epoch Finalization**: `Voter.finalize()` - Process votes with batch support
 
 ### Keeper Operations
+
 - **Buffer Flushing**: `FeeProcessor.flushBuffer(poolId, minBmxOut)` - Execute buyback swaps
 - **Batch Flushing**: `FeeProcessor.flushBuffers(poolIds[], minBmxOuts[])` - Multiple buybacks
 - **Access Control**: `FeeProcessor.setKeeper()` - Authorize/revoke keeper access
