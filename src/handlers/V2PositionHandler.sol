@@ -97,6 +97,7 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Set the PositionManagerAdapter address
+    /// @param _adapter The address of the PositionManagerAdapter.
     function setPositionManagerAdapter(address _adapter) external onlyOwner {
         if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
         positionManagerAdapter = IPositionManagerAdapter(_adapter);
@@ -104,6 +105,8 @@ contract V2PositionHandler is IPositionHandler, Ownable2Step {
     }
 
     /// @notice Mark a pool as using V2
+    /// @param poolId The poolId to mark as using V2.
+    /// @param isV2 Whether the pool is using V2.
     function setV2Pool(PoolId poolId, bool isV2) external onlyOwner {
         isV2Pool[poolId] = isV2;
     }

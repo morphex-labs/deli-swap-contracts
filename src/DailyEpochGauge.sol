@@ -141,18 +141,25 @@ contract DailyEpochGauge is Ownable2Step {
                                 ADMIN
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Admin-only function to set the fee processor.
+    /// @param _fp The address of the fee processor.
     function setFeeProcessor(address _fp) external onlyOwner {
         if (_fp == address(0)) revert DeliErrors.ZeroAddress();
         feeProcessor = _fp;
         emit FeeProcessorUpdated(_fp);
     }
 
+    /// @notice Admin-only function to set the position manager adapter.
+    /// @param _adapter The address of the position manager adapter.
     function setPositionManagerAdapter(address _adapter) external onlyOwner {
         if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
         positionManagerAdapter = IPositionManagerAdapter(_adapter);
         emit PositionManagerAdapterUpdated(_adapter);
     }
 
+    /// @notice Admin-only function to set the hook.
+    /// @param hook The address of the hook.
+    /// @param enabled Whether the hook is enabled.
     function setHook(address hook, bool enabled) external onlyOwner {
         if (hook == address(0)) revert DeliErrors.ZeroAddress();
         isHook[hook] = enabled;
@@ -235,6 +242,7 @@ contract DailyEpochGauge is Ownable2Step {
     /// @notice Claim accrued BMX for a single position.
     /// @param tokenId The NFT token ID of the position to claim for.
     /// @param to The address to send the rewards to.
+    /// @return amount The amount of BMX claimed.
     function claim(uint256 tokenId, address to) external returns (uint256 amount) {
         // Verify the caller owns the position
         address owner = positionManagerAdapter.ownerOf(tokenId);
@@ -327,6 +335,8 @@ contract DailyEpochGauge is Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Effective stream rate for the current UTC day.
+    /// @param pid The poolId to get the stream rate for.
+    /// @return The effective stream rate for the current UTC day.
     function streamRate(PoolId pid) public view returns (uint256) {
         uint32 dayNow = TimeLibrary.dayCurrent();
         uint256 amt = dayBuckets[pid][dayNow];
@@ -334,6 +344,10 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @notice Returns core pool reward data.
+    /// @param pid The poolId to get the data for.
+    /// @return currentStreamRate The current stream rate for the pool.
+    /// @return rewardsPerLiquidityX128 The rewards per liquidity X128 for the pool.
+    /// @return activeLiquidity The active liquidity for the pool.
     function getPoolData(PoolId pid)
         external
         view
@@ -345,6 +359,10 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @notice Batched version, returns array aligned to `pids` input.
+    /// @param pids The poolIds to get the data for.
+    /// @return currentStreamRates The current stream rates for the pools.
+    /// @return rewardsPerLiquidityX128s The rewards per liquidity X128s for the pools.
+    /// @return activeLiquidities The active liquidities for the pools.
     function getPoolDataBatch(PoolId[] calldata pids)
         external
         view
@@ -369,12 +387,15 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @notice Returns the number of seconds until the next epoch ends.
-    function nextEpochEndsIn(PoolId) external view returns (uint256 secondsLeft) {
+    /// @return secondsLeft The number of seconds until the next epoch ends.
+    function nextEpochEndsIn() external view returns (uint256 secondsLeft) {
         uint256 end = TimeLibrary.dayNext(block.timestamp);
         secondsLeft = end > block.timestamp ? end - block.timestamp : 0;
     }
 
     /// @notice Returns pending rewards for an active position by tokenId.
+    /// @param tokenId The tokenId to get the pending rewards for.
+    /// @return amount The amount of pending rewards.
     function pendingRewardsByTokenId(uint256 tokenId) external view returns (uint256 amount) {
         try positionManagerAdapter.ownerOf(tokenId) returns (address) {
             (PoolKey memory key,) = positionManagerAdapter.getPoolAndPositionInfo(tokenId);
@@ -402,11 +423,17 @@ contract DailyEpochGauge is Ownable2Step {
     }
 
     /// @notice Aggregate pending BMX across **all** positions an owner has in a pool.
+    /// @param pid The poolId to get the pending rewards for.
+    /// @param owner The owner to get the pending rewards for.
+    /// @return amount The amount of pending rewards.
     function pendingRewardsOwner(PoolId pid, address owner) external view returns (uint256 amount) {
         amount = _pendingRewardsOwner(pid, owner);
     }
 
     /// @notice Batched version, returns array aligned to `pids` input.
+    /// @param pids The poolIds to get the pending rewards for.
+    /// @param owner The owner to get the pending rewards for.
+    /// @return amounts The amounts of pending rewards.
     function pendingRewardsOwnerBatch(PoolId[] calldata pids, address owner)
         external
         view
