@@ -41,7 +41,6 @@ import {IV4Router} from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
 import {IPermit2} from "permit2/src/interfaces/IPermit2.sol";
 
 /// @notice Deployment script for Base Mainnet
-/// @dev Update the addresses below with actual Base Mainnet addresses before deploying
 contract BaseMainnetDeploy is Script {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -63,6 +62,18 @@ contract BaseMainnetDeploy is Script {
     address constant WBLT = 0x4E74D4Db6c0726ccded4656d0BCE448876BB4C7A;
     address constant BMX = 0x548f93779fBC992010C07467cBaf329DD5F059B7;  
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+
+    /*//////////////////////////////////////////////////////////////
+                           SCRIPT CONFIG TOGGLES
+    //////////////////////////////////////////////////////////////*/
+
+    // Defaults can be overridden via env:
+    //   DELI_SETUP_POOLS=true/false
+    //   DELI_RUN_OPS=true/false
+    //   DELI_SETUP_INCENTIVES=true/false
+    bool public constant DO_POOL_SETUP_DEFAULT = false;
+    bool public constant DO_OPERATIONS_DEFAULT = false;
+    bool public constant DO_INCENTIVES_DEFAULT = false;
 
     /*//////////////////////////////////////////////////////////////
                            DEPLOYED CONTRACTS
@@ -95,6 +106,14 @@ contract BaseMainnetDeploy is Script {
         console.log("=== Base Mainnet Deployment ===");
         console.log("Deployer:", msg.sender);
         
+        // Resolve toggles from env or defaults
+        bool doPools = vm.envOr("DELI_SETUP_POOLS", DO_POOL_SETUP_DEFAULT);
+        bool doOps = vm.envOr("DELI_RUN_OPS", DO_OPERATIONS_DEFAULT);
+        bool doIncentives = vm.envOr("DELI_SETUP_INCENTIVES", DO_INCENTIVES_DEFAULT);
+        console.log("Config - Pools:", doPools);
+        console.log("Config - Ops:", doOps);
+        console.log("Config - Incentives:", doIncentives);
+
         // Load existing contracts
         poolManager = IPoolManager(POOL_MANAGER);
         positionManager = IPositionManager(POSITION_MANAGER);
@@ -112,14 +131,30 @@ contract BaseMainnetDeploy is Script {
         // Configure all relationships
         _configureContracts();
         
-        // Initialize pools
-        _initializePools();
+        // Initialize pools (optional)
+        if (doPools) {
+            _initializePools();
+        } else {
+            console.log("Skipping pool initialization (DELI_SETUP_POOLS=false)");
+        }
         
-        // Perform initial operations
-        _performOperations();
+        // Perform initial operations (optional)
+        if (doOps && doPools) {
+            _performOperations();
+        } else if (doOps && !doPools) {
+            console.log("Skipping operations because pools not initialized");
+        } else {
+            console.log("Skipping operations (DELI_RUN_OPS=false)");
+        }
         
-        // Set up rewards
-        _setupIncentives();
+        // Set up rewards (optional)
+        if (doIncentives && doPools) {
+            _setupIncentives();
+        } else if (doIncentives && !doPools) {
+            console.log("Skipping incentives because pools not initialized");
+        } else {
+            console.log("Skipping incentives (DELI_SETUP_INCENTIVES=false)");
+        }
         
         vm.stopBroadcast();
         
