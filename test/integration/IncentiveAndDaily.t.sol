@@ -208,8 +208,12 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         // Warp 3 days into the first 7-day stream
         vm.warp(block.timestamp + 3 days);
 
+        // Sync pool so remainingBefore reflects streamed amount
+        vm.prank(address(hook));
+        inc.pokePool(key);
+
         // Record current incentive data
-        (uint256 rateBefore, uint256 finishBefore, ) = inc.incentiveData(pid, rewardTok);
+        (uint256 rateBefore,, uint256 remainingBefore) = inc.incentiveData(pid, rewardTok);
         assertGt(rateBefore, 0, "stream not active");
 
         // Extend by adding more tokens than remaining (griefing protection)
@@ -223,7 +227,7 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         // New finish should be exactly 7 days from now (±1s tolerance)
         assertApproxEqAbs(finishAfter, block.timestamp + 7 days, 2, "finish not extended");
 
-        uint256 expectedRemaining = (finishBefore - block.timestamp) * rateBefore + topUp;
+        uint256 expectedRemaining = remainingBefore + topUp;
         assertEq(remainingAfter, expectedRemaining, "remaining mismatch");
 
         // New rate should be (remainingAfter / 7 days)
@@ -244,9 +248,8 @@ contract IncentiveAndDaily_IT is Test, Deployers {
         vm.prank(address(hook));
         inc.pokePool(key);
 
-        (uint256 rate,, uint256 remaining) = inc.incentiveData(pid, rewardTok);
+        (uint256 rate,,) = inc.incentiveData(pid, rewardTok);
         assertEq(rate, 0, "rate not zero after finish");
-        assertEq(remaining, 0, "remaining not zero after finish");
     }
 
     /*//////////////////////////////////////////////////////////////

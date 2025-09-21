@@ -480,16 +480,16 @@ contract IncentiveGauge is Ownable2Step {
     function _upsertIncentive(PoolId pid, IERC20 token, uint256 amount) internal returns (uint128 rate) {
         IncentiveInfo storage info = incentives[pid][token];
 
+        // Always sync pool before updating incentive
+        _updatePoolByPid(pid);
+
         uint256 total = amount;
-        if (info.rewardRate > 0) {
-            // For active schedules, first update pool accounting, then add leftover budget
-            _updatePoolByPid(pid);
-            if (block.timestamp < info.periodFinish) {
-                uint256 remainingTime = info.periodFinish - block.timestamp;
-                uint256 leftover = remainingTime * info.rewardRate;
-                if (amount <= leftover) revert DeliErrors.InsufficientIncentive();
-                total += leftover;
-            }
+        // Add leftover budget
+        uint256 leftover = info.remaining;
+        if (leftover > 0) {
+            // For active incentives enforce that amount is greater than leftover
+            if (info.rewardRate > 0 && amount <= leftover) revert DeliErrors.InsufficientIncentive();
+            total += leftover;
         }
 
         rate = SafeCast.toUint128(total / TimeLibrary.WEEK);
@@ -721,8 +721,7 @@ contract IncentiveGauge is Ownable2Step {
 
                 info.lastUpdate = uint64(nowTs);
                 if (nowTs >= info.periodFinish || info.remaining == 0) {
-                    // Deactivate
-                    info.remaining = 0;
+                    // Deactivate but preserve any unstreamed dust to carry forward
                     info.rewardRate = 0;
                     emit IncentiveDeactivated(pid, tok);
                 }
