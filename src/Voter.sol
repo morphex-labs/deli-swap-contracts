@@ -259,8 +259,8 @@ contract Voter is Ownable2Step {
             uint256 toRewards = e.totalWeth - toSafety;
             if (toSafety > 0) WETH.safeTransfer(safetyModule, toSafety);
             if (toRewards > 0) {
-                WETH.safeTransfer(address(distributor), toRewards);
                 distributor.setTokensPerInterval(toRewards / TimeLibrary.WEEK);
+                WETH.safeTransfer(address(distributor), toRewards);
             }
             // Advance pointer to the earliest unsettled epoch. This handles
             // out-of-order finalizations by skipping already-settled epochs.
