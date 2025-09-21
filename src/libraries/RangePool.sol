@@ -171,7 +171,7 @@ library RangePool {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, true);
 
-                if (nextTick <= tick) {
+                if (nextTick < tick) {
                     break;
                 }
 
