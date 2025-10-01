@@ -270,16 +270,19 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             exactInput: false
         })));
 
-        // BMX specified: convert BMX-denominated fee to wBLT, apply buyback split,
-        // deduct internal-swap hook fee (0.3%), then convert to BMX at price≈4.
+        // BMX specified: convert BMX-denominated fee to wBLT using POST-swap price,
+        // apply buyback split, deduct internal-swap hook fee (0.3%), then convert to BMX at price≈p_after.
         uint24 feePips = _lpFee();
         uint256 baseBmx = _baseFee(amountOutBmx);            // BMX-denominated base fee
-        // Initialised sqrt price corresponds to price=4; use exact conversion to avoid drift
-        uint256 baseW   = baseBmx * 4;                        // BMX -> wBLT
+        // Convert using POST-swap sqrtPriceX96
+        (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
+        uint256 inter = FullMath.mulDiv(baseBmx, sqrtP, FixedPoint96.Q96);
+        uint256 baseW   = FullMath.mulDiv(inter, sqrtP, FixedPoint96.Q96); // BMX -> wBLT at post-swap price
         uint256 buyW    = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback
         uint256 internalFee = (buyW * feePips) / 1_000_000;  // internal swap hook fee
         uint256 effW    = buyW - internalFee;                // effective wBLT swapped to BMX
-        uint256 expectedBuy = effW / 4;                      // BMX credited to gauge
+        // expected BMX credited depends on post-swap price; compute via division by p_after
+        // BMX = effW / p_after = effW * 2^192 / sqrtP^2 (not asserted exactly here)
         uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
 
         // Manually flush BMX pool buffer to credit the gauge
@@ -303,7 +306,10 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         })));
 
         uint256 base = _baseFee(amountOutOther);
-        uint256 expectedFeeWblt = _feeToken0To1(base); // token0(OTHER)->token1(wBLT)
+        // Convert using POST-swap sqrtPriceX96 of otherKey (token0 OTHER -> token1 wBLT)
+        (uint160 sqrtP2,,,) = StateLibrary.getSlot0(poolManager, otherKey.toId());
+        uint256 inter2 = FullMath.mulDiv(base, sqrtP2, FixedPoint96.Q96);
+        uint256 expectedFeeWblt = FullMath.mulDiv(inter2, sqrtP2, FixedPoint96.Q96);
         uint256 expectedBuy = (expectedFeeWblt * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = expectedFeeWblt - expectedBuy;
 

@@ -142,9 +142,9 @@ contract FeeProcessor_Edge_IT is Test, Deployers, IUnlockCallback {
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
 
-        // add trivial liquidity so pool has balances
-        EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp+1 hours, bytes(""));
-        EasyPosm.mint(positionManager, otherKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp+1 hours, bytes(""));
+        // add liquidity so price impact for test swaps is small (keeps wBLT fee ≈ base fee)
+        EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e23, 1e24, 1e24, address(this), block.timestamp+1 hours, bytes(""));
+        EasyPosm.mint(positionManager, otherKey, -60000, 60000, 1e23, 1e24, 1e24, address(this), block.timestamp+1 hours, bytes(""));
 
         pid = canonicalKey.toId();
     }

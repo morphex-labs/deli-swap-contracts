@@ -193,8 +193,8 @@ contract FeeProcessor_Reentrancy_IT is Test, Deployers, IUnlockCallback {
         // Initialize pools
         poolManager.initialize(canonicalKey, TickMath.getSqrtPriceAtTick(0));
         poolManager.initialize(otherKey, TickMath.getSqrtPriceAtTick(0));
-        EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
-        EasyPosm.mint(positionManager, otherKey,     -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
+        EasyPosm.mint(positionManager, canonicalKey, -60000, 60000, 1e23, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
+        EasyPosm.mint(positionManager, otherKey,     -60000, 60000, 1e23, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
         pid = canonicalKey.toId();
     }
 

@@ -59,7 +59,7 @@ contract DeliHook is Ownable2Step, BaseHook {
     IIncentiveGauge public incentiveGauge;
 
     // Temporary fee info cached between beforeSwap and afterSwap.
-    uint256 private _pendingFee; // amount of wBLT fee owed for current swap
+    uint256 private _pendingFee; // base fee in specified-token units; converted to wBLT in _afterSwap
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
@@ -222,8 +222,8 @@ contract DeliHook is Ownable2Step, BaseHook {
             absAmountSpecified = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
         }
 
-        // Get the current sqrt price and LP fee for this pool from PoolManager
-        (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
+        // Get the current LP fee for this pool from PoolManager
+        (,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
 
         // Compute base fee in specified-token units
         // We first denominate the fee in the specified token, then convert to the
@@ -234,24 +234,8 @@ contract DeliHook is Ownable2Step, BaseHook {
         bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
         _pendingCurrency = feeCurrencyIs0 ? key.currency0 : key.currency1;
 
-        // Convert fee to feeCurrency units if it differs from specified token
-        // Price p = (sqrtPriceX96^2) / 2^192 (token1 per token0).
-        // Conversions follow v4 rounding conventions:
-        //  - token0 -> token1: floor(base * p)
-        //  - token1 -> token0: ceil(base / p)
-        if (feeCurrencyIs0 == specifiedIs0) {
-            _pendingFee = baseFeeSpecified;
-        } else {
-            if (specifiedIs0) {
-                // specified = token0, feeCurrency = token1
-                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
-                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
-            } else {
-                // specified = token1, feeCurrency = token0
-                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
-                _pendingFee = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
-            }
-        }
+        // Cache base fee (specified-token units). Conversion to wBLT is done in _afterSwap
+        _pendingFee = baseFeeSpecified;
 
         // Use BeforeSwapDelta when fee is on input side (exact input swaps)
         bool feeMatchesSpecified = (feeCurrencyIs0 == specifiedIs0);
@@ -278,8 +262,8 @@ contract DeliHook is Ownable2Step, BaseHook {
         BalanceDelta, /*balanceDelta*/
         bytes calldata /*hookData*/
     ) internal override returns (bytes4, int128) {
-        // Collect the wBLT fee owed from beforeSwap
-        uint256 feeOwed = _pendingFee;
+        // Retrieve cached base fee (specified-token units) from beforeSwap
+        uint256 baseFeeSpecified = _pendingFee;
         Currency feeCurrency = _pendingCurrency;
         bool isInternalSwap = _isInternalSwap;
 
@@ -295,7 +279,26 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Forward the swap fee to FeeProcessor
         int128 hookDeltaUnspecified = 0;
 
-        if (feeOwed > 0) {
+        if (baseFeeSpecified > 0) {
+            // Convert base fee (specified-token units) to wBLT using post-swap price
+            bool specifiedIs0 = params.zeroForOne ? (params.amountSpecified < 0) : !(params.amountSpecified < 0);
+            // Read post-swap sqrt price
+            (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(poolManager, key.toId());
+
+            uint256 feeOwed;
+            if ((Currency.unwrap(key.currency0) == WBLT) == specifiedIs0) {
+                // specified token is wBLT; no conversion
+                feeOwed = baseFeeSpecified;
+            } else if (specifiedIs0) {
+                // token0 (specified) -> token1 (wBLT): floor(base * p)
+                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                feeOwed = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+            } else {
+                // token1 (specified) -> token0 (wBLT): ceil(base / p)
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
+                feeOwed = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
+            }
+
             // Always take the fee from PoolManager
             feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
 
@@ -304,11 +307,7 @@ contract DeliHook is Ownable2Step, BaseHook {
 
             // Only return positive delta when fee is on the unspecified side (relative to specified token)
             // After-swap delta must be expressed in the unspecified token per v4.
-            bool exactInput = params.amountSpecified < 0;
-            bool zeroForOne = params.zeroForOne;
-            Currency specifiedCurrency =
-                zeroForOne ? (exactInput ? key.currency0 : key.currency1) : (exactInput ? key.currency1 : key.currency0);
-            if (Currency.unwrap(feeCurrency) != Currency.unwrap(specifiedCurrency)) {
+            if (Currency.unwrap(feeCurrency) != Currency.unwrap(specifiedIs0 ? key.currency0 : key.currency1)) {
                 // Return positive delta in the unspecified token equal to the fee taken
                 hookDeltaUnspecified = SafeCast.toInt128(int256(feeOwed));
             }
