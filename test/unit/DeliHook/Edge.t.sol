@@ -110,9 +110,9 @@ contract DeliHook_EdgeTest is Test {
     }
 
     // ---------------------------------------------------------------------
-    // 2. Dust trades (fee rounds to zero) should not forward fee nor call settle
+    // 2. Dust trades should still forward fee after rounding up
     // ---------------------------------------------------------------------
-    function testDustTrade_NoFee_NoSettle() public {
+    function testDustTrade_RoundsUp_AndForwardsFee() public {
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(OTHER),
             currency1: Currency.wrap(address(wblt)),
@@ -120,12 +120,13 @@ contract DeliHook_EdgeTest is Test {
             tickSpacing: 60,
             hooks: hook
         });
-        // exact input 100 wei (fee calc => 0)
+        // exact input 100 wei (previously rounded to 0); now rounds up to 1 wei fee
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-100, sqrtPriceLimitX96:0});
         _callSwap(address(0xCCC), key, sp, "");
 
-        assertEq(fp.calls(), 0);
-        assertEq(pm.settleCalls(), 0);
+        // Expect one fee collection call with at least 1 wei forwarded
+        assertEq(fp.calls(), 1);
+        assertGt(fp.lastAmount(), 0);
     }
 
     // ---------------------------------------------------------------------

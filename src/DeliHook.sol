@@ -228,7 +228,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Compute base fee in specified-token units
         // We first denominate the fee in the specified token, then convert to the
         // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
-        uint256 baseFeeSpecified = FullMath.mulDiv(absAmountSpecified, uint256(poolFee), 1_000_000);
+        uint256 baseFeeSpecified = FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000);
 
         // Identify fee token: always collect in wBLT
         bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
@@ -244,8 +244,8 @@ contract DeliHook is Ownable2Step, BaseHook {
         } else {
             if (specifiedIs0) {
                 // specified = token0, feeCurrency = token1
-                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
-                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                _pendingFee = FullMath.mulDivRoundingUp(inter, sqrtPriceX96, FixedPoint96.Q96);
             } else {
                 // specified = token1, feeCurrency = token0
                 uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
