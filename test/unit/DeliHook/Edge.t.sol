@@ -36,6 +36,7 @@ contract DeliHook_EdgeTest is Test {
     MintableERC20 wblt;
     MintableERC20 bmx;
     address constant OTHER = address(0x123);
+    uint24 constant FEE_PIPS = 3000;
 
     function setUp() public {
         pm = new MockHookPoolManager();
@@ -52,12 +53,33 @@ contract DeliHook_EdgeTest is Test {
         hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(fp)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), address(wblt), address(bmx), address(this));
     }
 
-    // helper to execute swap path fully
+    // helper to execute swap path fully with a simulated swapDelta that matches new fee semantics
     function _callSwap(address trader, PoolKey memory key, SwapParams memory params, bytes memory data) internal {
         vm.prank(address(pm));
         hook.beforeSwap(trader, key, params, data);
+
+        bool exactInput = params.amountSpecified < 0;
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+
+        uint256 sprime;
+        if (exactInput && ((Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0)) {
+            // net-of-fee when fee currency matches specified
+            unchecked { sprime = s0 - (s0 * FEE_PIPS) / (1_000_000 + FEE_PIPS); }
+        } else {
+            sprime = s0;
+        }
+
+        int128 a0 = 0;
+        int128 a1 = 0;
+        if (specifiedIs0) {
+            a0 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        } else {
+            a1 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        }
+
         vm.prank(address(pm));
-        hook.afterSwap(trader, key, params, toBalanceDelta(0,0), data);
+        hook.afterSwap(trader, key, params, toBalanceDelta(a0, a1), data);
     }
 
     // ---------------------------------------------------------------------
@@ -120,12 +142,12 @@ contract DeliHook_EdgeTest is Test {
             tickSpacing: 60,
             hooks: hook
         });
-        // exact input 100 wei (fee calc => 0)
+        // exact input 100 wei (dust-protected fee rounds up to 1 wei)
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-100, sqrtPriceLimitX96:0});
         _callSwap(address(0xCCC), key, sp, "");
 
-        assertEq(fp.calls(), 0);
-        assertEq(pm.settleCalls(), 0);
+        assertEq(fp.calls(), 1);
+        assertGt(fp.lastAmount(), 0);
     }
 
     // ---------------------------------------------------------------------

@@ -235,13 +235,16 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         })));
 
         // Expected gauge/voter with wBLT-only fee + internal-swap hook fee (0.3%)
-        uint24 feePips = _lpFee(); // e.g., 3000 pips = 0.3%
-        uint256 baseW = _baseFee(amountIn);                // fee in wBLT on the external swap
-        uint256 buyW  = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback in wBLT
-        uint256 internalFee = (buyW * feePips) / 1_000_000; // hook fee on the internal buyback swap (in wBLT)
-        uint256 effW  = buyW - internalFee;                 // effective wBLT actually swapped to BMX
+        uint24 feePips = _lpFee();
+        // Apply hybrid model: net-of-fee S', then fee on S'
+        uint256 denom = 1_000_000 + feePips;
+        uint256 fpre = (amountIn * feePips + denom - 1) / denom;
+        uint256 sprime = amountIn - fpre;
+        uint256 baseW = (sprime * feePips + 1_000_000 - 1) / 1_000_000; // ceil
+        uint256 buyW  = (baseW * fp.buybackBps()) / 1e4;                 // split (floor)
+        uint256 internalFee = (buyW * feePips) / 1_000_000;              // approx internal hook fee (floor)
+        uint256 effW  = buyW - internalFee;                              // effective wBLT actually swapped to BMX
         // Price was initialised at 4 (sqrtP = 2*Q96), internal swap incurs tiny price impact; allow small tol
-        uint256 expectedBuy = effW / 4;                     // approximate BMX from buyback
         // Voter accumulates: 3% of baseW + 3% of the internal-swap fee
         uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
 
@@ -250,7 +253,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 bucketAfter = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // Bucket is denominated in BMX and depends on execution price; assert it increased
         assertGt(bucketAfter - bucketBefore, 0, "gauge bucket should increase");
-        assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter buffer");
+        // Minor rounding differences from internal swap pricing and ceil/floor → allow tiny relative tolerance
+        assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.00001e18, "wblt voter buffer");
     }
 
     function testBmxPool_ExactOutput_BmxSpecified_Price2x_NoConversion() public {
@@ -273,14 +277,14 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         // BMX specified: convert BMX-denominated fee to wBLT using POST-swap price,
         // apply buyback split, deduct internal-swap hook fee (0.3%), then convert to BMX at price≈p_after.
         uint24 feePips = _lpFee();
-        uint256 baseBmx = _baseFee(amountOutBmx);            // BMX-denominated base fee
+        uint256 baseBmx = (amountOutBmx * feePips + 1_000_000 - 1) / 1_000_000; // ceil on specified output
         // Convert using POST-swap sqrtPriceX96
         (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
         uint256 inter = FullMath.mulDiv(baseBmx, sqrtP, FixedPoint96.Q96);
         uint256 baseW   = FullMath.mulDiv(inter, sqrtP, FixedPoint96.Q96); // BMX -> wBLT at post-swap price
         uint256 buyW    = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback
         uint256 internalFee = (buyW * feePips) / 1_000_000;  // internal swap hook fee
-        uint256 effW    = buyW - internalFee;                // effective wBLT swapped to BMX
+        // effective wBLT swapped to BMX (unused in assertion)
         // expected BMX credited depends on post-swap price; compute via division by p_after
         // BMX = effW / p_after = effW * 2^192 / sqrtP^2 (not asserted exactly here)
         uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
@@ -329,8 +333,13 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             exactInput: true
         })));
 
-        uint256 base = _baseFee(amountInWblt);
-        uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;
+        uint24 feePips = _lpFee();
+        // Net-of-fee S', then fee on S'
+        uint256 denom = 1_000_000 + feePips;
+        uint256 fpre = (amountInWblt * feePips + denom - 1) / denom; // ceil
+        uint256 sprime = amountInWblt - fpre;
+        uint256 base = (sprime * feePips + 1_000_000 - 1) / 1_000_000; // ceil
+        uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;           // split (floor)
         uint256 expectedVoter = base - expectedBuy;
 
         assertEq(fp.pendingWbltForBuyback(otherKey.toId()), expectedBuy, "wblt buyback (no conversion)");

@@ -230,7 +230,12 @@ contract BufferFlushAndPull_IT is Test, Deployers, IUnlockCallback {
         // Swap wBLT (token1) -> OTHER (token0) to trigger _pullFromSender.
         poolManager.unlock(abi.encode(address(wblt), input));
 
-        uint256 feeAmt = _feeAmt(input);
+        // Expected fee under hybrid model: net-of-fee budget S' then fee on S'
+        uint24 feePips = 3000; // spacing 60
+        uint256 denom = 1_000_000 + feePips;
+        uint256 fpre = (input * feePips + denom - 1) / denom; // ceil(S0*fee/(1e6+fee))
+        uint256 sprime = input - fpre;                         // S' = S0 - Fpre
+        uint256 feeAmt = (sprime * feePips + 1_000_000 - 1) / 1_000_000; // ceil(S'*fee/1e6)
         uint256 buybackPortion = (feeAmt * fp.buybackBps()) / 1e4;
         uint256 voterPortion = feeAmt - buybackPortion;
 
