@@ -333,10 +333,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external override onlyAuthorizedCaller {
         // Build full context once and forward to both gauges
-        NotifyContext memory c = _buildContextFromToken(tokenId, true);
+        NotifyContext memory c = _buildContextFromToken(tokenId, false);
 
         dailyEpochGauge.notifyUnsubscribeWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.owner, c.tickLower, c.tickUpper, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity
         );
         incentiveGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.tickLower, c.tickUpper, c.liquidity);
     }

@@ -28,7 +28,6 @@ interface IDailyEpochGauge {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity

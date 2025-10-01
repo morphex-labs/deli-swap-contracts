@@ -633,7 +633,6 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -664,7 +663,7 @@ contract DailyEpochGauge is Ownable2Step {
         }
 
         // 4) Claim any remaining rewards and clean up indices
-        _claimRewards(posKey, ownerAddr);
+        _claimRewards(posKey, positionOwner[posKey]);
         _removePosition(pid, posKey);
     }
 

@@ -431,7 +431,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         vm.startSnapshotGas("daily_only_unsubscribe_no_poke");
         // Provide a plausible currentTick and owner for the gauge's context method
         int24 currentTick = 0;
-        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick, address(this), lower, upper, liq);
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -497,7 +497,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(labelDaily);
         int24 currentTick2 = 0;
-        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick2, address(this), lower, upper, liq);
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick2, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
 
