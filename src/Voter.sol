@@ -33,7 +33,6 @@ contract Voter is Ownable2Step {
         bool settled;
     }
 
-    bool private finalizationInProgress;
     address[] private autoVoterList;
 
     uint16[3] public options; // set in constructor (basis points)
@@ -41,6 +40,7 @@ contract Voter is Ownable2Step {
     address public safetyModule;
     IRewardDistributor public distributor;
     uint256 public nextEpochToFinalize;
+    bool public finalizationInProgress;
 
     IERC20 public immutable WETH;
     IERC20 public immutable SBF_BMX;
@@ -200,9 +200,18 @@ contract Voter is Ownable2Step {
     }
 
     /// @notice Number of addresses that ever enabled auto-vote (some may be disabled now).
-    /// @return The number of addresses that ever enabled auto-vote.
     function autoVoterCount() external view returns (uint256) {
         return autoVoterList.length;
+    }
+
+    /// @notice Returns true if there exists at least one epoch that has ended but is not yet finalized.
+    function hasEndedUnfinalizedEpoch() public view returns (bool) {
+        uint256 ep = nextEpochToFinalize;
+        // If already settled (or no epochs yet), no blocking needed
+        if (epochInfo[ep].settled) return false;
+        // Check if this epoch has ended
+        uint256 endTs = EPOCH_ZERO + (ep + 1) * TimeLibrary.WEEK;
+        return block.timestamp >= endTs;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -279,7 +288,7 @@ contract Voter is Ownable2Step {
     /// @param enableAuto Whether to remember this choice for future epochs.
     function vote(uint8 option, bool enableAuto) external {
         if (option >= 3) revert DeliErrors.InvalidOption();
-        if (finalizationInProgress || _hasEndedUnfinalizedEpoch()) {
+        if (finalizationInProgress || hasEndedUnfinalizedEpoch()) {
             revert DeliErrors.FinalizationInProgress();
         }
 
@@ -393,16 +402,6 @@ contract Voter is Ownable2Step {
             }
         }
         delete pendingRemovals[ep];
-    }
-
-    /// @dev Returns true if there exists at least one epoch that has ended but is not yet finalized.
-    function _hasEndedUnfinalizedEpoch() internal view returns (bool) {
-        uint256 ep = nextEpochToFinalize;
-        // If already settled (or no epochs yet), no blocking needed
-        if (epochInfo[ep].settled) return false;
-        // Check if this epoch has ended
-        uint256 endTs = EPOCH_ZERO + (ep + 1) * TimeLibrary.WEEK;
-        return block.timestamp >= endTs;
     }
 
     /// @dev Validates manual voters for `ep`.
