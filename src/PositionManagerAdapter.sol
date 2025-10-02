@@ -153,6 +153,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     }
 
     /// @notice Update gauge addresses
+    /// @param _dailyGauge The address of the daily epoch gauge.
+    /// @param _incentiveGauge The address of the incentive gauge.
     function setGauges(address _dailyGauge, address _incentiveGauge) external onlyOwner {
         if (_dailyGauge == address(0) || _incentiveGauge == address(0)) {
             revert DeliErrors.ZeroAddress();
@@ -163,6 +165,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     }
 
     /// @notice Authorize or revoke a caller (PositionManager or hooks)
+    /// @param caller The address to authorize or revoke.
+    /// @param authorized Whether to authorize or revoke the address.
     function setAuthorizedCaller(address caller, bool authorized) external onlyOwner {
         isAuthorizedCaller[caller] = authorized;
         emit CallerAuthorized(caller, authorized);
@@ -187,6 +191,9 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @notice Get pool and position info for a tokenId
     /// @dev Routes to the appropriate handler
+    /// @param tokenId The tokenId to get the pool and position info for.
+    /// @return key The pool key.
+    /// @return info The position info.
     function getPoolAndPositionInfo(uint256 tokenId) external view returns (PoolKey memory key, PositionInfo info) {
         IPositionHandler handler = getHandler(tokenId);
         (key, info,) = handler.getPoolPositionAndLiquidity(tokenId);
@@ -194,6 +201,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @notice Get the current liquidity of a position
     /// @dev Routes to the appropriate handler
+    /// @param tokenId The tokenId to get the position liquidity for.
+    /// @return liquidity The position liquidity.
     function getPositionLiquidity(uint256 tokenId) external view returns (uint128 liquidity) {
         IPositionHandler handler = getHandler(tokenId);
         (,, liquidity) = handler.getPoolPositionAndLiquidity(tokenId);
@@ -201,6 +210,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @notice Get the owner of a position
     /// @dev Routes to the appropriate handler
+    /// @param tokenId The tokenId to get the owner for.
+    /// @return The owner address.
     function ownerOf(uint256 tokenId) external view returns (address) {
         IPositionHandler handler = getHandler(tokenId);
         return handler.ownerOf(tokenId);
@@ -208,6 +219,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @notice Get PoolKey from PositionInfo for burned tokens
     /// @dev First tries V4 PositionManager, then falls back to V2 pools
+    /// @param info The position info to get the pool key for.
+    /// @return The pool key.
     function getPoolKeyFromPositionInfo(PositionInfo info) external view returns (PoolKey memory) {
         bytes25 truncatedPoolId = PositionInfoLibrary.poolId(info);
         return _getPoolKeyFromTruncatedId(truncatedPoolId);
@@ -215,6 +228,8 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
     /// @notice Get PoolKey from a PoolId
     /// @dev First tries V4 PositionManager, then falls back to V2 pools
+    /// @param poolId The poolId to get the pool key for.
+    /// @return The pool key.
     function getPoolKeyFromPoolId(PoolId poolId) external view returns (PoolKey memory) {
         bytes25 truncatedPoolId = bytes25(PoolId.unwrap(poolId));
         return _getPoolKeyFromTruncatedId(truncatedPoolId);

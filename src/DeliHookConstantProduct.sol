@@ -170,6 +170,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
                            POOL INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Verifies the pool is valid before initialization.
     function _beforeInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96)
         internal
         override
@@ -203,7 +204,7 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
         return super._beforeInitialize(sender, key, sqrtPriceX96);
     }
 
-    /// @notice Bootstraps the DailyEpochGauge and IncentiveGauge pool state.
+    /// @dev Bootstraps the DailyEpochGauge and IncentiveGauge pool state.
     function _afterInitialize(address, PoolKey calldata key, uint160, int24) internal override returns (bytes4) {
         // Bootstrap DailyEpochGauge pool state
         // V2 pools always use tick 0 for gauge tracking

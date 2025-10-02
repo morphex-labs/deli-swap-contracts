@@ -14,7 +14,7 @@ Deli Swap is a decentralized exchange (DEX) that supercharges your trading and l
 
 ### For Liquidity Providers
 
-- **Automatic BMX rewards**: Your share of trading fees is automatically converted to BMX tokens
+- **Automatic BMX rewards**: Your share of trading fees is converted to BMX tokens by keepers
 - **Daily distributions**: Receive your BMX rewards every 24 hours (streamed)
 - **Extra incentives**: Earn additional reward tokens on top of BMX
 - **Flexible options**: Choose between two pool types based on your strategy
@@ -28,14 +28,16 @@ Perfect for experienced LPs who want to maximize capital efficiency:
 - Set custom price ranges for your liquidity
 - Earn higher returns when prices stay in your range
 - Ideal for stable pairs or when you have strong price predictions
+- Fees range from 0.01% to 2.5% based on pool configuration
 
-### 2. Simple x*y=k Pools (Easy)
+### 2. Simple x\*y=k Pools (Easy)
 
 Great for beginners or "set and forget" liquidity providers:
 
 - No need to manage price ranges
 - Your liquidity is always earning fees
 - Works just like classic Uniswap v2 pools
+- Pool creators set fees (minimum 0.1%)
 
 ## 💰 How Rewards Work
 
@@ -43,18 +45,20 @@ Great for beginners or "set and forget" liquidity providers:
 
 Every trade on Deli Swap generates fees. Here's what happens next:
 
-1. **Fees are collected** from each swap
-2. **97% converts to BMX** tokens automatically
-3. **BMX streams to you** over the next 24 hours
+1. **Fees are collected** from each swap in wBLT
+2. **97% converts to BMX** when enough fees accumulate (keepers handle this)
+3. **BMX streams to you** over 24 hours starting 2 days later
 4. **Claim anytime** - your rewards accumulate until you're ready
 
 ### The 3-Day Pipeline
 
 To ensure stable and predictable rewards:
 
-- **Day 1**: Fees are collected from trading and converted to BMX in real-time
-- **Day 2**: BMX bought-back from fees is held for a day
-- **Day 3**: BMX rewards stream to liquidity providers
+- **Day 1**: Fees are collected from trading, if threshold is meet then fees are used to buyback BMX
+- **Day 2**: System holds your BMX rewards
+- **Day 3**: BMX rewards stream to liquidity providers over 24 hours
+
+For example: Monday's fees → Stream on Wednesday
 
 ## 🗳️ Governance & Voting
 
@@ -75,6 +79,7 @@ Too busy to vote every week? Enable auto-vote:
 
 - Your votes automatically support your previous choices
 - Maintains your voting power without weekly management
+- System checks your balance each week and adjusts accordingly
 
 ## 🌟 Unique Benefits
 
@@ -92,6 +97,7 @@ Beyond BMX rewards:
 - Pools can receive additional reward tokens
 - 7-day streaming for smooth distribution
 - Stack multiple reward streams
+- **Important**: Extra token rewards must be claimed before unsubscribing/transferring liquidity otherwise they will be forfeited
 
 ## 📈 The BMX Advantage
 

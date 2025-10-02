@@ -2,28 +2,84 @@
 
 ## DeliHook
 
-Primary V4 hook for concentrated liquidity pools. Intercepts swap fees before they reach LPs and forwards to FeeProcessor. Uses BeforeSwapDelta for exact input swaps on non-BMX pools, otherwise uses take() method.
+Primary Uniswap V4 hook for concentrated liquidity pools that:
+- Enforces: no native ETH; one side must be wBLT; pool must use dynamic fees
+- Bootstraps `DailyEpochGauge` and `IncentiveGauge` on initialization
+- Derives and sets the LP fee from tick spacing:
+  1→0.01%, 10→0.03%, 40→0.15%, 60→0.30%, 100→0.40%, 200→0.65%, 300→1.00%, 400→1.75%, 600→2.50%
+- Overrides the pool LP fee to 0 at swap time using `LPFeeLibrary.OVERRIDE_FEE_FLAG`
+- Computes fees (in wBLT) and forwards them to `FeeProcessor`
+- Checkpoints both gauges on every swap
+
+Admin: update `FeeProcessor`, `DailyEpochGauge`, `IncentiveGauge`, and per-pool dynamic fee (0.01%–3%).
 
 ## DeliHookConstantProduct
 
-V2-style x*y=k AMM implementation. Extends MultiPoolCustomCurve to override concentrated liquidity. Maintains per-pool reserves and uses synthetic position identifiers instead of NFTs. Fees are implicit in the constant product formula.
+Uniswap V4 hook implementing a V2-style x*y=k AMM on top of `MultiPoolCustomCurve`:
+- Per-pool reserves and per-user LP shares (no NFTs); first mint locks minimum liquidity
+- Initialization constraints: one token must be wBLT, `tickSpacing=1`, `sqrtPrice=2^96` (tick 0), fee ≥ 0.1%
+- Fee currency is always wBLT. The hook burns ERC-6909 claims and takes the real tokens to forward fees to `FeeProcessor`
+- Enforces `sqrtPriceLimitX96` against virtual price from reserves
+- Notifies `V2PositionHandler` on add/remove liquidity; checkpoints both gauges on swaps
+- Views: quotes, multi-hop quotes, `getReserves`, `getTotalSupply`, `balanceOf`, and a virtual `getSlot0`
+
+Admin: setters for `FeeProcessor`, `DailyEpochGauge`, `IncentiveGauge`, `V2PositionHandler`.
 
 ## FeeProcessor
 
-Central fee collection hub. Splits fees 97% for BMX buybacks (via PoolManager swap) and 3% for voters (as wBLT). Includes slippage protection and handles both BMX and non-BMX pool fees differently.
+Central fee collection and distribution hub:
+- Splits incoming wBLT fees: 97% for BMX buybacks, 3% for voters (configurable via `buybackBps`)
+- Per-pool pending buffers with swap-and-pop removal
+- Keeper-based buyback execution when buffers reach MIN_WBLT_FOR_BUYBACK (1 wBLT)
+- Buyback swaps use `PoolManager` with 0xDE1ABEEF flag to prevent recursive fee collection
+- Streams bought BMX directly to `DailyEpochGauge`
+- `claimVoterFees()` transfers accumulated voter wBLT to target address
+
+Admin: `setBuybackBps`, `setBuybackPoolKey`, `setHook`, `setKeeper`, emergency `sweepERC20` (excludes BMX/wBLT).
 
 ## DailyEpochGauge
 
-BMX reward distribution with 24-hour UTC epochs. Implements 3-day pipeline: fees collected Day N → queued Day N+1 → streamed Day N+2. Only in-range positions earn rewards through sophisticated tick accounting.
+BMX reward streaming with 24-hour UTC epochs:
+- N+2 day pipeline: fees collected Day N → stream Day N+2
+- Range-aware reward distribution (only in-range positions earn)
+- Context-based subscription system via `PositionManagerAdapter`
+- Sophisticated tick accounting with `RangePool` library
+- Supports both individual and batch claiming
+- Auto-claims on position transfer/removal (unlike IncentiveGauge)
+- Admin force-unsubscribe functionality
+
+Admin: `setFeeProcessor`, `setPositionManagerAdapter`, `adminForceUnsubscribe`.
 
 ## IncentiveGauge
 
-Additional ERC20 token rewards with 7-day streaming periods. Supports multiple reward tokens per pool. Uses same range-aware distribution as DailyEpochGauge.
+Additional ERC20 token rewards with seamless top-ups:
+- 7-day streaming periods with immediate start
+- Whitelist system for allowed reward tokens
+- Range-aware distribution matching `DailyEpochGauge`
+- **Important**: Rewards are forfeited on position unsubscribe (no auto-claim)
+- Supports upsert semantics for ongoing incentive programs
+- Combined claiming with `DailyEpochGauge` rewards
+
+Admin: `setWhitelist`, `setPositionManagerAdapter`, `adminForceUnsubscribe`.
 
 ## PositionManagerAdapter
 
-ISubscriber implementation that routes position events from Uniswap's PositionManager to appropriate handlers. Manages handler discovery and forwards subscription events to both gauge contracts.
+Modular position event router extending `ISubscriber`:
+- Routes Uniswap PositionManager events to appropriate handlers
+- Pre-fetches position context for gas optimization
+- Handler discovery with `isHandler()` iteration
+- V2 fallback for PoolKey lookups via truncated poolId
+- Manages subscriptions to both gauge contracts
+
+Admin: `addHandler`, `removeHandler`.
 
 ## Voter
 
-Weekly voting for sbfBMX holders to allocate protocol revenue. Features auto-vote system that tracks voters in array, checks balances at finalization, and removes zero-balance voters. Manual votes override auto-votes for that epoch.
+Weekly voting system for protocol revenue distribution:
+- Tuesday-aligned epochs with batch-aware finalization
+- Auto-vote array tracking with balance verification at finalization
+- Manual votes override auto-votes for that epoch
+- Distributes to configurable options (Safety Module, Reward Distributor)
+- Admin deposits WETH for each epoch
+
+Admin: `setOptions`, `deposit`, `finalize` with batch support.

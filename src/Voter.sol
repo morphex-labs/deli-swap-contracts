@@ -27,6 +27,12 @@ contract Voter is Ownable2Step {
                                STORAGE
     //////////////////////////////////////////////////////////////*/
 
+    struct EpochData {
+        uint256 totalWeth; // deposited for this epoch
+        uint256[3] optionWeight; // cumulative vote weight per option
+        bool settled;
+    }
+
     bool private finalizationInProgress;
     address[] private autoVoterList;
 
@@ -39,12 +45,6 @@ contract Voter is Ownable2Step {
     IERC20 public immutable WETH;
     IERC20 public immutable SBF_BMX;
     uint256 public immutable EPOCH_ZERO; // Tuesday start timestamp
-
-    struct EpochData {
-        uint256 totalWeth; // deposited for this epoch
-        uint256[3] optionWeight; // cumulative vote weight per option
-        bool settled;
-    }
 
     mapping(uint256 => address[]) private pendingRemovals;
     mapping(address => uint256) private autoIndex;
@@ -112,11 +112,14 @@ contract Voter is Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice View helper to fetch the current epoch.
+    /// @return The current epoch.
     function currentEpoch() public view returns (uint256) {
         return (block.timestamp - EPOCH_ZERO) / TimeLibrary.WEEK;
     }
 
     /// @notice Timestamp (unix time) when a given epoch ends.
+    /// @param ep The epoch to get the end time for.
+    /// @return The timestamp when the epoch ends.
     function epochEnd(uint256 ep) external view returns (uint256) {
         return EPOCH_ZERO + (ep + 1) * TimeLibrary.WEEK;
     }
@@ -124,6 +127,10 @@ contract Voter is Ownable2Step {
     /// @notice Return a user's voting option and weight for a given epoch.
     /// @dev For auto-voters the weight is what was recorded during tally (0 until
     ///      that epoch is processed). Returns option=3 if the user has no vote.
+    /// @param ep The epoch to get the user vote for.
+    /// @param user The user to get the vote for.
+    /// @return option The user's voting option.
+    /// @return weight The user's voting weight.
     function getUserVote(uint256 ep, address user) external view returns (uint8 option, uint256 weight) {
         weight = userVoteWeight[ep][user];
 
@@ -160,6 +167,10 @@ contract Voter is Ownable2Step {
     }
 
     /// @notice Convenience helper returning the active epoch id plus its data.
+    /// @return epoch The current epoch.
+    /// @return totalWeth The total WETH deposited for the epoch.
+    /// @return optionWeight The cumulative vote weight per option.
+    /// @return settled Whether the epoch has been finalized.
     function currentEpochData()
         external
         view
@@ -173,6 +184,7 @@ contract Voter is Ownable2Step {
     }
 
     /// @notice Returns a user’s auto-vote setting.
+    /// @param user The user to get the auto-vote setting for.
     /// @return option 0-2 chosen option; 3 when disabled
     /// @return enabled True if auto-vote is currently active
     function autoVoteOf(address user) public view returns (uint8 option, bool enabled) {
@@ -188,6 +200,7 @@ contract Voter is Ownable2Step {
     }
 
     /// @notice Number of addresses that ever enabled auto-vote (some may be disabled now).
+    /// @return The number of addresses that ever enabled auto-vote.
     function autoVoterCount() external view returns (uint256) {
         return autoVoterList.length;
     }

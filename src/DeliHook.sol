@@ -123,12 +123,12 @@ contract DeliHook is Ownable2Step, BaseHook {
     }
 
     /// @notice Owner override to set a pool's dynamic LP fee.
-    /// @param key The pool key identifying the pool
-    /// @param newFee The new LP fee in hundredths of a bip (max 30,000 = 3%)
-    function setPoolFee(PoolKey calldata key, uint24 newFee) external onlyOwner {
-        if (newFee > MAX_FEE || newFee < MIN_FEE) revert DeliErrors.InvalidFee();
-        poolManager.updateDynamicLPFee(key, newFee);
-        emit PoolFeeSet(key.toId(), newFee);
+    /// @param _key The pool key identifying the pool
+    /// @param _newFee The new LP fee in hundredths of a bip (max 30,000 = 3%)
+    function setPoolFee(PoolKey calldata _key, uint24 _newFee) external onlyOwner {
+        if (_newFee > MAX_FEE || _newFee < MIN_FEE) revert DeliErrors.InvalidFee();
+        poolManager.updateDynamicLPFee(_key, _newFee);
+        emit PoolFeeSet(_key.toId(), _newFee);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -323,16 +323,16 @@ contract DeliHook is Ownable2Step, BaseHook {
 
     /// @notice Get the LP fee for a supported tick spacing (in hundredths of a bip, out of 1_000_000)
     /// @dev Reverts with InvalidTickSpacing for unsupported spacings
-    function getPoolFeeFromTickSpacing(int24 tickSpacing) public pure returns (uint24) {
-        if (tickSpacing == 1) return 100; // 0.01%
-        if (tickSpacing == 10) return 300; // 0.03%
-        if (tickSpacing == 40) return 1_500; // 0.15%
-        if (tickSpacing == 60) return 3_000; // 0.30%
-        if (tickSpacing == 100) return 4_000; // 0.40%
-        if (tickSpacing == 200) return 6_500; // 0.65%
-        if (tickSpacing == 300) return 10_000; // 1.00%
-        if (tickSpacing == 400) return 17_500; // 1.75%
-        if (tickSpacing == 600) return 25_000; // 2.50%
+    function getPoolFeeFromTickSpacing(int24 _tickSpacing) public pure returns (uint24) {
+        if (_tickSpacing == 1) return 100; // 0.01%
+        if (_tickSpacing == 10) return 300; // 0.03%
+        if (_tickSpacing == 40) return 1_500; // 0.15%
+        if (_tickSpacing == 60) return 3_000; // 0.30%
+        if (_tickSpacing == 100) return 4_000; // 0.40%
+        if (_tickSpacing == 200) return 6_500; // 0.65%
+        if (_tickSpacing == 300) return 10_000; // 1.00%
+        if (_tickSpacing == 400) return 17_500; // 1.75%
+        if (_tickSpacing == 600) return 25_000; // 2.50%
         revert DeliErrors.InvalidTickSpacing();
     }
 }

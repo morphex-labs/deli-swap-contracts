@@ -107,9 +107,6 @@ abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback
         _;
     }
 
-    /**
-     * @dev Set the pool `PoolManager` address.
-     */
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
     /**

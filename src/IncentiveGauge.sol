@@ -34,7 +34,7 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
  *         PositionManager subscription callbacks track liquidity changes so
  *         rewards remain proportional over time.  Each stream lasts 7 days
  *         and can be topped-up seamlessly; leftover tokens are rolled into the
- *         new stream.
+ *         new stream. Rewards are forfeited on position unsubscribe.
  */
 contract IncentiveGauge is Ownable2Step {
     using SafeERC20 for IERC20;
@@ -147,17 +147,25 @@ contract IncentiveGauge is Ownable2Step {
                                    ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    function setHook(address hook, bool enabled) external onlyOwner {
-        if (hook == address(0)) revert DeliErrors.ZeroAddress();
-        isHook[hook] = enabled;
-        emit HookAuthorised(hook, enabled);
+    /// @notice Admin-only function to set the hook.
+    /// @param _hook The address of the hook.
+    /// @param _enabled Whether the hook is enabled.
+    function setHook(address _hook, bool _enabled) external onlyOwner {
+        if (_hook == address(0)) revert DeliErrors.ZeroAddress();
+        isHook[_hook] = _enabled;
+        emit HookAuthorised(_hook, _enabled);
     }
 
-    function setWhitelist(IERC20 token, bool ok) external onlyOwner {
-        whitelist[token] = ok;
-        emit WhitelistSet(token, ok);
+    /// @notice Admin-only function to set the whitelist.
+    /// @param _token The token to set the whitelist for.
+    /// @param _enabled Whether the token is whitelisted.
+    function setWhitelist(IERC20 _token, bool _enabled) external onlyOwner {
+        whitelist[_token] = _enabled;
+        emit WhitelistSet(_token, _enabled);
     }
 
+    /// @notice Admin-only function to set the position manager adapter.
+    /// @param _adapter The address of the position manager adapter.
     function setPositionManagerAdapter(address _adapter) external onlyOwner {
         if (_adapter == address(0)) revert DeliErrors.ZeroAddress();
         positionManagerAdapter = IPositionManagerAdapter(_adapter);
@@ -265,6 +273,7 @@ contract IncentiveGauge is Ownable2Step {
     /// @param tokenId The NFT token ID of the position to claim for.
     /// @param token The token to claim rewards for.
     /// @param to The address to transfer the rewards to.
+    /// @return amount The amount of rewards claimed.
     function claim(uint256 tokenId, IERC20 token, address to) external returns (uint256 amount) {
         // Verify the caller owns the position
         address owner = positionManagerAdapter.ownerOf(tokenId);
@@ -352,6 +361,8 @@ contract IncentiveGauge is Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice List registered reward tokens for a pool.
+    /// @param pid The poolId to get the reward tokens for.
+    /// @return list The list of reward tokens for the pool.
     function poolTokensOf(PoolId pid) external view returns (IERC20[] memory list) {
         IERC20[] storage reg = poolTokenRegistry[pid];
         uint256 n = reg.length;
@@ -365,6 +376,11 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     /// @notice Basic incentive data for APR calculations.
+    /// @param pid The poolId to get the incentive data for.
+    /// @param token The token to get the incentive data for.
+    /// @return rewardRate The reward rate for the token.
+    /// @return periodFinish The period finish for the token.
+    /// @return remaining The remaining amount for the token.
     function incentiveData(PoolId pid, IERC20 token)
         external
         view
@@ -377,6 +393,11 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     /// @notice batched version, returns array aligned to `tokens` input
+    /// @param pid The poolId to get the incentive data for.
+    /// @param tokens The tokens to get the incentive data for.
+    /// @return rewardRates The reward rates for the tokens.
+    /// @return finishes The period finishes for the tokens.
+    /// @return remainings The remaining amounts for the tokens.
     function incentiveDataBatch(PoolId pid, IERC20[] calldata tokens)
         external
         view
@@ -398,11 +419,17 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     /// @notice Returns pending rewards for a position by tokenId and specific token.
+    /// @param tokenId The tokenId to get the pending rewards for.
+    /// @param token The token to get the pending rewards for.
+    /// @return amount The amount of pending rewards.
     function pendingRewardsByTokenId(uint256 tokenId, IERC20 token) external view returns (uint256 amount) {
         amount = _pendingRewardsByTokenId(tokenId, token);
     }
 
     /// @notice Batch version, returns array aligned to `tokens` input for a given tokenId
+    /// @param tokenId The tokenId to get the pending rewards for.
+    /// @param tokens The tokens to get the pending rewards for.
+    /// @return amounts The amounts of pending rewards.
     function pendingRewardsByTokenIdBatch(uint256 tokenId, IERC20[] calldata tokens)
         external
         view
@@ -419,11 +446,17 @@ contract IncentiveGauge is Ownable2Step {
     }
 
     /// @notice Aggregate pending rewards (all tokens) for an owner in a pool
+    /// @param pid The poolId to get the pending rewards for.
+    /// @param owner The owner to get the pending rewards for.
+    /// @return list The list of pending rewards for the owner in the pool.
     function pendingRewardsOwner(PoolId pid, address owner) external view returns (Pending[] memory list) {
         list = _pendingRewardsForPool(pid, owner);
     }
 
     /// @notice Batch version, returns array aligned to `pids` input, each element is Pending array for that pool
+    /// @param pids The pools to get the pending rewards for.
+    /// @param owner The owner to get the pending rewards for.
+    /// @return lists The lists of pending rewards for the owner in the pools.
     function pendingRewardsOwnerBatch(PoolId[] calldata pids, address owner)
         external
         view

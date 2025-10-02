@@ -135,66 +135,68 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
                                ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Transfers the accumulated 3 % voter share (stored as wBLT) to `to`.
-    /// @param to Recipient address that receives the buffered wBLT.
+    /// @notice Transfers the accumulated 3 % voter share (stored as wBLT) to `_to`.
+    /// @param _to Recipient address that receives the buffered wBLT.
     /// @dev Intended to be called once per week by governance after
     ///      converting the amount to wETH off-chain and before forwarding to the
     ///      Voter contract.
-    function claimVoterFees(address to) external onlyOwner {
+    function claimVoterFees(address _to) external onlyOwner {
         uint256 amt = pendingWbltForVoter;
         if (amt == 0) revert DeliErrors.NoFunds();
         pendingWbltForVoter = 0;
-        IERC20(Currency.unwrap(WBLT)).safeTransfer(to, amt);
-        emit VoterFeesClaimed(amt, to);
+        IERC20(Currency.unwrap(WBLT)).safeTransfer(_to, amt);
+        emit VoterFeesClaimed(amt, _to);
     }
 
     /// @notice Governance setter for the buy-back share (in basis points).
-    /// @param newBps New buy-back percentage expressed in BPS (0 ‑ 10 000).
-    function setBuybackBps(uint16 newBps) external onlyOwner {
-        if (newBps > 10_000) revert DeliErrors.InvalidBps();
-        buybackBps = newBps;
-        emit BuybackBpsUpdated(newBps);
+    /// @param _newBps New buy-back percentage expressed in BPS (0 ‑ 10 000).
+    function setBuybackBps(uint16 _newBps) external onlyOwner {
+        if (_newBps > 10_000) revert DeliErrors.InvalidBps();
+        buybackBps = _newBps;
+        emit BuybackBpsUpdated(_newBps);
     }
 
     /// @notice Authorise or de-authorise a keeper address.
-    /// @param keeper The address to authorise or de-authorise.
-    /// @param enabled Whether to authorise or de-authorise the address.
-    function setKeeper(address keeper, bool enabled) external onlyOwner {
-        if (keeper == address(0)) revert DeliErrors.ZeroAddress();
-        isKeeper[keeper] = enabled;
-        emit KeeperAuthorised(keeper, enabled);
+    /// @param _keeper The address to authorise or de-authorise.
+    /// @param _enabled Whether to authorise or de-authorise the address.
+    function setKeeper(address _keeper, bool _enabled) external onlyOwner {
+        if (_keeper == address(0)) revert DeliErrors.ZeroAddress();
+        isKeeper[_keeper] = _enabled;
+        emit KeeperAuthorised(_keeper, _enabled);
     }
 
     /// @notice Configuration of the BMX/wBLT pool used for buy-backs.
-    /// @param key The poolKey of the BMX/wBLT pool.
-    function setBuybackPoolKey(PoolKey calldata key) external onlyOwner {
+    /// @param _key The poolKey of the BMX/wBLT pool.
+    function setBuybackPoolKey(PoolKey calldata _key) external onlyOwner {
         // pair must consist of BMX and wBLT
-        bool hasBmx = Currency.unwrap(key.currency0) == BMX || Currency.unwrap(key.currency1) == BMX;
-        bool hasWblt = key.currency0 == WBLT || key.currency1 == WBLT;
+        bool hasBmx = Currency.unwrap(_key.currency0) == BMX || Currency.unwrap(_key.currency1) == BMX;
+        bool hasWblt = _key.currency0 == WBLT || _key.currency1 == WBLT;
         if (!(hasBmx && hasWblt)) revert DeliErrors.InvalidPoolKey();
-        buybackPoolKey = key;
+        buybackPoolKey = _key;
         if (!buybackPoolSet) {
             buybackPoolSet = true;
         }
-        emit BuybackPoolSet(key.toId());
+        emit BuybackPoolSet(_key.toId());
     }
 
     /// @notice Authorise or de-authorise a hook address.
-    function setHook(address hook, bool enabled) external onlyOwner {
-        if (hook == address(0)) revert DeliErrors.ZeroAddress();
-        isHook[hook] = enabled;
-        emit HookAuthorised(hook, enabled);
+    /// @param _hook The address to authorise or de-authorise.
+    /// @param _enabled Whether to authorise or de-authorise the address.
+    function setHook(address _hook, bool _enabled) external onlyOwner {
+        if (_hook == address(0)) revert DeliErrors.ZeroAddress();
+        isHook[_hook] = _enabled;
+        emit HookAuthorised(_hook, _enabled);
     }
 
     /// @notice Owner can recover arbitrary ERC-20 tokens mistakenly sent to this
     ///         contract, except BMX and wBLT which are part of the fee flow.
-    /// @param token The ERC-20 address to sweep.
-    /// @param amount Amount to transfer.
-    /// @param to Recipient of the swept tokens.
-    function sweepERC20(address token, uint256 amount, address to) external onlyOwner {
-        if (token == Currency.unwrap(WBLT) || token == BMX) revert DeliErrors.NotAllowed();
-        IERC20(token).safeTransfer(to, amount);
-        emit TokenSwept(token, amount, to);
+    /// @param _token The ERC-20 address to sweep.
+    /// @param _amount Amount to transfer.
+    /// @param _to Recipient of the swept tokens.
+    function sweepERC20(address _token, uint256 _amount, address _to) external onlyOwner {
+        if (_token == Currency.unwrap(WBLT) || _token == BMX) revert DeliErrors.NotAllowed();
+        IERC20(_token).safeTransfer(_to, _amount);
+        emit TokenSwept(_token, _amount, _to);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -227,7 +229,10 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     }
 
     /// @notice Called by DeliHook after it transfers `amount` of the fee token to this contract.
-    /// Splits amount into buy-back and voter portions, buffers and/or swaps as needed.
+    /// @dev Splits amount into buy-back and voter portions, buffers and/or swaps as needed.
+    /// @param key The pool key of the pool that collected the fee.
+    /// @param amountWblt The amount of wBLT fee collected.
+    /// @param isInternalSwap Whether the swap is internal buyback swap.
     function collectFee(PoolKey calldata key, uint256 amountWblt, bool isInternalSwap) external onlyHook {
         if (amountWblt == 0) revert DeliErrors.ZeroAmount();
 
@@ -341,17 +346,20 @@ contract FeeProcessor is Ownable2Step, SafeCallback {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Returns the list of pools that currently have a non-zero pending buyback buffer.
+    /// @return pendingPools The list of pools that currently have a non-zero pending buyback buffer.
     function getPendingPools() external view returns (PoolId[] memory) {
         return pendingPools;
     }
 
     /// @notice Returns the count of pools with non-zero pending buyback buffers.
+    /// @return pendingPoolsCount The count of pools with non-zero pending buyback buffers.
     function pendingPoolsCount() external view returns (uint256) {
         return pendingPools.length;
     }
 
     /// @notice Returns the poolId at a given index in the pending set.
     /// @param index The index of the pool to return.
+    /// @return poolId The poolId at the given index.
     function getPendingPoolByIndex(uint256 index) external view returns (PoolId) {
         return pendingPools[index];
     }
