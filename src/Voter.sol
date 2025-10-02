@@ -279,11 +279,15 @@ contract Voter is Ownable2Step {
     /// @param enableAuto Whether to remember this choice for future epochs.
     function vote(uint8 option, bool enableAuto) external {
         if (option >= 3) revert DeliErrors.InvalidOption();
+        if (finalizationInProgress || _hasEndedUnfinalizedEpoch()) {
+            revert DeliErrors.FinalizationInProgress();
+        }
+
         uint256 ep = currentEpoch();
         _castVote(ep, msg.sender, option);
 
         if (enableAuto) {
-            // Enable or refresh auto-vote (always allowed)
+            // Enable or refresh auto-vote
             autoOption[msg.sender] = option;
             if (autoIndex[msg.sender] == 0) {
                 autoVoterList.push(msg.sender);
@@ -291,10 +295,6 @@ contract Voter is Ownable2Step {
             }
             emit AutoVoteUpdated(msg.sender, true, option);
         } else {
-            // Prevent disabling auto-vote during any finalization or when any epoch has ended but remains unfinalized
-            if (finalizationInProgress || _hasEndedUnfinalizedEpoch()) {
-                revert DeliErrors.FinalizationInProgress();
-            }
             // Disable auto-vote if currently enabled
             uint256 idx = autoIndex[msg.sender];
             if (idx != 0) {
