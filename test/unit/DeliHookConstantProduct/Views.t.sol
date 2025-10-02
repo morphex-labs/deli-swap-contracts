@@ -102,7 +102,8 @@ contract DeliHookConstantProduct_ViewsTest is DeliHookConstantProduct_TestBase {
         addLiquidityToPool3(100 ether, 100 ether);
         (uint128 r0, uint128 r1) = hook.getReserves(id3);
         uint256 amountOut = 2 ether; // wBLT
-        uint256 grossOut = (amountOut * (1_000_000 + 1000)) / 1_000_000;
+        // grossOut = ceil(netOut / (1 - f)) with f = 1000 (0.1%)
+        uint256 grossOut = (amountOut * 1_000_000 + (1_000_000 - 1000 - 1)) / (1_000_000 - 1000);
         uint256 expected = calculateExactOutputSwap(grossOut, uint256(r1), uint256(r0), 0);
         uint256 viewIn = hook.getAmountIn(key3, false, amountOut);
         assertEq(viewIn, expected);
@@ -153,7 +154,7 @@ contract DeliHookConstantProduct_ViewsTest is DeliHookConstantProduct_TestBase {
         (uint128 r0b, uint128 r1b) = hook.getReserves(id1);
         uint256 in2 = calculateExactOutputSwap(finalOut, uint256(r0b), uint256(r1b), 3000);
         (uint128 r0a, uint128 r1a) = hook.getReserves(id3);
-        uint256 grossOut = (in2 * (1_000_000 + 1000)) / 1_000_000;
+        uint256 grossOut = (in2 * 1_000_000 + (1_000_000 - 1000 - 1)) / (1_000_000 - 1000);
         uint256 in1 = calculateExactOutputSwap(grossOut, uint256(r1a), uint256(r0a), 0);
         assertEq(amounts.length, 3);
         assertEq(amounts[2], finalOut);
