@@ -628,7 +628,7 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper));
     }
 
-    /// @notice Unsubscribe with pre-fetched context: sync -> accrue -> remove and clean up
+    /// @notice Optimized unsubscribe path with pre-fetched context from the adapter (forfeit rewards)
     function notifyUnsubscribeWithContext(
         bytes32 posKey,
         bytes32 poolIdRaw,
