@@ -313,9 +313,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             // exact output
             // Calculate input for exact output
             if (feeFromOutput) {
-                // Compute input for gross output with zero LP fee to preserve K
-                uint256 targetOut = FullMath.mulDiv(amountSpecified, 1_000_000 + uint256(key.fee), 1_000_000);
-                return _getAmountIn(zeroForOne, targetOut, pool.reserve0, pool.reserve1, 0);
+                // Compute gross output using 1/(1 - f) with rounding up, then compute input at zero LP fee
+                uint256 grossOut = FullMath.mulDivRoundingUp(amountSpecified, 1_000_000, 1_000_000 - uint256(key.fee));
+                return _getAmountIn(zeroForOne, grossOut, pool.reserve0, pool.reserve1, 0);
             } else {
                 // Standard V2 exact-output calc with fee in input
                 return _getAmountIn(zeroForOne, amountSpecified, pool.reserve0, pool.reserve1, key.fee);
@@ -572,8 +572,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             // For exact output swaps
             uint256 amountIn;
             if (_feeFromOutput) {
-                // Input computed against gross output with zero LP fee to preserve K
-                uint256 grossOut = FullMath.mulDiv(specifiedAmount, 1_000_000 + uint256(effectiveFee), 1_000_000);
+                // Compute input against gross output with zero LP fee (preserve K), where grossOut = ceil(netOut / (1 - f))
+                uint256 grossOut =
+                    FullMath.mulDivRoundingUp(specifiedAmount, 1_000_000, 1_000_000 - uint256(effectiveFee));
                 amountIn = _getAmountIn(_swapZeroForOne, grossOut, pool.reserve0, pool.reserve1, 0);
             } else {
                 // Standard exact-output with LP fee in input
@@ -648,10 +649,9 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
             }
         } else {
             if (_feeFromOutput) {
-                // EXACT OUTPUT + FEE FROM OUTPUT (e.g., get exactly 100 WBLT, fee in WBLT)
-                // Fee is a percentage of the output amount
-                // User receives exact output, needs to provide more input to cover implicit fee
-                feeAmount = (amountSpecified * uint256(key.fee)) / 1_000_000;
+                // EXACT OUTPUT + FEE FROM OUTPUT: compute grossOut via 1/(1 - f), fee = grossOut - netOut
+                uint256 grossOut = FullMath.mulDivRoundingUp(amountSpecified, 1_000_000, 1_000_000 - uint256(key.fee));
+                feeAmount = grossOut - amountSpecified;
             } else {
                 // EXACT OUTPUT + FEE FROM INPUT (e.g., get exactly 1 WETH, fee in WBLT)
                 // Fee is the extra input required beyond theoretical amount
@@ -823,7 +823,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
         (bool feeFromOutput,) = _isFeeFromOutput(key, zeroForOne);
         if (feeFromOutput) {
-            uint256 grossOut = FullMath.mulDiv(amountOut, 1_000_000 + uint256(key.fee), 1_000_000);
+            // Use grossOut = ceil(netOut / (1 - f)) to compute input at zero fee
+            uint256 grossOut = FullMath.mulDivRoundingUp(amountOut, 1_000_000, 1_000_000 - uint256(key.fee));
             uint256 rOut = zeroForOne ? uint256(pool.reserve1) : uint256(pool.reserve0);
             if (grossOut >= rOut) revert DeliErrors.InsufficientLiquidity();
             amountIn = _getAmountIn(zeroForOne, grossOut, pool.reserve0, pool.reserve1, 0);
@@ -876,7 +877,8 @@ contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
 
             (bool feeFromOutput,) = _isFeeFromOutput(route[i], zeroForOnes[i]);
             if (feeFromOutput) {
-                uint256 grossOut = FullMath.mulDiv(amounts[i + 1], 1_000_000 + uint256(route[i].fee), 1_000_000);
+                uint256 grossOut =
+                    FullMath.mulDivRoundingUp(amounts[i + 1], 1_000_000, 1_000_000 - uint256(route[i].fee));
                 uint256 rOut = zeroForOnes[i] ? uint256(pool.reserve1) : uint256(pool.reserve0);
                 if (grossOut >= rOut) revert DeliErrors.InsufficientLiquidity();
                 amounts[i] = _getAmountIn(zeroForOnes[i], grossOut, pool.reserve0, pool.reserve1, 0);

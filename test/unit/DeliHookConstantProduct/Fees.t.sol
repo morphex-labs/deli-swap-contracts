@@ -22,7 +22,9 @@ contract DeliHookConstantProduct_FeesTest is DeliHookConstantProduct_TestBase {
         addLiquidityToPool1(100 ether, 200 ether);
         uint256 amountOut = 15 ether;
         uint256 feePips = 3000;
-        uint256 expectedFee = (amountOut * feePips) / 1_000_000;
+        // grossOut = ceil(netOut / (1 - f)), fee = grossOut - netOut
+        uint256 grossOut = (amountOut * 1_000_000 + (1_000_000 - feePips - 1)) / (1_000_000 - feePips);
+        uint256 expectedFee = grossOut - amountOut;
         swapRouter.swap(key1, SwapParams({zeroForOne: false, amountSpecified: int256(amountOut), sqrtPriceLimitX96: MAX_PRICE_LIMIT}), PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), "");
         assertEq(feeProcessor.lastAmount(), expectedFee);
         assertEq(feeProcessor.calls(), 1);
