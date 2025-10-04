@@ -480,10 +480,12 @@ contract IncentiveGauge is Ownable2Step {
     function _upsertIncentive(PoolId pid, IERC20 token, uint256 amount) internal returns (uint128 rate) {
         IncentiveInfo storage info = incentives[pid][token];
 
+        // Always sync pool before updating incentive
+        _updatePoolByPid(pid);
+
         uint256 total = amount;
         if (info.rewardRate > 0) {
-            // For active schedules, first update pool accounting, then add leftover budget
-            _updatePoolByPid(pid);
+            // For active schedules add leftover budget
             if (block.timestamp < info.periodFinish) {
                 uint256 remainingTime = info.periodFinish - block.timestamp;
                 uint256 leftover = remainingTime * info.rewardRate;
