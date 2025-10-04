@@ -430,8 +430,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         vm.startPrank(address(adapter));
         vm.startSnapshotGas("daily_only_unsubscribe_no_poke");
         // Provide a plausible currentTick and owner for the gauge's context method
-        int24 currentTick = 0;
-        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick, address(this), lower, upper, liq);
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
     }
@@ -496,8 +495,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         // Measure daily segment
         vm.startPrank(address(adapter));
         vm.startSnapshotGas(labelDaily);
-        int24 currentTick2 = 0;
-        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, currentTick2, address(this), lower, upper, liq);
+        gauge.notifyUnsubscribeWithContext(posKey, pidRaw, lower, upper, liq);
         vm.stopSnapshotGas();
         vm.stopPrank();
 
@@ -599,7 +597,7 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
     /// to force Daily's multi-day integration during unsubscribe and maximize cold reads.
     function testGasAdapterNotifyUnsubTwoWorst() public {
         // 1) Mint and subscribe two positions
-        uint256 tokenId = _mintAndSubscribe(-1800, 1800, 1e22);
+        uint256 tokenId = _mintAndSubscribe(-2400, 2400, 1e22);
         uint256 tokenId2 = _mintAndSubscribe(-1800, 1800, 1e22);
 
         // 2) Activate Daily stream and base incentive, then add two extra incentive tokens (3 total incentives)
@@ -652,13 +650,13 @@ contract PositionLifecycleCleanup_IT is Test, Deployers {
         uint256 pendingBefore = gauge.pendingRewardsOwner(pid, address(this));
         assertGt(pendingBefore, 0, "no pending before unsubscribe");
 
-        // 4. Unsubscribe position – should trigger sync→accrue→remove→claim
+        // 4. Unsubscribe position – forfeits accrued daily rewards (no claim on unsubscribe)
         uint256 bmxBeforeUnsub = bmx.balanceOf(address(this));
         vm.startSnapshotGas("adapter_unsubscribe_notify");
         positionManager.unsubscribe(tokenId);
         vm.stopSnapshotGas();
         uint256 bmxAfterUnsub = bmx.balanceOf(address(this));
-        assertGt(bmxAfterUnsub - bmxBeforeUnsub, 0, "expected BMX claimed during unsubscribe");
+        assertEq(bmxAfterUnsub - bmxBeforeUnsub, 0, "no BMX should be claimed on unsubscribe (forfeit)");
 
         // 5. After unsubscribe owner aggregate should be zero and indices cleaned
         uint256 pendingAfter = gauge.pendingRewardsOwner(pid, address(this));

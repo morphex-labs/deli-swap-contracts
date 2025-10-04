@@ -628,12 +628,10 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper));
     }
 
-    /// @notice Unsubscribe with pre-fetched context: sync -> accrue -> remove and clean up
+    /// @notice Optimized unsubscribe path with pre-fetched context from the adapter (forfeit rewards)
     function notifyUnsubscribeWithContext(
         bytes32 posKey,
         bytes32 poolIdRaw,
-        int24 currentTick,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -641,16 +639,8 @@ contract DailyEpochGauge is Ownable2Step {
         // If already not tracked (force-unsubscribed) but still called, return
         if (positionTokenIds[posKey] == 0) return;
 
-        // 1) Sync pool to current time at adapter-provided currentTick
+        // Apply removal of liquidity in pool accounting without syncing or accruing
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
-
-        // 2) Accrue rewards with pre-removal liquidity to the position
-        positionRewards[posKey].accrue(
-            uint128(liquidity), poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper)
-        );
-
-        // 3) Remove liquidity from pool accounting
         if (liquidity != 0) {
             poolRewards[pid].modifyPositionLiquidity(
                 RangePool.ModifyLiquidityParams({
@@ -663,8 +653,7 @@ contract DailyEpochGauge is Ownable2Step {
             );
         }
 
-        // 4) Claim any remaining rewards and clean up indices
-        _claimRewards(posKey, ownerAddr);
+        // Forfeit: remove position state without claiming
         _removePosition(pid, posKey);
     }
 
