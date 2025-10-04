@@ -47,7 +47,6 @@ contract Voter is Ownable2Step {
     uint256 public immutable EPOCH_ZERO; // Tuesday start timestamp
 
     mapping(uint256 => address[]) private pendingRemovals;
-    mapping(uint256 => uint256) private pendingRemovalCursor;
     mapping(address => uint256) private autoIndex;
     mapping(uint256 => mapping(address => uint256)) private userVoteWeight;
     mapping(uint256 => uint256) private batchCursor;
@@ -361,11 +360,11 @@ contract Voter is Ownable2Step {
             userChoice[ep][voterAddr] = opt;
         }
 
-        // Process a bounded number of removals per call
-        if (pendingRemovals[ep].length > 0) {
-            finished = _processPendingRemovals(ep, maxBatch - processed) && (batchCursor[ep] >= autoVoterList.length);
-        } else {
-            finished = (batchCursor[ep] >= autoVoterList.length);
+        finished = (batchCursor[ep] >= autoVoterList.length);
+
+        // process removals only after loop is complete
+        if (finished && pendingRemovals[ep].length > 0) {
+            _processPendingRemovals(ep);
         }
     }
 
@@ -383,32 +382,17 @@ contract Voter is Ownable2Step {
         emit AutoVoteUpdated(addr, false, 3);
     }
 
-    /// @dev Processes up to `maxToProcess` pending removals for `ep`.
-    function _processPendingRemovals(uint256 ep, uint256 maxToProcess) internal returns (bool allProcessed) {
-        address[] storage toRemove = pendingRemovals[ep];
-        uint256 cursor = pendingRemovalCursor[ep];
-        uint256 processed = 0;
-        uint256 len = toRemove.length;
-
-        while (processed < maxToProcess && cursor < len) {
-            address addr = toRemove[cursor];
+    /// @dev Processes pending removals for `ep`.
+    function _processPendingRemovals(uint256 ep) internal {
+        address[] memory toRemove = pendingRemovals[ep];
+        for (uint256 i = 0; i < toRemove.length; i++) {
+            address addr = toRemove[i];
             uint256 idx = autoIndex[addr];
             if (idx > 0) {
                 _removeAutoVoter(addr, idx - 1);
             }
-            unchecked {
-                cursor++;
-                processed++;
-            }
         }
-        pendingRemovalCursor[ep] = cursor;
-
-        if (cursor >= len) {
-            delete pendingRemovals[ep];
-            delete pendingRemovalCursor[ep];
-            return true;
-        }
-        return false;
+        delete pendingRemovals[ep];
     }
 
     /// @dev Returns true if there exists at least one epoch that has ended but is not yet finalized.
