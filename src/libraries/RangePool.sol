@@ -278,13 +278,25 @@ library RangePool {
             // no need to accumulate or adjust because lastUpdated = now and tick == activeTick
             return;
         }
+        // If no active liquidity, do not advance lastUpdated or consume amounts.
+        // Preserve the time window so amounts are processed later when liquidity exists.
+        if (self.liquidity == 0) {
+            // Adjust price movement if needed, but keep lastUpdated unchanged.
+            if (activeTick != self.tick) {
+                self.adjustToTick(tickSpacing, activeTick, tokens);
+            }
+            return;
+        }
+
         // 1. Update lastUpdated and credit per-token amounts
         self.lastUpdated = uint64(block.timestamp);
 
-        if (self.liquidity > 0) {
-            uint256 len = tokens.length;
-            for (uint256 i; i < len; ++i) {
-                _accumulateToken(self, tokens[i], perTokenAmounts[i]);
+        uint256 len = tokens.length;
+        for (uint256 i; i < len;) {
+            _accumulateToken(self, tokens[i], perTokenAmounts[i]);
+
+            unchecked {
+                ++i;
             }
         }
         // 2. If price moved out of current range adjust liquidity & tick, flipping per-token outside
