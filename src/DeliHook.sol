@@ -323,9 +323,8 @@ contract DeliHook is Ownable2Step, BaseHook {
         uint256 baseFeeActual = FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000);
 
         if (feeCurrencyIs0 == specifiedIs0) {
-            // specified token is wBLT; no conversion, cap by pre-withheld budget to avoid over-collection
-            feeOwed = baseFeeActual;
-            if (feeOwed > baseFeeSpecified) feeOwed = baseFeeSpecified;
+            // Fee is on the specified side: use pre-withheld for exact input, post-swap actual for exact output
+            feeOwed = params.amountSpecified < 0 ? baseFeeSpecified : baseFeeActual;
             feeOnUnspecified = false;
             return (feeOwed, feeOnUnspecified);
         }
@@ -337,9 +336,9 @@ contract DeliHook is Ownable2Step, BaseHook {
                 FullMath.mulDiv(baseFeeActual, sqrtPriceX96, FixedPoint96.Q96), sqrtPriceX96, FixedPoint96.Q96
             );
         } else {
-            // token1 (specified) -> token0 (wBLT): ceil(base / p)
+            // token1 (specified) -> token0 (wBLT): ceil(base / p), avoid double rounding-up
             feeOwed = FullMath.mulDivRoundingUp(
-                FullMath.mulDivRoundingUp(baseFeeActual, FixedPoint96.Q96, sqrtPriceX96), FixedPoint96.Q96, sqrtPriceX96
+                FullMath.mulDiv(baseFeeActual, FixedPoint96.Q96, sqrtPriceX96), FixedPoint96.Q96, sqrtPriceX96
             );
         }
 
