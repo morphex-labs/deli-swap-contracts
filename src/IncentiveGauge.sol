@@ -662,11 +662,11 @@ contract IncentiveGauge is Ownable2Step {
     function _updatePoolByPid(PoolId pid) internal {
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
     }
 
     /// @dev internal helper to update pool state
-    function _updatePool(PoolId pid, int24 currentTick) internal {
+    function _updatePool(PoolId pid, int24 currentTick, uint160 sqrtPriceX96) internal {
         IERC20[] storage reg = poolTokenRegistry[pid];
         uint256 len = reg.length;
         if (len == 0) return;
@@ -696,7 +696,7 @@ contract IncentiveGauge is Ownable2Step {
             }
         }
         // Always call sync when initialized so tick adjusts even if dt == 0
-        pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick);
+        pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
 
         // Bookkeeping for reward tokens
         for (uint256 i; i < len;) {
@@ -751,6 +751,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity,
@@ -768,7 +769,7 @@ contract IncentiveGauge is Ownable2Step {
         positionTokenIds[positionKey] = tokenId;
 
         // Update pool state once (batched) using adapter-provided tick
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Apply add liquidity first so tick outside is initialised for tokens if flips occur
         _applyLiquidityDeltaByPid(pid, tickLower, tickUpper, SafeCast.toInt128(uint256(liquidity)), true);
@@ -812,6 +813,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 poolIdRaw,
         address ownerAddr,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -821,7 +823,7 @@ contract IncentiveGauge is Ownable2Step {
 
         // Update pool state once (batched) using adapter-provided tick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Batch accrue across all tokens, remove once
         _accrueAcrossTokens(pid, positionKey, tickLower, tickUpper, uint128(liquidity));
@@ -844,6 +846,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         int256 liquidityChange,
@@ -857,7 +860,7 @@ contract IncentiveGauge is Ownable2Step {
         positionLiquidity[positionKey] = liquidityAfter;
 
         // Batch update pool once using adapter-provided tick
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Accrue rewards with liquidity before change across all tokens (cast-safe)
         int128 delta128 = SafeCast.toInt128(liquidityChange);

@@ -66,6 +66,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         bytes32,
         bytes32,
         int24,
+        uint160,
         int24,
         int24,
         uint128,
@@ -85,6 +86,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         bytes32,
         address,
         int24,
+        uint160,
         int24,
         int24,
         uint128
@@ -94,6 +96,7 @@ contract MockDailyEpochGauge is IDailyEpochGauge {
         bytes32,
         bytes32,
         int24,
+        uint160,
         int24,
         int24,
         int256,

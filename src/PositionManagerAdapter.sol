@@ -41,6 +41,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         int24 tickUpper;
         uint128 liquidity;
         int24 currentTick;
+        uint160 sqrtPriceX96;
         address owner;
     }
 
@@ -260,6 +261,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         }
         if (includeCurrentTick) {
             (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+            ctx.sqrtPriceX96 = sqrtPriceX96;
             ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         }
     }
@@ -279,6 +281,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         ctx.tickUpper = info.tickUpper();
         ctx.posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        ctx.sqrtPriceX96 = sqrtPriceX96;
         ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
     }
 
@@ -325,10 +328,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         NotifyContext memory c = _buildContextFromToken(tokenId, true, true);
 
         dailyEpochGauge.notifySubscribeWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity, c.owner
+            tokenId, c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, c.liquidity, c.owner
         );
         incentiveGauge.notifySubscribeWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity, c.owner
+            tokenId, c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, c.liquidity, c.owner
         );
     }
 
@@ -353,10 +356,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         NotifyContext memory c = _buildContextFromInfo(tokenId, info);
 
         dailyEpochGauge.notifyBurnWithContext(
-            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, uint128(liquidity)
         );
         incentiveGauge.notifyBurnWithContext(
-            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, uint128(liquidity)
         );
     }
 
@@ -371,10 +374,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
 
         // Note: liquidityAfter comes from PositionManager; we forward it as-is
         dailyEpochGauge.notifyModifyLiquidityWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
         incentiveGauge.notifyModifyLiquidityWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
     }
 }

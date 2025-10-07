@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {TickBitmap} from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import {LiquidityMath} from "@uniswap/v4-core/src/libraries/LiquidityMath.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /**
  * @title RangePool
@@ -161,13 +162,20 @@ library RangePool {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Move the pool’s notion of the active tick and update liquidity accordingly.
-    function adjustToTick(State storage self, int24 tickSpacing, int24 tick, address[] memory tokens) internal {
+    function adjustToTick(
+        State storage self,
+        int24 tickSpacing,
+        int24 tick,
+        uint160 sqrtPriceX96,
+        address[] memory tokens
+    ) internal {
         int24 currentTick = self.tick;
         int128 liquidityChange = 0;
         bool lte = tick <= currentTick;
 
         if (lte) {
-            while (tick < currentTick) {
+            // moving left
+            while (true) {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, true);
 
@@ -175,15 +183,22 @@ library RangePool {
                     break;
                 }
 
-                if (initialized) {
-                    int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
-                    liquidityChange -= liquidityNet;
+                uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
+                if (sqrtPriceX96 <= sqrtAtNext) {
+                    if (initialized) {
+                        int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
+                        liquidityChange -= liquidityNet;
+                    }
+                    unchecked {
+                        currentTick = nextTick - 1;
+                    }
+                } else {
+                    break;
                 }
-                currentTick = nextTick - 1;
             }
         } else {
-            // going right
-            while (currentTick < tick) {
+            // moving right
+            while (true) {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, false);
 
@@ -191,15 +206,21 @@ library RangePool {
                     break;
                 }
 
-                if (initialized) {
-                    int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
-                    liquidityChange += liquidityNet;
+                uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
+                if (sqrtPriceX96 >= sqrtAtNext) {
+                    if (initialized) {
+                        int128 liquidityNet = _flipOutsideForTokens(self, nextTick, tokens);
+                        liquidityChange += liquidityNet;
+                    }
+                    currentTick = nextTick;
+                } else {
+                    break;
                 }
-                currentTick = nextTick;
             }
         }
 
-        self.tick = tick;
+        // Align final tick directly from price to avoid any ambiguity at boundaries
+        self.tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         self.liquidity = LiquidityMath.addDelta(self.liquidity, liquidityChange);
     }
 
@@ -270,7 +291,8 @@ library RangePool {
         address[] memory tokens,
         uint256[] memory perTokenAmounts,
         int24 tickSpacing,
-        int24 activeTick
+        int24 activeTick,
+        uint160 sqrtPriceX96
     ) internal {
         // Bootstrap state on first touch so accumulate sees dt = 0
         if (self.lastUpdated == 0) {
@@ -283,7 +305,7 @@ library RangePool {
         if (self.liquidity == 0) {
             // Adjust price movement if needed, but keep lastUpdated unchanged.
             if (activeTick != self.tick) {
-                self.adjustToTick(tickSpacing, activeTick, tokens);
+                self.adjustToTick(tickSpacing, activeTick, sqrtPriceX96, tokens);
             }
             return;
         }
@@ -301,7 +323,7 @@ library RangePool {
         }
         // 2. If price moved out of current range adjust liquidity & tick, flipping per-token outside
         if (activeTick != self.tick) {
-            self.adjustToTick(tickSpacing, activeTick, tokens);
+            self.adjustToTick(tickSpacing, activeTick, sqrtPriceX96, tokens);
         }
     }
 }

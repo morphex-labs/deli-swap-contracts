@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {RangePool} from "src/libraries/RangePool.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /// @title RewardAccountingInvariant
 /// @notice Fuzz + invariant test that exercises the RangePool + RangePosition
@@ -92,7 +93,7 @@ contract RewardAccountingInvariant is Test {
         // 3. Apply pool sync (accumulate + maybe move price)
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = streamRate; // dt=1
-        pool.sync(toks2, amts, TICK_SPACING, activeTick);
+        pool.sync(toks2, amts, TICK_SPACING, activeTick, TickMath.getSqrtPriceAtTick(activeTick));
 
         // 4. Optionally modify liquidity
         if (liqDelta != 0) {

@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "src/libraries/RangePool.sol";
 import "src/libraries/RangePosition.sol";
 import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /// @title RangePositionLibraryTest
 /// @notice Unit tests for RangePosition State accrue & claim against RangePool accumulator.
@@ -37,7 +38,7 @@ contract RangePositionLibraryTest is Test {
         vm.warp(block.timestamp + secondsForward);
         address[] memory toks = new address[](1); toks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = streamRate * secondsForward;
-        pool.sync(toks, amts, TICK_SPACING, 0);
+        pool.sync(toks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
     }
 
     /*//////////////////////////////////////////////////////////////

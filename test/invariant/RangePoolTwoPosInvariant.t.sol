@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import {RangePool} from "src/libraries/RangePool.sol";
 import {RangePosition} from "src/libraries/RangePosition.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /// @title RangePoolTwoPosInvariant
 /// @notice Invariant fuzz suite with two positions straddling tick 0.
@@ -110,7 +111,7 @@ contract RangePoolTwoPosInvariant is Test {
 
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = streamRate; // dt=1
-        pool.sync(toks2, amts, TICK_SPACING, activeTick);
+        pool.sync(toks2, amts, TICK_SPACING, activeTick, TickMath.getSqrtPriceAtTick(activeTick));
 
         if (liqDelta != 0) {
             pool.modifyPositionLiquidity(

@@ -565,11 +565,11 @@ contract DailyEpochGauge is Ownable2Step {
     function _syncPoolState(PoolKey memory key, PoolId pid) internal {
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 tickNow = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        _syncPoolStateCore(pid, tickNow, key.tickSpacing);
+        _syncPoolStateCore(pid, tickNow, key.tickSpacing, sqrtPriceX96);
     }
 
     /// @dev Core sync logic shared by both wrappers
-    function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing) internal {
+    function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing, uint160 sqrtPriceX96) internal {
         RangePool.State storage pool = poolRewards[pid];
         uint256 t0 = pool.lastUpdated;
         uint256 t1 = block.timestamp;
@@ -581,7 +581,7 @@ contract DailyEpochGauge is Ownable2Step {
         } else {
             amts[0] = 0;
         }
-        pool.sync(toks, amts, tickSpacing, activeTick);
+        pool.sync(toks, amts, tickSpacing, activeTick, sqrtPriceX96);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -594,6 +594,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity,
@@ -602,20 +603,22 @@ contract DailyEpochGauge is Ownable2Step {
         PoolId pid = PoolId.wrap(poolIdRaw);
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // Add liquidity to in-range pool accounting
-        address[] memory toks = new address[](1);
-        toks[0] = address(BMX);
-        poolRewards[pid].modifyPositionLiquidity(
-            RangePool.ModifyLiquidityParams({
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
-                tickSpacing: poolTickSpacing[pid]
-            }),
-            toks
-        );
+        {
+            address[] memory toks = new address[](1);
+            toks[0] = address(BMX);
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: tickLower,
+                    tickUpper: tickUpper,
+                    liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
+                    tickSpacing: poolTickSpacing[pid]
+                }),
+                toks
+            );
+        }
 
         // Index position
         RangePosition.addPosition(
@@ -663,6 +666,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 poolIdRaw,
         address ownerAddr,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -672,7 +676,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // 1. Accrue rewards with current liquidity
         positionRewards[posKey].accrue(
@@ -704,6 +708,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         int256 liquidityChange,
@@ -714,7 +719,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // Compute liquidity before the change using a cast-safe path
         int128 delta128 = SafeCast.toInt128(liquidityChange);
