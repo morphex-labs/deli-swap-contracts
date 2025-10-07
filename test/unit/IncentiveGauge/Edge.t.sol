@@ -136,6 +136,8 @@ contract IncentiveGauge_EdgeTest is Test {
         gauge.createIncentive(key, tokA, amt);
         (, uint256 finish,) = gauge.incentiveData(pid, tokA);
         vm.warp(finish + 1);
+        // ensure gauge-side in-range liquidity so bookkeeping advances
+        gauge.setPoolLiquidity(pid, tokA, 1);
         vm.prank(hook);
         gauge.forceUpdate(key);
         (uint256 rate,, uint256 remaining) = gauge.incentiveData(pid, tokA);

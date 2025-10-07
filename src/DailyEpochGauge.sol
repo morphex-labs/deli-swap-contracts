@@ -66,6 +66,10 @@ contract DailyEpochGauge is Ownable2Step {
 
     // Time-derived daily scheduling: PoolId -> dayIndex -> tokens to stream on that UTC day
     mapping(PoolId => mapping(uint32 => uint256)) public dayBuckets;
+    // Pending BMX accumulated while pool liquidity == 0 (roll-forward preserving clamp)
+    mapping(PoolId => uint256) internal accumulatedBmx;
+    // Gauge-side time cursor to roll-forward while zero-liquidity without relying on RangePool.lastUpdated
+    mapping(PoolId => uint256) internal lastProcessedTs;
 
     // Reward math (tick-aware)
     mapping(PoolId => RangePool.State) public poolRewards;
@@ -571,16 +575,40 @@ contract DailyEpochGauge is Ownable2Step {
     /// @dev Core sync logic shared by both wrappers
     function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing, uint160 sqrtPriceX96) internal {
         RangePool.State storage pool = poolRewards[pid];
-        uint256 t0 = pool.lastUpdated;
         uint256 t1 = block.timestamp;
         address[] memory toks = new address[](1);
         toks[0] = address(BMX);
         uint256[] memory amts = new uint256[](1);
-        if (t1 > t0) {
-            amts[0] = _amountOverWindow(pid, t0, t1);
+
+        // Determine gauge-side start time: prefer our cursor, else fall back to pool's lastUpdated
+        uint256 tStart = lastProcessedTs[pid];
+        if (tStart == 0) tStart = pool.lastUpdated;
+
+        if (t1 > tStart) {
+            if (pool.liquidity == 0) {
+                // Zero-liquidity: roll-forward our cursor in a single 3-day clamped step; accumulate pending
+                uint256 chunkEnd = tStart + 3 * TimeLibrary.DAY;
+                if (chunkEnd > t1) chunkEnd = t1;
+                uint256 amt = _amountOverWindow(pid, tStart, chunkEnd);
+                if (amt > 0) accumulatedBmx[pid] += amt;
+                lastProcessedTs[pid] = chunkEnd;
+
+                // Tick upkeep only
+                amts[0] = 0;
+            } else {
+                // Liquidity present: consume pending + current window in one call
+                uint256 amtNow = _amountOverWindow(pid, tStart, t1);
+                uint256 pending = accumulatedBmx[pid];
+                if (pending > 0) accumulatedBmx[pid] = 0;
+                lastProcessedTs[pid] = t1;
+                amts[0] = amtNow + pending;
+            }
         } else {
+            // No time elapsed from our cursor; still allow tick upkeep
             amts[0] = 0;
         }
+
+        // Single sync for both tick upkeep and accumulation
         pool.sync(toks, amts, tickSpacing, activeTick, sqrtPriceX96);
     }
 

@@ -142,6 +142,10 @@ contract IncentiveGauge_StreamTest is Test {
 
         // warp 1 day so some tokens streamed
         vm.warp(block.timestamp + 1 days);
+        // ensure in-range liquidity so the first day's portion is consumed
+        gauge.setPoolLiquidity(pid, tokenA, 1);
+        vm.prank(hook);
+        gauge.pokePool(key);
 
         uint256 second = 6500 ether; // Must be > remaining (~6000 ether)
         tokenA.approve(address(gauge), second);

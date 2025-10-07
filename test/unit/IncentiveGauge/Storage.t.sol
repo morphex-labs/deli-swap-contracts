@@ -39,6 +39,11 @@ contract IncentiveGaugeHarness is IncentiveGauge {
         return positionRewards[key][tok].rewardsAccrued;
     }
 
+    // Helper to set in-range liquidity for tests
+    function setPoolLiquidity(PoolId pid, IERC20 /*tok*/, uint128 liq) external {
+        poolRewards[pid].liquidity = liq;
+    }
+
     // Helper for tests that use the old pendingRewards interface
     function pendingRewards(bytes32 posKey, IERC20 token, uint128 currentLiquidity, PoolId pid)
         external
@@ -164,6 +169,9 @@ contract IncentiveGauge_StorageTest is Test {
         gauge.createIncentive(key, reward, amt);
         // advance half duration
         vm.warp(block.timestamp + 3 days + 12 hours);
+        // ensure in-range liquidity so leftover is consumed before top-up
+        gauge.setPoolLiquidity(pid, reward, 1);
+        gauge.pokePool(key);
         gauge.createIncentive(key, reward, amt);
         (uint128 rate,, , uint128 remaining) = gauge.incentives(pid, reward);
         // remaining should be > amt because leftover added

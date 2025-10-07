@@ -678,57 +678,69 @@ contract IncentiveGauge is Ownable2Step {
         address[] memory addrs = new address[](len);
         uint256[] memory amounts = new uint256[](len);
 
-        for (uint256 i; i < len;) {
-            IERC20 tok = reg[i];
-            addrs[i] = address(tok);
-            uint256 amt;
-            IncentiveInfo storage info = incentives[pid][tok];
-            if (info.rewardRate > 0) {
-                uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
-                if (endTs > poolLast) {
-                    uint256 activeSeconds = endTs - poolLast;
-                    amt = uint256(info.rewardRate) * activeSeconds;
+        if (pool.liquidity > 0) {
+            // Normal path: compute per-token amounts since poolLast and sync
+            for (uint256 i; i < len;) {
+                IERC20 tok = reg[i];
+                addrs[i] = address(tok);
+                uint256 amt;
+                IncentiveInfo storage info = incentives[pid][tok];
+                if (info.rewardRate > 0) {
+                    uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
+                    if (endTs > poolLast) {
+                        uint256 activeSeconds = endTs - poolLast;
+                        amt = uint256(info.rewardRate) * activeSeconds;
+                    }
                 }
-            }
-            amounts[i] = amt;
-            unchecked {
-                ++i;
-            }
-        }
-        // Always call sync when initialized so tick adjusts even if dt == 0
-        pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
-
-        // Bookkeeping for reward tokens
-        for (uint256 i; i < len;) {
-            IERC20 tok = reg[i];
-            IncentiveInfo storage info = incentives[pid][tok];
-            if (info.rewardRate == 0) {
+                amounts[i] = amt;
                 unchecked {
                     ++i;
                 }
-                continue;
             }
+            // Always call sync when initialized so tick adjusts even if dt == 0
+            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
 
-            uint256 dt = nowTs - info.lastUpdate;
-            if (dt > 0) {
-                uint256 cappedTimestamp = nowTs > info.periodFinish ? info.periodFinish : nowTs;
-                if (cappedTimestamp > info.lastUpdate) {
-                    dt = cappedTimestamp - info.lastUpdate;
-                    uint256 streamed = dt * info.rewardRate;
-                    if (streamed > info.remaining) streamed = info.remaining;
-                    info.remaining -= uint128(streamed);
+            // Bookkeeping for reward tokens only when liquidity exists
+            for (uint256 i; i < len;) {
+                IERC20 tok = reg[i];
+                IncentiveInfo storage info = incentives[pid][tok];
+                if (info.rewardRate == 0) {
+                    unchecked {
+                        ++i;
+                    }
+                    continue;
                 }
 
-                info.lastUpdate = uint64(nowTs);
-                if (nowTs >= info.periodFinish || info.remaining == 0) {
-                    // Deactivate but preserve any unstreamed dust to carry forward
-                    info.rewardRate = 0;
-                    emit IncentiveDeactivated(pid, tok);
+                uint256 dt = nowTs - info.lastUpdate;
+                if (dt > 0) {
+                    uint256 cappedTimestamp = nowTs > info.periodFinish ? info.periodFinish : nowTs;
+                    if (cappedTimestamp > info.lastUpdate) {
+                        dt = cappedTimestamp - info.lastUpdate;
+                        uint256 streamed = dt * info.rewardRate;
+                        if (streamed > info.remaining) streamed = info.remaining;
+                        info.remaining -= uint128(streamed);
+                    }
+
+                    info.lastUpdate = uint64(nowTs);
+                    if (nowTs >= info.periodFinish || info.remaining == 0) {
+                        info.rewardRate = 0;
+                        emit IncentiveDeactivated(pid, tok);
+                    }
+                }
+                unchecked {
+                    ++i;
                 }
             }
-            unchecked {
-                ++i;
+        } else {
+            // Zero-liquidity path: pass zero amounts to sync (tick adjust only); skip per-token bookkeeping
+            for (uint256 i; i < len;) {
+                addrs[i] = address(reg[i]);
+                amounts[i] = 0;
+                unchecked {
+                    ++i;
+                }
             }
+            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
         }
     }
 
