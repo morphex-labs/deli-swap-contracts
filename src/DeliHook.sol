@@ -323,8 +323,16 @@ contract DeliHook is Ownable2Step, BaseHook {
         uint256 baseFeeActual = FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000);
 
         if (feeCurrencyIs0 == specifiedIs0) {
-            // Fee is on the specified side: use pre-withheld for exact input, post-swap actual for exact output
-            feeOwed = params.amountSpecified < 0 ? baseFeeSpecified : baseFeeActual;
+            // Fee is on the specified side: derive fee from ACTUAL specified-side delta,
+            // then cap by the pre-withheld budget to respect price limits and partial fills.
+            bool exactInput = params.amountSpecified < 0;
+            uint256 feeFromDelta = exactInput
+                // exact input: afterSwap specified delta is NET => F = ceil(net * f / (1e6 - f))
+                ? FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000 - uint256(poolFee))
+                // exact output: afterSwap specified delta is GROSS => F = ceil(gross * f / (1e6 + f))
+                : FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000 + uint256(poolFee));
+
+            feeOwed = feeFromDelta > baseFeeSpecified ? baseFeeSpecified : feeFromDelta;
             feeOnUnspecified = false;
             return (feeOwed, feeOnUnspecified);
         }

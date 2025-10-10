@@ -110,7 +110,7 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         assertEq(fp.calls(), 1);
     }
 
-    function testWbltToken0_ExactOutput_SpecifiedDiffersFromFeeCurrency() public {
+    function testWbltToken0_ExactOutput_SpecifiedMatchesFeeCurrency() public {
         // Pool: wBLT (token0), OTHER (token1)
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(wblt)),
@@ -130,7 +130,8 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         _callSwap(address(0xA2), key, sp, "");
 
-        uint256 expected = 2e18 * 3000 / 1_000_000; // fee in wBLT units at px=1
+        // exact output, same-currency (fee token == specified): F = ceil(gross * f / (1e6 + f))
+        uint256 expected = (uint256(2e18) * FEE_PIPS + (1_000_000 + FEE_PIPS - 1)) / (1_000_000 + FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }

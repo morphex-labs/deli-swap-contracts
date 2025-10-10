@@ -103,7 +103,8 @@ contract DeliHook_EdgeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xAAA), key, sp, "");
 
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // exact output, same-currency (fee token == specified): F = ceil(gross * f / (1e6 + f))
+        uint256 expected = (uint256(1e18) * FEE_PIPS + (1_000_000 + FEE_PIPS - 1)) / (1_000_000 + FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
