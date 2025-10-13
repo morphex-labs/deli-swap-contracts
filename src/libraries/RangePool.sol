@@ -179,10 +179,6 @@ library RangePool {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, true);
 
-                if (nextTick < tick) {
-                    break;
-                }
-
                 uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
                 if (sqrtPriceX96 <= sqrtAtNext) {
                     if (initialized) {
@@ -202,10 +198,6 @@ library RangePool {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, false);
 
-                if (nextTick > tick) {
-                    break;
-                }
-
                 uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
                 if (sqrtPriceX96 >= sqrtAtNext) {
                     if (initialized) {
@@ -219,8 +211,15 @@ library RangePool {
             }
         }
 
-        // Align final tick directly from price to avoid any ambiguity at boundaries
-        self.tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        // Set final tick following Pool.sol semantics:
+        // - If price is exactly on a boundary, keep the directional boundary tick (currentTick already reflects this)
+        // - Otherwise, derive from sqrtPriceX96
+        uint160 sqrtAtBoundary = TickMath.getSqrtPriceAtTick(lte ? (currentTick + 1) : currentTick);
+        if (sqrtPriceX96 == sqrtAtBoundary) {
+            self.tick = currentTick;
+        } else {
+            self.tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        }
         self.liquidity = LiquidityMath.addDelta(self.liquidity, liquidityChange);
     }
 
