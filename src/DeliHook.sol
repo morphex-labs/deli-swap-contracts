@@ -60,7 +60,7 @@ contract DeliHook is Ownable2Step, BaseHook {
     IIncentiveGauge public incentiveGauge;
 
     // Temporary fee info cached between beforeSwap and afterSwap.
-    uint256 private _pendingFee; // base fee in specified-token units; converted to wBLT in _afterSwap
+    uint256 private _pendingFee; // amount of wBLT fee owed for current swap
     Currency private _pendingCurrency; // fee token for current swap
     bool private _isInternalSwap; // true if current swap is internal buyback
 
@@ -223,22 +223,36 @@ contract DeliHook is Ownable2Step, BaseHook {
             absAmountSpecified = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
         }
 
-        // Get the current LP fee for this pool from PoolManager
-        (,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
+        // Get the current sqrt price and LP fee for this pool from PoolManager
+        (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
 
-        // Compute fee-aware budget in specified-token units to respect price-limit on input.
-        // - exact input:  F_pre = floor(S0 * fee / (1e6 + fee))  → net budget S0 - F_pre
-        // - exact output: F_pre = floor(S0 * fee / (1e6 - fee))  → gross requirement S0 + F_pre
-        uint256 baseFeeSpecified = exactInput
-            ? FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000 + uint256(poolFee))
-            : FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000 - uint256(poolFee));
+        // Compute base fee in specified-token units
+        // We first denominate the fee in the specified token, then convert to the
+        // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
+        uint256 baseFeeSpecified = FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000);
 
         // Identify fee token: always collect in wBLT
         bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
         _pendingCurrency = feeCurrencyIs0 ? key.currency0 : key.currency1;
 
-        // Cache base fee (specified-token units). Conversion to wBLT is done in _afterSwap
-        _pendingFee = baseFeeSpecified;
+        // Convert fee to feeCurrency units if it differs from specified token
+        // Price p = (sqrtPriceX96^2) / 2^192 (token1 per token0).
+        // Conversions follow v4 rounding conventions:
+        //  - token0 -> token1: floor(base * p)
+        //  - token1 -> token0: ceil(base / p)
+        if (feeCurrencyIs0 == specifiedIs0) {
+            _pendingFee = baseFeeSpecified;
+        } else {
+            if (specifiedIs0) {
+                // specified = token0, feeCurrency = token1
+                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+            } else {
+                // specified = token1, feeCurrency = token0
+                uint256 inter = FullMath.mulDiv(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
+                _pendingFee = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
+            }
+        }
 
         // Use BeforeSwapDelta when fee is on input side (exact input swaps)
         bool feeMatchesSpecified = (feeCurrencyIs0 == specifiedIs0);
@@ -265,10 +279,34 @@ contract DeliHook is Ownable2Step, BaseHook {
         BalanceDelta swapDelta,
         bytes calldata /*hookData*/
     ) internal override returns (bytes4, int128) {
-        // Retrieve cached base fee (specified-token units) from beforeSwap
-        uint256 baseFeeSpecified = _pendingFee;
+        // Collect the wBLT fee owed from beforeSwap
+        uint256 feeOwed = _pendingFee;
         Currency feeCurrency = _pendingCurrency;
         bool isInternalSwap = _isInternalSwap;
+        bool feeMatchesSpecified = _feeMatchesSpecified(key, params, feeCurrency);
+
+        // Disallow partial fills: actual specified-side delta must match what beforeSwap intended.
+        {
+            bool exactInput = params.amountSpecified < 0;
+            bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+
+            uint256 absAmountSpecified;
+            unchecked {
+                absAmountSpecified = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+            }
+
+            uint256 actualAbsSpecified = uint256(
+                specifiedIs0
+                    ? (swapDelta.amount0() < 0 ? -int256(swapDelta.amount0()) : int256(swapDelta.amount0()))
+                    : (swapDelta.amount1() < 0 ? -int256(swapDelta.amount1()) : int256(swapDelta.amount1()))
+            );
+
+            uint256 expectedAbsSpecified = exactInput
+                ? (absAmountSpecified - (feeMatchesSpecified ? feeOwed : 0))
+                : (absAmountSpecified + (feeMatchesSpecified ? feeOwed : 0));
+
+            if (actualAbsSpecified != expectedAbsSpecified) revert DeliErrors.Slippage();
+        }
 
         // Reset pending fee storage
         _pendingFee = 0;
@@ -282,9 +320,7 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Forward the swap fee to FeeProcessor
         int128 hookDeltaUnspecified = 0;
 
-        if (baseFeeSpecified > 0) {
-            (uint256 feeOwed, bool feeOnUnspecified) = _computeFeeOwedAndDelta(key, params, swapDelta, baseFeeSpecified);
-
+        if (feeOwed > 0) {
             // Always take the fee from PoolManager
             feeCurrency.take(poolManager, address(feeProcessor), feeOwed, false);
 
@@ -293,7 +329,7 @@ contract DeliHook is Ownable2Step, BaseHook {
 
             // Only return positive delta when fee is on the unspecified side (relative to specified token)
             // After-swap delta must be expressed in the unspecified token per v4.
-            if (feeOnUnspecified) {
+            if (!feeMatchesSpecified) {
                 // Return positive delta in the unspecified token equal to the fee taken
                 hookDeltaUnspecified = SafeCast.toInt128(int256(feeOwed));
             }
@@ -302,56 +338,15 @@ contract DeliHook is Ownable2Step, BaseHook {
         return (BaseHook.afterSwap.selector, hookDeltaUnspecified);
     }
 
-    function _computeFeeOwedAndDelta(
-        PoolKey calldata key,
-        SwapParams calldata params,
-        BalanceDelta swapDelta,
-        uint256 baseFeeSpecified
-    ) private view returns (uint256 feeOwed, bool feeOnUnspecified) {
-        bool specifiedIs0 = params.zeroForOne ? (params.amountSpecified < 0) : !(params.amountSpecified < 0);
-        bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
-
-        (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
-
-        uint256 absActualSpecified = uint256(
-            specifiedIs0
-                ? (swapDelta.amount0() < 0 ? -int256(swapDelta.amount0()) : int256(swapDelta.amount0()))
-                : (swapDelta.amount1() < 0 ? -int256(swapDelta.amount1()) : int256(swapDelta.amount1()))
-        );
-
-        // Base fee on actual traded amount (dust-protect)
-        uint256 baseFeeActual = FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000);
-
-        if (feeCurrencyIs0 == specifiedIs0) {
-            // Fee is on the specified side: derive fee from ACTUAL specified-side delta,
-            // then cap by the pre-withheld budget to respect price limits and partial fills.
-            bool exactInput = params.amountSpecified < 0;
-            uint256 feeFromDelta = exactInput
-                // exact input: afterSwap specified delta is NET => F = ceil(net * f / (1e6 - f))
-                ? FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000 - uint256(poolFee))
-                // exact output: afterSwap specified delta is GROSS => F = ceil(gross * f / (1e6 + f))
-                : FullMath.mulDivRoundingUp(absActualSpecified, uint256(poolFee), 1_000_000 + uint256(poolFee));
-
-            feeOwed = feeFromDelta > baseFeeSpecified ? baseFeeSpecified : feeFromDelta;
-            feeOnUnspecified = false;
-            return (feeOwed, feeOnUnspecified);
-        }
-
-        // Conversion at post-swap price with v4 rounding conventions
-        if (specifiedIs0) {
-            // token0 (specified) -> token1 (wBLT): floor(base * p)
-            feeOwed = FullMath.mulDiv(
-                FullMath.mulDiv(baseFeeActual, sqrtPriceX96, FixedPoint96.Q96), sqrtPriceX96, FixedPoint96.Q96
-            );
-        } else {
-            // token1 (specified) -> token0 (wBLT): ceil(base / p), avoid double rounding-up
-            feeOwed = FullMath.mulDivRoundingUp(
-                FullMath.mulDiv(baseFeeActual, FixedPoint96.Q96, sqrtPriceX96), FixedPoint96.Q96, sqrtPriceX96
-            );
-        }
-
-        feeOnUnspecified = true;
-        return (feeOwed, feeOnUnspecified);
+    /// @dev Returns true if the fee currency is the specified token for the given swap params.
+    function _feeMatchesSpecified(PoolKey calldata key, SwapParams calldata params, Currency feeCurrency)
+        private
+        pure
+        returns (bool)
+    {
+        bool exactInput = params.amountSpecified < 0;
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        return (Currency.unwrap(feeCurrency) == Currency.unwrap(key.currency0)) == specifiedIs0;
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -276,7 +276,7 @@ contract SwapLifecycle_IT is Test, Deployers, IUnlockCallback {
     }
 
     function testFullLifecycle() public {
-        uint256 feeInput = 1e21; // ensure ≥1 wBLT threshold for buybacks with post-swap pricing
+        uint256 feeInput = 1e21; // ensure ≥1 wBLT threshold for buybacks
 
         // Configure buyback pool and perform swaps
         PoolKey memory bmxPoolKey = PoolKey({

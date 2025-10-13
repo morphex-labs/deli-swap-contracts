@@ -49,7 +49,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
     IERC20 bmx;
     IERC20 other;
 
-    PoolKey internal bmxKey;   // BMX / wBLT
+    PoolKey internal bmxKey; // BMX / wBLT
     PoolKey internal otherKey; // OTHER / wBLT
 
     function setUp() public {
@@ -83,10 +83,19 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             address(bmx),
             address(this)
         );
-        uint160 hookFlags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
-        (address predictedHook, bytes32 salt) = HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
+        uint160 hookFlags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG
+            | Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
+        (address predictedHook, bytes32 salt) =
+            HookMiner.find(address(this), hookFlags, type(DeliHook).creationCode, tmpCtorArgs);
 
-        gauge = new DailyEpochGauge(address(0), poolManager, IPositionManagerAdapter(address(0)), predictedHook, IERC20(address(bmx)), address(0));
+        gauge = new DailyEpochGauge(
+            address(0),
+            poolManager,
+            IPositionManagerAdapter(address(0)),
+            predictedHook,
+            IERC20(address(bmx)),
+            address(0)
+        );
         inc = new MockIncentiveGauge();
         fp = new FeeProcessor(poolManager, predictedHook, address(wblt), address(bmx), IDailyEpochGauge(address(gauge)));
         fp.setKeeper(address(this), true);
@@ -128,8 +137,30 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         poolManager.initialize(otherKey, sqrtPx);
 
         // Add liquidity across wide ticks
-        EasyPosm.mint(positionManager, bmxKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
-        EasyPosm.mint(positionManager, otherKey, -60000, 60000, 1e21, 1e24, 1e24, address(this), block.timestamp + 1 hours, bytes(""));
+        EasyPosm.mint(
+            positionManager,
+            bmxKey,
+            -60000,
+            60000,
+            1e21,
+            1e24,
+            1e24,
+            address(this),
+            block.timestamp + 1 hours,
+            bytes("")
+        );
+        EasyPosm.mint(
+            positionManager,
+            otherKey,
+            -60000,
+            60000,
+            1e21,
+            1e24,
+            1e24,
+            address(this),
+            block.timestamp + 1 hours,
+            bytes("")
+        );
     }
 
     struct SwapRequest {
@@ -158,7 +189,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         // Build swap params
         int256 amtSpecified = req.exactInput ? -int256(req.amount) : int256(req.amount);
         uint160 limit = req.zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
-        SwapParams memory sp = SwapParams({zeroForOne: req.zeroForOne, amountSpecified: amtSpecified, sqrtPriceLimitX96: limit});
+        SwapParams memory sp =
+            SwapParams({zeroForOne: req.zeroForOne, amountSpecified: amtSpecified, sqrtPriceLimitX96: limit});
 
         // Execute swap
         BalanceDelta delta = poolManager.swap(req.key, sp, bytes(""));
@@ -195,7 +227,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
     }
 
     function _lpFee() internal view returns (uint24 fee) {
-        (, , , fee) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
+        (,,, fee) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
     }
 
     function _baseFee(uint256 amountSpecifiedAbs) internal view returns (uint256) {
@@ -203,13 +235,13 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
     }
 
     function _feeToken0To1(uint256 baseFeeSpecified) internal view returns (uint256) {
-        (uint160 sqrtP, , ,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
+        (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
         uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtP, FixedPoint96.Q96);
         return FullMath.mulDiv(inter, sqrtP, FixedPoint96.Q96);
     }
 
     function _feeToken1To0(uint256 baseFeeSpecified) internal view returns (uint256) {
-        (uint160 sqrtP, , ,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
+        (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
         uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtP);
         return FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtP);
     }
@@ -226,24 +258,18 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint32 dayNow = uint32(block.timestamp / 1 days);
         uint256 bucketBefore = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // zeroForOne=false, exact input, settle token1 (wBLT)
-        poolManager.unlock(abi.encode(SwapRequest({
-            key: bmxKey,
-            settleToken0: false,
-            amount: amountIn,
-            zeroForOne: false,
-            exactInput: true
-        })));
+        poolManager.unlock(
+            abi.encode(
+                SwapRequest({key: bmxKey, settleToken0: false, amount: amountIn, zeroForOne: false, exactInput: true})
+            )
+        );
 
         // Expected gauge/voter with wBLT-only fee + internal-swap hook fee (0.3%)
-        uint24 feePips = _lpFee();
-        // Apply hybrid model: net-of-fee S', then fee on S'
-        uint256 denom = 1_000_000 + feePips;
-        uint256 fpre = (amountIn * feePips + denom - 1) / denom;
-        uint256 sprime = amountIn - fpre;
-        uint256 baseW = (sprime * feePips + 1_000_000 - 1) / 1_000_000; // ceil
-        uint256 buyW  = (baseW * fp.buybackBps()) / 1e4;                 // split (floor)
-        uint256 internalFee = (buyW * feePips) / 1_000_000;              // approx internal hook fee (floor)
-        uint256 effW  = buyW - internalFee;                              // effective wBLT actually swapped to BMX
+        uint24 feePips = _lpFee(); // e.g., 3000 pips = 0.3%
+        uint256 baseW = _baseFee(amountIn); // fee in wBLT on the external swap
+        uint256 buyW = (baseW * fp.buybackBps()) / 1e4; // 97% buyback in wBLT
+        uint256 internalFee = (buyW * feePips) / 1_000_000; // hook fee on the internal buyback swap (in wBLT)
+        uint256 effW = buyW - internalFee; // effective wBLT actually swapped to BMX
         // Price was initialised at 4 (sqrtP = 2*Q96), internal swap incurs tiny price impact; allow small tol
         // Voter accumulates: 3% of baseW + 3% of the internal-swap fee
         uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
@@ -253,8 +279,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 bucketAfter = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // Bucket is denominated in BMX and depends on execution price; assert it increased
         assertGt(bucketAfter - bucketBefore, 0, "gauge bucket should increase");
-        // Minor rounding differences from internal swap pricing and ceil/floor → allow tiny relative tolerance
-        assertApproxEqRel(fp.pendingWbltForVoter(), expectedVoter, 0.00001e18, "wblt voter buffer");
+        assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter buffer");
     }
 
     function testBmxPool_ExactOutput_BmxSpecified_Price2x_NoConversion() public {
@@ -266,27 +291,28 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint32 dayNow = uint32(block.timestamp / 1 days);
         uint256 bucketBefore = gauge.dayBuckets(bmxKey.toId(), dayNow + 2);
         // zeroForOne=false, exact output, settle token1 (wBLT)
-        poolManager.unlock(abi.encode(SwapRequest({
-            key: bmxKey,
-            settleToken0: false,
-            amount: amountOutBmx,
-            zeroForOne: false,
-            exactInput: false
-        })));
+        poolManager.unlock(
+            abi.encode(
+                SwapRequest({
+                    key: bmxKey,
+                    settleToken0: false,
+                    amount: amountOutBmx,
+                    zeroForOne: false,
+                    exactInput: false
+                })
+            )
+        );
 
-        // BMX specified: convert BMX-denominated fee to wBLT using POST-swap price,
-        // apply buyback split, deduct internal-swap hook fee (0.3%), then convert to BMX at price≈p_after.
+        // BMX specified: convert BMX-denominated fee to wBLT, apply buyback split,
+        // deduct internal-swap hook fee (0.3%), then convert to BMX at price≈4.
         uint24 feePips = _lpFee();
-        uint256 baseBmx = (amountOutBmx * feePips + 1_000_000 - 1) / 1_000_000; // ceil on specified output
-        // Convert using POST-swap sqrtPriceX96
-        (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, bmxKey.toId());
-        uint256 inter = FullMath.mulDiv(baseBmx, sqrtP, FixedPoint96.Q96);
-        uint256 baseW   = FullMath.mulDiv(inter, sqrtP, FixedPoint96.Q96); // BMX -> wBLT at post-swap price
-        uint256 buyW    = (baseW * fp.buybackBps()) / 1e4;    // 97% buyback
-        uint256 internalFee = (buyW * feePips) / 1_000_000;  // internal swap hook fee
-        // effective wBLT swapped to BMX (unused in assertion)
-        // expected BMX credited depends on post-swap price; compute via division by p_after
-        // BMX = effW / p_after = effW * 2^192 / sqrtP^2 (not asserted exactly here)
+        uint256 baseBmx = _baseFee(amountOutBmx); // BMX-denominated base fee
+        // Initialised sqrt price corresponds to price=4; use exact conversion to avoid drift
+        uint256 baseW = baseBmx * 4; // BMX -> wBLT
+        uint256 buyW = (baseW * fp.buybackBps()) / 1e4; // 97% buyback
+        uint256 internalFee = (buyW * feePips) / 1_000_000; // internal swap hook fee
+        uint256 effW = buyW - internalFee; // effective wBLT swapped to BMX
+        uint256 expectedBuy = effW / 4; // BMX credited to gauge
         uint256 expectedVoter = (baseW - buyW) + ((internalFee * 3) / 100);
 
         // Manually flush BMX pool buffer to credit the gauge
@@ -301,19 +327,20 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 amountOutOther = 3e18; // specified token is token0 (OTHER)
 
         // zeroForOne=false, exact output, settle token1 (wBLT)
-        poolManager.unlock(abi.encode(SwapRequest({
-            key: otherKey,
-            settleToken0: false,
-            amount: amountOutOther,
-            zeroForOne: false,
-            exactInput: false
-        })));
+        poolManager.unlock(
+            abi.encode(
+                SwapRequest({
+                    key: otherKey,
+                    settleToken0: false,
+                    amount: amountOutOther,
+                    zeroForOne: false,
+                    exactInput: false
+                })
+            )
+        );
 
         uint256 base = _baseFee(amountOutOther);
-        // Convert using POST-swap sqrtPriceX96 of otherKey (token0 OTHER -> token1 wBLT)
-        (uint160 sqrtP2,,,) = StateLibrary.getSlot0(poolManager, otherKey.toId());
-        uint256 inter2 = FullMath.mulDiv(base, sqrtP2, FixedPoint96.Q96);
-        uint256 expectedFeeWblt = FullMath.mulDiv(inter2, sqrtP2, FixedPoint96.Q96);
+        uint256 expectedFeeWblt = _feeToken0To1(base); // token0(OTHER)->token1(wBLT)
         uint256 expectedBuy = (expectedFeeWblt * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = expectedFeeWblt - expectedBuy;
 
@@ -325,26 +352,23 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         uint256 amountInWblt = 4e18;
 
         // zeroForOne=false, exact input, settle token1 (wBLT)
-        poolManager.unlock(abi.encode(SwapRequest({
-            key: otherKey,
-            settleToken0: false,
-            amount: amountInWblt,
-            zeroForOne: false,
-            exactInput: true
-        })));
+        poolManager.unlock(
+            abi.encode(
+                SwapRequest({
+                    key: otherKey,
+                    settleToken0: false,
+                    amount: amountInWblt,
+                    zeroForOne: false,
+                    exactInput: true
+                })
+            )
+        );
 
-        uint24 feePips = _lpFee();
-        // Net-of-fee S', then fee on S'
-        uint256 denom = 1_000_000 + feePips;
-        uint256 fpre = (amountInWblt * feePips + denom - 1) / denom; // ceil
-        uint256 sprime = amountInWblt - fpre;
-        uint256 base = (sprime * feePips + 1_000_000 - 1) / 1_000_000; // ceil
-        uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;           // split (floor)
+        uint256 base = _baseFee(amountInWblt);
+        uint256 expectedBuy = (base * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = base - expectedBuy;
 
         assertEq(fp.pendingWbltForBuyback(otherKey.toId()), expectedBuy, "wblt buyback (no conversion)");
         assertEq(fp.pendingWbltForVoter(), expectedVoter, "wblt voter (no conversion)");
     }
 }
-
-

@@ -57,14 +57,10 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         bool exactInput = params.amountSpecified < 0;
         bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
         uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
-
-        uint256 sprime;
-        if (exactInput && ((Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0)) {
-            unchecked { sprime = s0 - (s0 * FEE_PIPS) / (1_000_000 + FEE_PIPS); }
-        } else {
-            sprime = s0;
-        }
+        uint256 fee = (s0 * FEE_PIPS + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
+        uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
 
         int128 a0 = 0;
         int128 a1 = 0;
@@ -102,11 +98,9 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         _callSwap(address(0xA1), key, sp, "");
 
-        // With exact input and fee currency == specified, expect floor(S0*fee/(1e6+fee))
-        // With dust-protection (mulDivRoundingUp on base fee), expected can be off by +1 vs pure floor math
-        uint256 expected = (uint256(1e18) * FEE_PIPS) / (1_000_000 + FEE_PIPS);
-        assertLe(fp.lastAmount(), expected + 1);
-        assertGe(fp.lastAmount(), expected);
+        // With exact input and fee on specified, forward base fee = ceil(S0*fee/1e6)
+        uint256 expected = (uint256(1e18) * FEE_PIPS + (1_000_000 - 1)) / 1_000_000;
+        assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
 
@@ -130,8 +124,7 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         _callSwap(address(0xA2), key, sp, "");
 
-        // exact output, same-currency (fee token == specified): F = ceil(gross * f / (1e6 + f))
-        uint256 expected = (uint256(2e18) * FEE_PIPS + (1_000_000 + FEE_PIPS - 1)) / (1_000_000 + FEE_PIPS);
+        uint256 expected = 2e18 * 3000 / 1_000_000; // fee in wBLT units at px=1
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -216,10 +209,9 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xC1), key, sp, "");
 
-        // With exact input and fee currency == specified, expect floor(S0*fee/(1e6+fee))
-        uint256 expected = (uint256(1e18) * FEE_PIPS) / (1_000_000 + FEE_PIPS);
-        assertLe(fp.lastAmount(), expected + 1);
-        assertGe(fp.lastAmount(), expected);
+        // exact input and fee on specified, price=4 converts only for cross-currency; here fee token == specified
+        uint256 expected = (uint256(1e18) * FEE_PIPS + (1_000_000 - 1)) / 1_000_000;
+        assertEq(fp.lastAmount(), expected);
     }
 
     function testPriceConversion_Token1ToToken0_FeeInToken0_Price2x() public {

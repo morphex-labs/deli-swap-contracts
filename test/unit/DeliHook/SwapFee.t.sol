@@ -63,14 +63,10 @@ contract DeliHook_SwapFeeTest is Test {
 
         bool exactInput = params.amountSpecified < 0;
         bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
         uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
-
-        uint256 sprime;
-        if (exactInput && ((Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0)) {
-            unchecked { sprime = s0 - (s0 * FEE_PIPS) / (1_000_000 + FEE_PIPS); }
-        } else {
-            sprime = s0;
-        }
+        uint256 fee = (s0 * FEE_PIPS + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
+        uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
 
         int128 a0 = 0;
         int128 a1 = 0;
@@ -127,12 +123,8 @@ contract DeliHook_SwapFeeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:-2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBBB), key, sp, "");
 
-        // exact input, fee currency == specified? specifiedIs0 for zeroForOne=false & exactInput=false => specifiedIs0=false
-        // fee currency is token1=wBLT => feeMatchesSpecified=false, so fee measured from actual traded S' = S0 (=2e18)
-        // exact input and fee currency == specified → expect ceil(S0 * fee / (1e6 + fee))
-        uint256 denom = 1_000_000 + 3000;
-        uint256 num = uint256(2e18) * 3000;
-        uint256 expected = (num + denom - 1) / denom;
+        // exact input, fee on specified (wBLT): forward base fee = ceil(S0 * fee / 1e6)
+        uint256 expected = (uint256(2e18) * 3000 + (1_000_000 - 1)) / 1_000_000;
         assertEq(fp.lastAmount(), expected);
     }
 
@@ -178,12 +170,8 @@ contract DeliHook_SwapFeeTest is Test {
         _callSwap(TRADER, key, sp, "");
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
-        // exact input, specifiedIs0 = params.zeroForOne ? exactInput : !exactInput = false
-        // fee currency is token1 (wBLT), mismatch => fee on actual S' = S0
-        // exact input and fee currency == specified → expect ceil(S0 * fee / (1e6 + fee))
-        uint256 denom2 = 1_000_000 + 3000;
-        uint256 num2 = uint256(1e18) * 3000;
-        uint256 expected = (num2 + denom2 - 1) / denom2;
+        // exact input, fee on specified (wBLT): forward base fee = ceil(S0 * fee / 1e6)
+        uint256 expected = (uint256(1e18) * 3000 + (1_000_000 - 1)) / 1_000_000;
         assertEq(tkAmt, expected);
     }
 
