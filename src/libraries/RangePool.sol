@@ -211,15 +211,7 @@ library RangePool {
             }
         }
 
-        // Set final tick following Pool.sol semantics:
-        // - If price is exactly on a boundary, keep the directional boundary tick (currentTick already reflects this)
-        // - Otherwise, derive from sqrtPriceX96
-        uint160 sqrtAtBoundary = TickMath.getSqrtPriceAtTick(lte ? (currentTick + 1) : currentTick);
-        if (sqrtPriceX96 == sqrtAtBoundary) {
-            self.tick = currentTick;
-        } else {
-            self.tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        }
+        self.tick = tick;
         self.liquidity = LiquidityMath.addDelta(self.liquidity, liquidityChange);
     }
 
