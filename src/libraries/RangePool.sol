@@ -179,6 +179,11 @@ library RangePool {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, true);
 
+                // Clamp to min tick to avoid out-of-bounds
+                if (nextTick <= TickMath.MIN_TICK) {
+                    nextTick = TickMath.MIN_TICK;
+                }
+
                 uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
                 if (sqrtPriceX96 <= sqrtAtNext) {
                     if (initialized) {
@@ -197,6 +202,11 @@ library RangePool {
             while (true) {
                 (int24 nextTick, bool initialized) =
                     self.tickBitmap.nextInitializedTickWithinOneWord(currentTick, tickSpacing, false);
+
+                // Clamp to max tick to avoid out-of-bounds
+                if (nextTick >= TickMath.MAX_TICK) {
+                    nextTick = TickMath.MAX_TICK;
+                }
 
                 uint160 sqrtAtNext = TickMath.getSqrtPriceAtTick(nextTick);
                 if (sqrtPriceX96 >= sqrtAtNext) {
