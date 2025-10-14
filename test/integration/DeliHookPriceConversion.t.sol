@@ -231,7 +231,7 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
     }
 
     function _baseFee(uint256 amountSpecifiedAbs) internal view returns (uint256) {
-        return (amountSpecifiedAbs * uint256(_lpFee())) / 1_000_000;
+        return (amountSpecifiedAbs * uint256(_lpFee()) + (1_000_000 - 1)) / 1_000_000; // ceil for EI tests
     }
 
     function _feeToken0To1(uint256 baseFeeSpecified) internal view returns (uint256) {
@@ -306,7 +306,8 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
         // BMX specified: convert BMX-denominated fee to wBLT, apply buyback split,
         // deduct internal-swap hook fee (0.3%), then convert to BMX at price≈4.
         uint24 feePips = _lpFee();
-        uint256 baseBmx = _baseFee(amountOutBmx); // BMX-denominated base fee
+        // exact output on specified => gross-up by (1e6 - fee)
+        uint256 baseBmx = (amountOutBmx * uint256(_lpFee()) + ((1_000_000 - _lpFee()) - 1)) / (1_000_000 - _lpFee());
         // Initialised sqrt price corresponds to price=4; use exact conversion to avoid drift
         uint256 baseW = baseBmx * 4; // BMX -> wBLT
         uint256 buyW = (baseW * fp.buybackBps()) / 1e4; // 97% buyback
@@ -339,8 +340,9 @@ contract DeliHook_PriceConversion_IT is Test, Deployers, IUnlockCallback {
             )
         );
 
-        uint256 base = _baseFee(amountOutOther);
-        uint256 expectedFeeWblt = _feeToken0To1(base); // token0(OTHER)->token1(wBLT)
+        // exact output on specified OTHER: gross-up by (1e6 - fee)
+        uint256 base = (amountOutOther * uint256(_lpFee()) + ((1_000_000 - _lpFee()) - 1)) / (1_000_000 - _lpFee());
+        uint256 expectedFeeWblt = _feeToken0To1(base); // token0(OTHER)->token1(wBLT), ceil path inside
         uint256 expectedBuy = (expectedFeeWblt * fp.buybackBps()) / 1e4;
         uint256 expectedVoter = expectedFeeWblt - expectedBuy;
 

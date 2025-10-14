@@ -59,7 +59,8 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
         bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
         uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
-        uint256 fee = (s0 * FEE_PIPS + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
+        uint256 denom = exactInput ? 1_000_000 : (1_000_000 - FEE_PIPS);
+        uint256 fee = (s0 * FEE_PIPS + (denom - 1)) / denom; // directional ceil
         uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
 
         int128 a0 = 0;
@@ -124,7 +125,8 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         _callSwap(address(0xA2), key, sp, "");
 
-        uint256 expected = 2e18 * 3000 / 1_000_000; // fee in wBLT units at px=1
+        // exact output: ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(2e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -178,7 +180,8 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         _callSwap(address(0xB2), key, sp, "");
 
-        uint256 expected = 5e18 * 3000 / 1_000_000; // fee in BMX units at px=1
+        // exact output: ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(5e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -237,8 +240,10 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xC2), key, sp, "");
 
-        // base fee in specified = 2e18 * 0.003 = 6e15; convert token1->token0: / price (4) ceiled => 1500000000000000
-        assertEq(fp.lastAmount(), 1500000000000000);
+        // gross-up then convert at price=4 (ceil division)
+        uint256 baseGross = (uint256(2e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
+        uint256 expected = (baseGross + 4 - 1) / 4;
+        assertEq(fp.lastAmount(), expected);
     }
 
     // ---------------------------
@@ -281,9 +286,11 @@ contract DeliHook_SwapFee_OrientationTest is Test {
 
         // With wBLT-only fee currency, fee is in token0 (wBLT), specified is token1 (BMX)
         // beforeSpecified stays 0; afterUnspecified returns fee in unspecified token (token0)
-        // base fee in specified (BMX) = 2e18 * 0.003 = 6e15; convert token1->token0: / 4, ceil => 1500000000000000
+        // gross-up then convert at price=4 (ceil division)
+        uint256 baseGross = (uint256(2e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
+        uint256 expected = (baseGross + 4 - 1) / 4;
         assertEq(int256(beforeSpecified), int256(0));
-        assertEq(afterUnspecified, int128(uint128(1500000000000000)));
+        assertEq(afterUnspecified, int128(uint128(expected)));
     }
 
     function testDeltas_SpecifiedDiffersFromFeeCurrency_WbltPool_ExactOutput_Price2x() public {
@@ -320,9 +327,11 @@ contract DeliHook_SwapFee_OrientationTest is Test {
         vm.prank(address(pm));
         ( , int128 afterUnspecified ) = hook.afterSwap(address(0xD2), key, sp, toBalanceDelta(a0,a1), "");
 
-        // base fee in specified (OTHER) = 1e18 * 0.003 = 3e15; convert OTHER->wBLT: / 4, ceil => 750000000000000
+        // gross-up then convert at price=4 (ceil division)
+        uint256 baseGross2 = (uint256(1e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
+        uint256 expected2 = (baseGross2 + 4 - 1) / 4;
         assertEq(beforeSpecified, 0);
-        assertEq(afterUnspecified, int128(uint128(750000000000000)));
+        assertEq(afterUnspecified, int128(uint128(expected2)));
     }
 }
 

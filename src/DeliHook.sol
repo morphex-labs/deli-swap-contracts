@@ -226,10 +226,12 @@ contract DeliHook is Ownable2Step, BaseHook {
         // Get the current sqrt price and LP fee for this pool from PoolManager
         (uint160 sqrtPriceX96,,, uint24 poolFee) = StateLibrary.getSlot0(poolManager, key.toId());
 
-        // Compute base fee in specified-token units
-        // We first denominate the fee in the specified token, then convert to the
-        // designated fee currency (BMX or wBLT) using sqrtPriceX96 if needed.
-        uint256 baseFeeSpecified = FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000);
+        // Compute base fee in specified-token units, directional:
+        // - exact input:  ceil(absAmountSpecified * fee / 1e6)
+        // - exact output: ceil(absAmountSpecified * fee / (1e6 - fee))
+        uint256 baseFeeSpecified = exactInput
+            ? FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000)
+            : FullMath.mulDivRoundingUp(absAmountSpecified, uint256(poolFee), 1_000_000 - uint256(poolFee));
 
         // Identify fee token: always collect in wBLT
         bool feeCurrencyIs0 = (Currency.unwrap(key.currency0) == WBLT);
@@ -237,19 +239,19 @@ contract DeliHook is Ownable2Step, BaseHook {
 
         // Convert fee to feeCurrency units if it differs from specified token
         // Price p = (sqrtPriceX96^2) / 2^192 (token1 per token0).
-        // Conversions follow v4 rounding conventions:
-        //  - token0 -> token1: floor(base * p)
-        //  - token1 -> token0: ceil(base / p)
+        // Conversions always round up:
+        //  - token0 -> token1: ceil(base * price)
+        //  - token1 -> token0: ceil(base / price)
         if (feeCurrencyIs0 == specifiedIs0) {
             _pendingFee = baseFeeSpecified;
         } else {
             if (specifiedIs0) {
                 // specified = token0, feeCurrency = token1
-                uint256 inter = FullMath.mulDiv(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
-                _pendingFee = FullMath.mulDiv(inter, sqrtPriceX96, FixedPoint96.Q96);
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, sqrtPriceX96, FixedPoint96.Q96);
+                _pendingFee = FullMath.mulDivRoundingUp(inter, sqrtPriceX96, FixedPoint96.Q96);
             } else {
                 // specified = token1, feeCurrency = token0
-                uint256 inter = FullMath.mulDiv(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
+                uint256 inter = FullMath.mulDivRoundingUp(baseFeeSpecified, FixedPoint96.Q96, sqrtPriceX96);
                 _pendingFee = FullMath.mulDivRoundingUp(inter, FixedPoint96.Q96, sqrtPriceX96);
             }
         }

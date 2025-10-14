@@ -193,9 +193,8 @@ contract DeliHook_SwapFeeTest is Test {
         _callSwap(TRADER, key, sp, "");
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
-        // For exact output, fee is calculated on the unspecified (input) amount
-        // With mock returning 3000 (0.3%) fee
-        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
+        // exact output, fee on specified: gross-up => ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(1e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(tkAmt, expected);
     }
 } 

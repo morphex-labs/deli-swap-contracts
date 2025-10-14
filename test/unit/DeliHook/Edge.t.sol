@@ -63,8 +63,14 @@ contract DeliHook_EdgeTest is Test {
         bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
         uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
 
-        uint256 fee = (s0 * FEE_PIPS + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
-        uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
+        uint256 sprime;
+        if (feeMatchesSpecified) {
+            uint256 denom = exactInput ? 1_000_000 : (1_000_000 - FEE_PIPS);
+            uint256 fee = (s0 * FEE_PIPS + (denom - 1)) / denom; // directional ceil
+            sprime = exactInput ? (s0 - fee) : (s0 + fee);
+        } else {
+            sprime = s0;
+        }
 
         int128 a0 = 0;
         int128 a1 = 0;
@@ -99,7 +105,8 @@ contract DeliHook_EdgeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xAAA), key, sp, "");
 
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // exact output, same-currency (fee token == specified): ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(1e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -122,7 +129,8 @@ contract DeliHook_EdgeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBB), key, sp, "");
 
-        uint256 expected = 2e18 * 3000 / 1_000_000;
+        // exact output, cross-currency at px=1 equals same numeric value
+        uint256 expected = (uint256(2e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
