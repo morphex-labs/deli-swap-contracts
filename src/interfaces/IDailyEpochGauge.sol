@@ -18,6 +18,7 @@ interface IDailyEpochGauge {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity,
@@ -27,8 +28,6 @@ interface IDailyEpochGauge {
     function notifyUnsubscribeWithContext(
         bytes32 posKey,
         bytes32 poolIdRaw,
-        int24 currentTick,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -39,6 +38,7 @@ interface IDailyEpochGauge {
         bytes32 poolIdRaw,
         address ownerAddr,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -48,6 +48,7 @@ interface IDailyEpochGauge {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         int256 liquidityChange,

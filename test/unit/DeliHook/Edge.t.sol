@@ -36,6 +36,7 @@ contract DeliHook_EdgeTest is Test {
     MintableERC20 wblt;
     MintableERC20 bmx;
     address constant OTHER = address(0x123);
+    uint24 constant FEE_PIPS = 3000;
 
     function setUp() public {
         pm = new MockHookPoolManager();
@@ -52,12 +53,35 @@ contract DeliHook_EdgeTest is Test {
         hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(fp)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), address(wblt), address(bmx), address(this));
     }
 
-    // helper to execute swap path fully
+    // helper to execute swap path fully with a simulated swapDelta that matches new fee semantics
     function _callSwap(address trader, PoolKey memory key, SwapParams memory params, bytes memory data) internal {
         vm.prank(address(pm));
         hook.beforeSwap(trader, key, params, data);
+
+        bool exactInput = params.amountSpecified < 0;
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
+        uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+
+        uint256 sprime;
+        if (feeMatchesSpecified) {
+            uint256 denom = exactInput ? 1_000_000 : (1_000_000 - FEE_PIPS);
+            uint256 fee = (s0 * FEE_PIPS + (denom - 1)) / denom; // directional ceil
+            sprime = exactInput ? (s0 - fee) : (s0 + fee);
+        } else {
+            sprime = s0;
+        }
+
+        int128 a0 = 0;
+        int128 a1 = 0;
+        if (specifiedIs0) {
+            a0 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        } else {
+            a1 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        }
+
         vm.prank(address(pm));
-        hook.afterSwap(trader, key, params, toBalanceDelta(0,0), data);
+        hook.afterSwap(trader, key, params, toBalanceDelta(a0, a1), data);
     }
 
     // ---------------------------------------------------------------------
@@ -81,7 +105,8 @@ contract DeliHook_EdgeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:1e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xAAA), key, sp, "");
 
-        uint256 expected = 1e18 * 3000 / 1_000_000;
+        // exact output, same-currency (fee token == specified): ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(1e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -104,7 +129,8 @@ contract DeliHook_EdgeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBB), key, sp, "");
 
-        uint256 expected = 2e18 * 3000 / 1_000_000;
+        // exact output, cross-currency at px=1 equals same numeric value
+        uint256 expected = (uint256(2e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(fp.lastAmount(), expected);
         assertEq(fp.calls(), 1);
     }
@@ -120,12 +146,12 @@ contract DeliHook_EdgeTest is Test {
             tickSpacing: 60,
             hooks: hook
         });
-        // exact input 100 wei (fee calc => 0)
+        // exact input 100 wei (dust-protected fee rounds up to 1 wei)
         SwapParams memory sp = SwapParams({zeroForOne:true, amountSpecified:-100, sqrtPriceLimitX96:0});
         _callSwap(address(0xCCC), key, sp, "");
 
-        assertEq(fp.calls(), 0);
-        assertEq(pm.settleCalls(), 0);
+        assertEq(fp.calls(), 1);
+        assertGt(fp.lastAmount(), 0);
     }
 
     // ---------------------------------------------------------------------

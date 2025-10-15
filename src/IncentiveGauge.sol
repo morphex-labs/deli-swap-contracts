@@ -480,16 +480,16 @@ contract IncentiveGauge is Ownable2Step {
     function _upsertIncentive(PoolId pid, IERC20 token, uint256 amount) internal returns (uint128 rate) {
         IncentiveInfo storage info = incentives[pid][token];
 
+        // Always sync pool before updating incentive
+        _updatePoolByPid(pid);
+
         uint256 total = amount;
-        if (info.rewardRate > 0) {
-            // For active schedules, first update pool accounting, then add leftover budget
-            _updatePoolByPid(pid);
-            if (block.timestamp < info.periodFinish) {
-                uint256 remainingTime = info.periodFinish - block.timestamp;
-                uint256 leftover = remainingTime * info.rewardRate;
-                if (amount <= leftover) revert DeliErrors.InsufficientIncentive();
-                total += leftover;
-            }
+        // Add leftover budget
+        uint256 leftover = info.remaining;
+        if (leftover > 0) {
+            // For active incentives enforce that amount is greater than leftover
+            if (info.rewardRate > 0 && amount <= leftover) revert DeliErrors.InsufficientIncentive();
+            total += leftover;
         }
 
         rate = SafeCast.toUint128(total / TimeLibrary.WEEK);
@@ -662,11 +662,11 @@ contract IncentiveGauge is Ownable2Step {
     function _updatePoolByPid(PoolId pid) internal {
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
     }
 
     /// @dev internal helper to update pool state
-    function _updatePool(PoolId pid, int24 currentTick) internal {
+    function _updatePool(PoolId pid, int24 currentTick, uint160 sqrtPriceX96) internal {
         IERC20[] storage reg = poolTokenRegistry[pid];
         uint256 len = reg.length;
         if (len == 0) return;
@@ -678,58 +678,69 @@ contract IncentiveGauge is Ownable2Step {
         address[] memory addrs = new address[](len);
         uint256[] memory amounts = new uint256[](len);
 
-        for (uint256 i; i < len;) {
-            IERC20 tok = reg[i];
-            addrs[i] = address(tok);
-            uint256 amt;
-            IncentiveInfo storage info = incentives[pid][tok];
-            if (info.rewardRate > 0) {
-                uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
-                if (endTs > poolLast) {
-                    uint256 activeSeconds = endTs - poolLast;
-                    amt = uint256(info.rewardRate) * activeSeconds;
+        if (pool.liquidity > 0) {
+            // Normal path: compute per-token amounts since poolLast and sync
+            for (uint256 i; i < len;) {
+                IERC20 tok = reg[i];
+                addrs[i] = address(tok);
+                uint256 amt;
+                IncentiveInfo storage info = incentives[pid][tok];
+                if (info.rewardRate > 0) {
+                    uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
+                    if (endTs > poolLast) {
+                        uint256 activeSeconds = endTs - poolLast;
+                        amt = uint256(info.rewardRate) * activeSeconds;
+                    }
                 }
-            }
-            amounts[i] = amt;
-            unchecked {
-                ++i;
-            }
-        }
-        // Always call sync when initialized so tick adjusts even if dt == 0
-        pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick);
-
-        // Bookkeeping for reward tokens
-        for (uint256 i; i < len;) {
-            IERC20 tok = reg[i];
-            IncentiveInfo storage info = incentives[pid][tok];
-            if (info.rewardRate == 0) {
+                amounts[i] = amt;
                 unchecked {
                     ++i;
                 }
-                continue;
             }
+            // Always call sync when initialized so tick adjusts even if dt == 0
+            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
 
-            uint256 dt = nowTs - info.lastUpdate;
-            if (dt > 0) {
-                uint256 cappedTimestamp = nowTs > info.periodFinish ? info.periodFinish : nowTs;
-                if (cappedTimestamp > info.lastUpdate) {
-                    dt = cappedTimestamp - info.lastUpdate;
-                    uint256 streamed = dt * info.rewardRate;
-                    if (streamed > info.remaining) streamed = info.remaining;
-                    info.remaining -= uint128(streamed);
+            // Bookkeeping for reward tokens only when liquidity exists
+            for (uint256 i; i < len;) {
+                IERC20 tok = reg[i];
+                IncentiveInfo storage info = incentives[pid][tok];
+                if (info.rewardRate == 0) {
+                    unchecked {
+                        ++i;
+                    }
+                    continue;
                 }
 
-                info.lastUpdate = uint64(nowTs);
-                if (nowTs >= info.periodFinish || info.remaining == 0) {
-                    // Deactivate
-                    info.remaining = 0;
-                    info.rewardRate = 0;
-                    emit IncentiveDeactivated(pid, tok);
+                uint256 dt = nowTs - info.lastUpdate;
+                if (dt > 0) {
+                    uint256 cappedTimestamp = nowTs > info.periodFinish ? info.periodFinish : nowTs;
+                    if (cappedTimestamp > info.lastUpdate) {
+                        dt = cappedTimestamp - info.lastUpdate;
+                        uint256 streamed = dt * info.rewardRate;
+                        if (streamed > info.remaining) streamed = info.remaining;
+                        info.remaining -= uint128(streamed);
+                    }
+
+                    info.lastUpdate = uint64(nowTs);
+                    if (nowTs >= info.periodFinish || info.remaining == 0) {
+                        info.rewardRate = 0;
+                        emit IncentiveDeactivated(pid, tok);
+                    }
+                }
+                unchecked {
+                    ++i;
                 }
             }
-            unchecked {
-                ++i;
+        } else {
+            // Zero-liquidity path: pass zero amounts to sync (tick adjust only); skip per-token bookkeeping
+            for (uint256 i; i < len;) {
+                addrs[i] = address(reg[i]);
+                amounts[i] = 0;
+                unchecked {
+                    ++i;
+                }
             }
+            pool.sync(addrs, amounts, poolTickSpacing[pid], currentTick, sqrtPriceX96);
         }
     }
 
@@ -752,6 +763,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity,
@@ -769,7 +781,7 @@ contract IncentiveGauge is Ownable2Step {
         positionTokenIds[positionKey] = tokenId;
 
         // Update pool state once (batched) using adapter-provided tick
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Apply add liquidity first so tick outside is initialised for tokens if flips occur
         _applyLiquidityDeltaByPid(pid, tickLower, tickUpper, SafeCast.toInt128(uint256(liquidity)), true);
@@ -813,6 +825,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 poolIdRaw,
         address ownerAddr,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -822,7 +835,7 @@ contract IncentiveGauge is Ownable2Step {
 
         // Update pool state once (batched) using adapter-provided tick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Batch accrue across all tokens, remove once
         _accrueAcrossTokens(pid, positionKey, tickLower, tickUpper, uint128(liquidity));
@@ -845,6 +858,7 @@ contract IncentiveGauge is Ownable2Step {
         bytes32 positionKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         int256 liquidityChange,
@@ -858,7 +872,7 @@ contract IncentiveGauge is Ownable2Step {
         positionLiquidity[positionKey] = liquidityAfter;
 
         // Batch update pool once using adapter-provided tick
-        _updatePool(pid, currentTick);
+        _updatePool(pid, currentTick, sqrtPriceX96);
 
         // Accrue rewards with liquidity before change across all tokens (cast-safe)
         int128 delta128 = SafeCast.toInt128(liquidityChange);

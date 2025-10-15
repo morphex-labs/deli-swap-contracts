@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 
 import {RangePool} from "src/libraries/RangePool.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 contract RangePoolBitmapInvariant is Test {
     using RangePool for RangePool.State;
@@ -64,7 +65,7 @@ contract RangePoolBitmapInvariant is Test {
         vm.warp(block.timestamp + 1);
         address[] memory toks2 = new address[](1); toks2[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = (streamRate % 1e23); // dt=1
-        pool.sync(toks2, amts, SPACING, 0);
+        pool.sync(toks2, amts, SPACING, 0, TickMath.getSqrtPriceAtTick(0));
     }
 
     /*//////////////////////////////////////////////////////////////

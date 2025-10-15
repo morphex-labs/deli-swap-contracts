@@ -41,6 +41,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         int24 tickUpper;
         uint128 liquidity;
         int24 currentTick;
+        uint160 sqrtPriceX96;
         address owner;
     }
 
@@ -240,7 +241,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Build context from tokenId
-    function _buildContextFromToken(uint256 tokenId, bool includeOwner)
+    function _buildContextFromToken(uint256 tokenId, bool includeOwner, bool includeCurrentTick)
         internal
         view
         returns (NotifyContext memory ctx)
@@ -255,10 +256,13 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         ctx.tickUpper = info.tickUpper();
         ctx.posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
         ctx.liquidity = liq;
-        (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
-        ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         if (includeOwner) {
             ctx.owner = handler.ownerOf(tokenId);
+        }
+        if (includeCurrentTick) {
+            (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+            ctx.sqrtPriceX96 = sqrtPriceX96;
+            ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         }
     }
 
@@ -277,6 +281,7 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         ctx.tickUpper = info.tickUpper();
         ctx.posKey = EfficientHashLib.hash(bytes32(tokenId), pidRaw);
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
+        ctx.sqrtPriceX96 = sqrtPriceX96;
         ctx.currentTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
     }
 
@@ -320,24 +325,22 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
     /// @inheritdoc ISubscriber
     function notifySubscribe(uint256 tokenId, bytes memory) external override onlyAuthorizedCaller {
         // Pre-fetch context once via direct handler to avoid extra external self-calls
-        NotifyContext memory c = _buildContextFromToken(tokenId, true);
+        NotifyContext memory c = _buildContextFromToken(tokenId, true, true);
 
         dailyEpochGauge.notifySubscribeWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity, c.owner
+            tokenId, c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, c.liquidity, c.owner
         );
         incentiveGauge.notifySubscribeWithContext(
-            tokenId, c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, c.liquidity, c.owner
+            tokenId, c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, c.liquidity, c.owner
         );
     }
 
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external override onlyAuthorizedCaller {
         // Build full context once and forward to both gauges
-        NotifyContext memory c = _buildContextFromToken(tokenId, true);
+        NotifyContext memory c = _buildContextFromToken(tokenId, false, false);
 
-        dailyEpochGauge.notifyUnsubscribeWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.owner, c.tickLower, c.tickUpper, c.liquidity
-        );
+        dailyEpochGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.tickLower, c.tickUpper, c.liquidity);
         incentiveGauge.notifyUnsubscribeWithContext(c.posKey, c.pidRaw, c.tickLower, c.tickUpper, c.liquidity);
     }
 
@@ -353,10 +356,10 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         NotifyContext memory c = _buildContextFromInfo(tokenId, info);
 
         dailyEpochGauge.notifyBurnWithContext(
-            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, uint128(liquidity)
         );
         incentiveGauge.notifyBurnWithContext(
-            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.tickLower, c.tickUpper, uint128(liquidity)
+            c.posKey, c.pidRaw, ownerAddr, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, uint128(liquidity)
         );
     }
 
@@ -367,14 +370,14 @@ contract PositionManagerAdapter is ISubscriber, Ownable2Step {
         onlyAuthorizedCaller
     {
         // Pre-fetch context once via direct handler to avoid extra external self-calls
-        NotifyContext memory c = _buildContextFromToken(tokenId, false);
+        NotifyContext memory c = _buildContextFromToken(tokenId, false, true);
 
         // Note: liquidityAfter comes from PositionManager; we forward it as-is
         dailyEpochGauge.notifyModifyLiquidityWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
         incentiveGauge.notifyModifyLiquidityWithContext(
-            c.posKey, c.pidRaw, c.currentTick, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
+            c.posKey, c.pidRaw, c.currentTick, c.sqrtPriceX96, c.tickLower, c.tickUpper, liquidityChange, c.liquidity
         );
     }
 }

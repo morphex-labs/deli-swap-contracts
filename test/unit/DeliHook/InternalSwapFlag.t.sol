@@ -56,8 +56,24 @@ contract DeliHook_InternalSwapFlagTest is Test {
     function _callSwap(address trader, PoolKey memory key, SwapParams memory params, bytes memory data) internal {
         vm.prank(address(pm));
         hook.beforeSwap(trader, key, params, data);
+
+        bool exactInput = params.amountSpecified < 0;
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
+        uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+        uint256 fee = (s0 * 3000 + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
+        uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
+
+        int128 a0 = 0;
+        int128 a1 = 0;
+        if (specifiedIs0) {
+            a0 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        } else {
+            a1 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        }
+
         vm.prank(address(pm));
-        hook.afterSwap(trader, key, params, toBalanceDelta(0,0), data);
+        hook.afterSwap(trader, key, params, toBalanceDelta(a0, a1), data);
     }
 
     function testInternalSwapFlagSkipsGaugesButCollectsFees() public {

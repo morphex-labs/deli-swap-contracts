@@ -314,14 +314,15 @@ contract SwapLifecycle_V2_IT is Test, Deployers, IUnlockCallback {
         uint256 inputAmount = bmxBefore - bmx.balanceOf(address(this));
         
         // Expected exact input for exact output when fee is on output:
-        // compute grossOut = amountOut * (1 + fee) and solve input with ZERO fee
-        uint256 grossOut = (outputAmount * (1_000_000 + 3000)) / 1_000_000;
+        // fee = ceil(netOut * f / (1 - f)); grossOut = netOut + fee; then solve input with ZERO fee
+        uint256 feeOut = (outputAmount * 3000 + (1_000_000 - 3000 - 1)) / (1_000_000 - 3000);
+        uint256 grossOut = outputAmount + feeOut;
         uint256 expectedIn = _cpAmountIn(grossOut, uint256(r0Before), uint256(r1Before), 0);
         assertEq(inputAmount, expectedIn, "exact output in mismatch");
 
         // Verify reserves
         // For fee on output: reserve0 increases by full input; reserve1 decreases by output + feeOut
-        uint256 feeOut = (outputAmount * 3000) / 1_000_000;
+        // feeOut computed as ceil(netOut * f / (1 - f))
         assertEq(r0After, r0Before + inputAmount, "Reserve0 should increase by full input when fee on output");
         assertEq(r1After, r1Before - outputAmount - feeOut, "Reserve1 should decrease by output plus fee");
     }

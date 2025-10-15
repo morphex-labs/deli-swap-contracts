@@ -55,11 +55,29 @@ contract DeliHook_SwapFeeTest is Test {
         hook = new DeliHook{salt: salt}(IPoolManager(address(pm)), IFeeProcessor(address(fp)), IDailyEpochGauge(address(daily)), IIncentiveGauge(address(inc)), address(wblt), address(bmx), address(this));
     }
 
+    uint24 constant FEE_PIPS = 3000;
+
     function _callSwap(address trader, PoolKey memory key, SwapParams memory params, bytes memory data) internal {
         vm.prank(address(pm));
         hook.beforeSwap(trader, key, params, data);
+
+        bool exactInput = params.amountSpecified < 0;
+        bool specifiedIs0 = params.zeroForOne ? exactInput : !exactInput;
+        bool feeMatchesSpecified = (Currency.unwrap(key.currency0) == address(wblt)) == specifiedIs0;
+        uint256 s0 = uint256(exactInput ? -params.amountSpecified : params.amountSpecified);
+        uint256 fee = (s0 * FEE_PIPS + (1_000_000 - 1)) / 1_000_000; // ceil(s0 * fee / 1e6)
+        uint256 sprime = feeMatchesSpecified ? (exactInput ? s0 - fee : s0 + fee) : s0;
+
+        int128 a0 = 0;
+        int128 a1 = 0;
+        if (specifiedIs0) {
+            a0 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        } else {
+            a1 = exactInput ? int128(int256(sprime)) : int128(-int256(sprime));
+        }
+
         vm.prank(address(pm));
-        hook.afterSwap(trader, key, params, toBalanceDelta(0,0), data);
+        hook.afterSwap(trader, key, params, toBalanceDelta(a0, a1), data);
     }
 
     function testFeeForwarded_WbltPool() public {
@@ -105,8 +123,8 @@ contract DeliHook_SwapFeeTest is Test {
         SwapParams memory sp = SwapParams({zeroForOne:false, amountSpecified:-2e18, sqrtPriceLimitX96:0});
         _callSwap(address(0xBBBB), key, sp, "");
 
-        // With mock returning 3000 (0.3%) fee
-        uint256 expected = 6000000000000000; // 0.006 ETH (0.3% of 2e18)
+        // exact input, fee on specified (wBLT): forward base fee = ceil(S0 * fee / 1e6)
+        uint256 expected = (uint256(2e18) * 3000 + (1_000_000 - 1)) / 1_000_000;
         assertEq(fp.lastAmount(), expected);
     }
 
@@ -129,7 +147,7 @@ contract DeliHook_SwapFeeTest is Test {
         // unified path: collectFee called once, internal flag set
         assertEq(fp.calls(), 1, "collectFee should be called once");
         assertTrue(fp.lastIsInternal(), "internal flag not set");
-        uint256 expectedFee = 1e18 * 3000 / 1_000_000;
+        uint256 expectedFee = (1e18 * 3000) / 1_000_000;
         assertEq(fp.lastAmount(), expectedFee, "incorrect internal fee amount");
     }
 
@@ -152,8 +170,8 @@ contract DeliHook_SwapFeeTest is Test {
         _callSwap(TRADER, key, sp, "");
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
-        // With mock returning 3000 (0.3%) fee
-        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
+        // exact input, fee on specified (wBLT): forward base fee = ceil(S0 * fee / 1e6)
+        uint256 expected = (uint256(1e18) * 3000 + (1_000_000 - 1)) / 1_000_000;
         assertEq(tkAmt, expected);
     }
 
@@ -175,9 +193,8 @@ contract DeliHook_SwapFeeTest is Test {
         _callSwap(TRADER, key, sp, "");
         (, address tkTo, uint256 tkAmt) = pm.lastTake();
         assertEq(tkTo, address(fp));
-        // For exact output, fee is calculated on the unspecified (input) amount
-        // With mock returning 3000 (0.3%) fee
-        uint256 expected = 3000000000000000; // 0.003 ETH (0.3% of 1e18)
+        // exact output, fee on specified: gross-up => ceil(gross * f / (1e6 - f))
+        uint256 expected = (uint256(1e18) * FEE_PIPS + ((1_000_000 - FEE_PIPS) - 1)) / (1_000_000 - FEE_PIPS);
         assertEq(tkAmt, expected);
     }
 } 

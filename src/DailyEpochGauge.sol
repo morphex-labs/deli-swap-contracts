@@ -66,6 +66,10 @@ contract DailyEpochGauge is Ownable2Step {
 
     // Time-derived daily scheduling: PoolId -> dayIndex -> tokens to stream on that UTC day
     mapping(PoolId => mapping(uint32 => uint256)) public dayBuckets;
+    // Pending BMX accumulated while pool liquidity == 0 (roll-forward preserving clamp)
+    mapping(PoolId => uint256) internal accumulatedBmx;
+    // Gauge-side time cursor to roll-forward while zero-liquidity without relying on RangePool.lastUpdated
+    mapping(PoolId => uint256) internal lastProcessedTs;
 
     // Reward math (tick-aware)
     mapping(PoolId => RangePool.State) public poolRewards;
@@ -565,23 +569,47 @@ contract DailyEpochGauge is Ownable2Step {
     function _syncPoolState(PoolKey memory key, PoolId pid) internal {
         (uint160 sqrtPriceX96,,,) = StateLibrary.getSlot0(POOL_MANAGER, pid);
         int24 tickNow = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
-        _syncPoolStateCore(pid, tickNow, key.tickSpacing);
+        _syncPoolStateCore(pid, tickNow, key.tickSpacing, sqrtPriceX96);
     }
 
     /// @dev Core sync logic shared by both wrappers
-    function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing) internal {
+    function _syncPoolStateCore(PoolId pid, int24 activeTick, int24 tickSpacing, uint160 sqrtPriceX96) internal {
         RangePool.State storage pool = poolRewards[pid];
-        uint256 t0 = pool.lastUpdated;
         uint256 t1 = block.timestamp;
         address[] memory toks = new address[](1);
         toks[0] = address(BMX);
         uint256[] memory amts = new uint256[](1);
-        if (t1 > t0) {
-            amts[0] = _amountOverWindow(pid, t0, t1);
+
+        // Determine gauge-side start time: prefer our cursor, else fall back to pool's lastUpdated
+        uint256 tStart = lastProcessedTs[pid];
+        if (tStart == 0) tStart = pool.lastUpdated;
+
+        if (t1 > tStart) {
+            if (pool.liquidity == 0) {
+                // Zero-liquidity: roll-forward our cursor in a single 3-day clamped step; accumulate pending
+                uint256 chunkEnd = tStart + 3 * TimeLibrary.DAY;
+                if (chunkEnd > t1) chunkEnd = t1;
+                uint256 amt = _amountOverWindow(pid, tStart, chunkEnd);
+                if (amt > 0) accumulatedBmx[pid] += amt;
+                lastProcessedTs[pid] = chunkEnd;
+
+                // Tick upkeep only
+                amts[0] = 0;
+            } else {
+                // Liquidity present: consume pending + current window in one call
+                uint256 amtNow = _amountOverWindow(pid, tStart, t1);
+                uint256 pending = accumulatedBmx[pid];
+                if (pending > 0) accumulatedBmx[pid] = 0;
+                lastProcessedTs[pid] = t1;
+                amts[0] = amtNow + pending;
+            }
         } else {
+            // No time elapsed from our cursor; still allow tick upkeep
             amts[0] = 0;
         }
-        pool.sync(toks, amts, tickSpacing, activeTick);
+
+        // Single sync for both tick upkeep and accumulation
+        pool.sync(toks, amts, tickSpacing, activeTick, sqrtPriceX96);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -594,6 +622,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity,
@@ -602,20 +631,22 @@ contract DailyEpochGauge is Ownable2Step {
         PoolId pid = PoolId.wrap(poolIdRaw);
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // Add liquidity to in-range pool accounting
-        address[] memory toks = new address[](1);
-        toks[0] = address(BMX);
-        poolRewards[pid].modifyPositionLiquidity(
-            RangePool.ModifyLiquidityParams({
-                tickLower: tickLower,
-                tickUpper: tickUpper,
-                liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
-                tickSpacing: poolTickSpacing[pid]
-            }),
-            toks
-        );
+        {
+            address[] memory toks = new address[](1);
+            toks[0] = address(BMX);
+            poolRewards[pid].modifyPositionLiquidity(
+                RangePool.ModifyLiquidityParams({
+                    tickLower: tickLower,
+                    tickUpper: tickUpper,
+                    liquidityDelta: SafeCast.toInt128(uint256(liquidity)),
+                    tickSpacing: poolTickSpacing[pid]
+                }),
+                toks
+            );
+        }
 
         // Index position
         RangePosition.addPosition(
@@ -628,12 +659,10 @@ contract DailyEpochGauge is Ownable2Step {
         positionRewards[posKey].initSnapshot(poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper));
     }
 
-    /// @notice Unsubscribe with pre-fetched context: sync -> accrue -> remove and clean up
+    /// @notice Optimized unsubscribe path with pre-fetched context from the adapter (forfeit rewards)
     function notifyUnsubscribeWithContext(
         bytes32 posKey,
         bytes32 poolIdRaw,
-        int24 currentTick,
-        address ownerAddr,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -641,16 +670,8 @@ contract DailyEpochGauge is Ownable2Step {
         // If already not tracked (force-unsubscribed) but still called, return
         if (positionTokenIds[posKey] == 0) return;
 
-        // 1) Sync pool to current time at adapter-provided currentTick
+        // Apply removal of liquidity in pool accounting without syncing or accruing
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
-
-        // 2) Accrue rewards with pre-removal liquidity to the position
-        positionRewards[posKey].accrue(
-            uint128(liquidity), poolRewards[pid].rangeRplX128(address(BMX), tickLower, tickUpper)
-        );
-
-        // 3) Remove liquidity from pool accounting
         if (liquidity != 0) {
             poolRewards[pid].modifyPositionLiquidity(
                 RangePool.ModifyLiquidityParams({
@@ -663,8 +684,7 @@ contract DailyEpochGauge is Ownable2Step {
             );
         }
 
-        // 4) Claim any remaining rewards and clean up indices
-        _claimRewards(posKey, ownerAddr);
+        // Forfeit: remove position state without claiming
         _removePosition(pid, posKey);
     }
 
@@ -674,6 +694,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 poolIdRaw,
         address ownerAddr,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         uint128 liquidity
@@ -683,7 +704,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // 1. Accrue rewards with current liquidity
         positionRewards[posKey].accrue(
@@ -715,6 +736,7 @@ contract DailyEpochGauge is Ownable2Step {
         bytes32 posKey,
         bytes32 poolIdRaw,
         int24 currentTick,
+        uint160 sqrtPriceX96,
         int24 tickLower,
         int24 tickUpper,
         int256 liquidityChange,
@@ -725,7 +747,7 @@ contract DailyEpochGauge is Ownable2Step {
 
         // Sync pool using cached tickSpacing and adapter-provided currentTick
         PoolId pid = PoolId.wrap(poolIdRaw);
-        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid]);
+        _syncPoolStateCore(pid, currentTick, poolTickSpacing[pid], sqrtPriceX96);
 
         // Compute liquidity before the change using a cast-safe path
         int128 delta128 = SafeCast.toInt128(liquidityChange);

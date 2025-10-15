@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import "forge-std/Test.sol";
 import "src/libraries/RangePool.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /// @title RangePoolLibraryTest
 /// @notice Unit tests for RangePool.State accumulate & liquidity accounting.
@@ -57,7 +58,7 @@ contract RangePoolLibraryTest is Test {
         // call sync to apply accumulation (activeTick unchanged)
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = streamRate * 100; // pre-integrated amount
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
 
         uint256 expectedRewards = streamRate * 100;
         uint256 expectedRpl = (expectedRewards << 128) / LIQ;
@@ -83,7 +84,7 @@ contract RangePoolLibraryTest is Test {
         vm.warp(block.timestamp + 50);
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = 1e18 * 50; // dt=50
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
         assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
@@ -91,11 +92,11 @@ contract RangePoolLibraryTest is Test {
         vm.warp(block.timestamp + 30);
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = 0; // zero amount
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
         assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
         vm.warp(block.timestamp + 40);
         amts[0] = 1e18 * 40; // dt=40
-        pool.sync(stoks, amts, TICK_SPACING, 0); // liq still 0
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0)); // liq still 0
         assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
@@ -112,10 +113,10 @@ contract RangePoolLibraryTest is Test {
         // move tick inside range
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = 0;
-        pool.sync(stoks, amts, TICK_SPACING, 90);
+        pool.sync(stoks, amts, TICK_SPACING, 90, TickMath.getSqrtPriceAtTick(90));
         assertEq(pool.tick, 90);
         // move outside upper range – liquidity should drop to zero
-        pool.sync(stoks, amts, TICK_SPACING, 120);
+        pool.sync(stoks, amts, TICK_SPACING, 120, TickMath.getSqrtPriceAtTick(120));
         assertEq(pool.tick, 120);
         assertEq(pool.liquidity, 0);
     }
@@ -136,7 +137,7 @@ contract RangePoolLibraryTest is Test {
         // advance price to tick 120 (inside position but across 60)
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = 0;
-        pool.sync(stoks, amts, TICK_SPACING, 120);
+        pool.sync(stoks, amts, TICK_SPACING, 120, TickMath.getSqrtPriceAtTick(120));
         assertEq(pool.tick, 120);
         // liquidity should stay unchanged because tick 60 uninitialised
         assertEq(pool.liquidity, LIQ);
@@ -158,11 +159,11 @@ contract RangePoolLibraryTest is Test {
         // move price to 120 (outside) liquidity becomes 0
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = 0;
-        pool.sync(stoks, amts, TICK_SPACING, 120);
+        pool.sync(stoks, amts, TICK_SPACING, 120, TickMath.getSqrtPriceAtTick(120));
         assertEq(pool.liquidity, 0, "liquidity not dropped");
 
         // move back to -30 (inside range) – should restore
-        pool.sync(stoks, amts, TICK_SPACING, -30);
+        pool.sync(stoks, amts, TICK_SPACING, -30, TickMath.getSqrtPriceAtTick(-30));
         assertEq(pool.liquidity, LIQ, "liquidity not restored");
     }
 
@@ -172,7 +173,7 @@ contract RangePoolLibraryTest is Test {
         vm.warp(block.timestamp + 100);
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = bigAmount; // pass large amount directly
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
         assertEq(pool.rewardsPerLiquidityCumulativeX128[TOK], 0);
     }
 
@@ -194,11 +195,11 @@ contract RangePoolLibraryTest is Test {
         vm.warp(start + dt1);
         address[] memory stoks = new address[](1); stoks[0] = TOK;
         uint256[] memory amts = new uint256[](1); amts[0] = uint256(rate1) * dt1;
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
         uint256 first = pool.cumulativeRplX128(TOK);
         vm.warp(start + dt1 + dt2);
         amts[0] = uint256(rate2) * dt2;
-        pool.sync(stoks, amts, TICK_SPACING, 0);
+        pool.sync(stoks, amts, TICK_SPACING, 0, TickMath.getSqrtPriceAtTick(0));
         uint256 second = pool.cumulativeRplX128(TOK);
         assertGe(second, first);
     }
