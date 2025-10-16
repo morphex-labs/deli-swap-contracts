@@ -19,17 +19,10 @@ import {
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 
 /**
- * @dev Multi-pool custom curve implementation that combines BaseCustomAccounting and BaseCustomCurve logic.
+ * @dev Multi-pool custom curve implementation that combines OpenZeppelin's BaseCustomAccounting and BaseCustomCurve logic.
  *
  * This contract follows OpenZeppelin's design pattern but supports multiple pools in a single hook instance.
- * It combines the public liquidity management functions from BaseCustomAccounting with the
- * custom curve swap logic from BaseCustomCurve.
- *
- * Key features:
- * - Supports multiple pools via PoolKey parameter
- * - Custom curve logic for swaps (override _getUnspecifiedAmount)
- * - Hook-owned liquidity with ERC-6909 tokens
- * - Follows OpenZeppelin's exact pattern but multi-pool
+ * It combines the public liquidity management functions from BaseCustomAccounting with the custom curve swap logic from BaseCustomCurve.
  */
 abstract contract MultiPoolCustomCurve is BaseHook, IHookEvents, IUnlockCallback {
     using CurrencySettler for Currency;

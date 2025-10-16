@@ -30,11 +30,11 @@ import {InternalSwapFlag} from "./libraries/InternalSwapFlag.sol";
 
 /**
  * @title DeliHook
- * @notice Uniswap v4 hook that (1) collects swap fees and forwards them to
- *         FeeProcessor, and (2) keeps DailyEpochGauge and IncentiveGauge in
- *         sync on every swap. Pools that wish to use this hook MUST include
- *         wBLT as either currency0 or currency1; this constraint is enforced
- *         during pool initialisation.
+ * @notice Uniswap v4 hook that (1) collects swap fees (always in wBLT) and forwards them to
+ *         FeeProcessor, and (2) sync DailyEpochGauge and IncentiveGauge on every swap.
+ *         Pools using this hook MUST include wBLT as either currency0 or currency1; this
+ *         constraint is enforced during initialization. Pools must also use dynamic LP fees,
+ *         which the hook overrides to 0 at swap time (the hook handles fee collection).
  */
 contract DeliHook is Ownable2Step, BaseHook {
     using PoolIdLibrary for PoolKey;

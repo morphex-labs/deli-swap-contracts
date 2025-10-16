@@ -33,6 +33,7 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
  *         integrated piecewise across day boundaries on each update (swap, claim,
  *         or liquidity event) before adjusting to the current tick. Accounting is
  *         range-aware via `RangePool`, so only in-range liquidity accrues rewards.
+ *         Rewards are forfeited on position unsubscribe (no auto-claim).
  */
 contract DailyEpochGauge is Ownable2Step {
     using TimeLibrary for uint256;

@@ -14,10 +14,17 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
  * @title Voter
  * @notice Weekly voting contract that allocates deposited WETH between three
  *         pre-configured options. Users hold sbfBMX; their balance determines
- *         vote weight. An optional auto-vote feature reuses the user’s latest
- *         choice across future epochs. Admin deposits WETH and finalises epochs;
- *         on finalisation the winning option’s share is sent to the safety
+ *         vote weight. An optional auto-vote feature reuses the user's latest
+ *         choice across future epochs. Admin deposits WETH and finalizes epochs;
+ *         on finalization the winning option's share is sent to the safety
  *         module and the remainder streamed via RewardDistributor.
+ *
+ * Important behaviors
+ * - Weighting at tally time: manual voters' recorded weight is reduced if their
+ *   sbfBMX balance has decreased since voting; auto-voters use live balances
+ *   during tally.
+ * - Operational requirement: during finalization batches, BMX staking (sbfBMX issuance)
+ *   must be temporarily disabled in the external RewardRouter.
  */
 contract Voter is Ownable2Step {
     using SafeERC20 for IERC20;

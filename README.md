@@ -85,7 +85,7 @@ Both models integrate with a unified fee distribution system where keepers conve
 - **FeeProcessor**: 97% buyback / 3% voter split (configurable via `setBuybackBps`)
 - **Buffer Management**: Per-pool pending buffers, keeper flushes when ≥ 1 wBLT
 - **Slippage Protection**: Keeper-specified on each buyback flush
-- **Internal Swap Flag**: 0xDE1ABEEF identifies buyback swaps from FeeProcessor
+- **Internal Swap Flag**: 0xDE1ABEEF identifies buyback swaps from FeeProcessor; fees are still charged as normal (flag is informational)
 
 ### Position Management
 
@@ -251,7 +251,7 @@ src/
 
 - **DeliHook** - V4 concentrated liquidity hook with tick spacing-based fee determination
 - **DeliHookConstantProduct** - V2-style x\*y=k AMM with synthetic position tracking
-- **DailyEpochGauge** - BMX reward streaming (24h epochs, N+2 day pipeline)
+- **DailyEpochGauge** - BMX reward streaming (24h epochs, N+2 day pipeline; unsubscribe forfeits rewards, burn auto-claims)
 - **FeeProcessor** - Fee collection, configurable split, keeper-based buyback execution
 - **IncentiveGauge** - Additional ERC20 rewards (7-day streaming, seamless top-ups, forfeits on position unsubscribe)
 - **PositionManagerAdapter** - Modular router for position events with V2 fallback
@@ -296,6 +296,7 @@ src/
 | **Pool Fee Range**    | 0.01% - 2.5% (via tick spacing) | ≥ 0.1% and < 100%                  |
 | **Initial Price**     | Any                             | sqrtPrice = 2^96 (tick 0)          |
 | **Position Tracking** | V4PositionHandler               | V2PositionHandler                  |
+| **Partial Fills**     | Revert (full-fill only)         | Revert (full-fill only)            |
 
 ## 🔄 System Flows
 
@@ -310,7 +311,7 @@ src/
 - V2 pools use ERC-6909 burn → take sequence for fee extraction
 - FeeProcessor tracks per-pool pending buffers with swap-and-pop removal
 - Keepers call `flushBuffer()` when buffers exceed MIN_WBLT_FOR_BUYBACK (1 wBLT)
-- Buyback swaps marked with 0xDE1ABEEF flag to prevent recursive fee collection
+- Buyback swaps marked with 0xDE1ABEEF flag (informational); internal swaps still generate and forward fees
 
 ```mermaid
 flowchart TB

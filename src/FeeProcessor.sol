@@ -23,19 +23,18 @@ import {InternalSwapFlag} from "./libraries/InternalSwapFlag.sol";
 
 /**
  * @title FeeProcessor
- * @notice Splits and manages swap fees forwarded by DeliHook.
- *         97 % is converted into BMX via an on-chain buy-back and streamed to
- *         DailyEpochGauge. The remaining 3 % is retained in wBLT for the voter
- *         contract. Governance can adjust split ratios and slippage limits or
- *         recover mistaken tokens.
+ * @notice Splits and manages swap fees forwarded by hooks.
+ *         97% is converted into BMX via onchain buyback and streamed to DailyEpochGauge;
+ *         the remaining 3% is retained in wBLT for voter distribution. Governance can
+ *         adjust split ratios and slippage limits or recover mistaken tokens.
  *
- *  Flow summary:
- *  1. DeliHook calls {collectFee} transferring the raw fee token here.
- *  2. Amount is split into a buy-back buffer and a voter buffer.
- *  3. When the buy-back pool is configured the contract performs the required
- *     swaps via PoolManager.unlock to convert tokens as needed.
- *  4. BMX obtained from buy-backs is pushed to DailyEpochGauge where it is
- *     streamed to LPs.
+ * Flow summary
+ * 1. Hooks call {collectFee} transferring wBLT fees here (internal swaps are flagged but still charged).
+ * 2. Amount is split into a per-pool buyback buffer and a global voter buffer; pools with nonzero
+ *    buffers are tracked for keepers.
+ * 3. When a buyback pool is configured and buffer ≥ MIN_WBLT_FOR_BUYBACK, keepers call {flushBuffer}
+ *    to execute swaps via PoolManager.unlock; BMX out is validated against a provided minimum.
+ * 4. BMX obtained from buybacks is forwarded to DailyEpochGauge via {addRewards}.
  */
 contract FeeProcessor is Ownable2Step, SafeCallback {
     using SafeERC20 for IERC20;

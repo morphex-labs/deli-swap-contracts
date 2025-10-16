@@ -21,7 +21,7 @@ Custom error definitions for gas-efficient reverts across the protocol.
 **State/Configuration**:
 - `AlreadySettled()` - Duplicate settlement prevention
 - `InvalidBps()` - Basis points validation (>10,000)
-- `Slippage()` - Price protection failures
+- `Slippage()` - Price protection failures, also covers full-fill enforcement in hooks when the swap specified-side delta does not match expectations (partial fill)
 - `InvalidEpoch()` - Time-based validation
 - `NotWhitelisted()` - Token whitelist check
 
@@ -31,7 +31,7 @@ Constant used to identify internal protocol operations:
 
 ### Usage
 - `FLAG = 0xDE1ABEEF` - Marks FeeProcessor buyback swaps
-- Prevents recursive fee collection on BMX buyback swaps
+- Informational marker only; internal swaps still incur fees which are forwarded normally
 - Checked by hooks to differentiate user swaps from protocol swaps
 
 ## Math
@@ -60,6 +60,11 @@ Sophisticated tick-aware accumulator for streaming rewards to concentrated liqui
 1. Calculates rewards outside the range (below lower + above upper)
 2. Subtracts from global total to get inside rewards
 3. Handles edge cases for infinite ranges
+
+Tick transitions:
+- Crossings are gated solely by price: compare `sqrtPriceX96` against `TickMath.getSqrtPriceAtTick(nextTick)`
+- Clamp `nextTick` to `MIN_TICK`/`MAX_TICK` mirroring Uniswap v4 `Pool.sol` to avoid out-of-bounds
+- Final tick assignment comes from the caller’s active tick; `sync` accepts `sqrtPriceX96`
 
 ### Storage Pattern
 - `tickBitmap` - Packed uint256 tracking initialized ticks

@@ -32,9 +32,9 @@ import {DeliErrors} from "./libraries/DeliErrors.sol";
  * @title IncentiveGauge
  * @notice Streams ERC20 incentive tokens to Uniswap v4 LP NFTs.
  *         PositionManager subscription callbacks track liquidity changes so
- *         rewards remain proportional over time.  Each stream lasts 7 days
+ *         rewards remain proportional over time. Each stream lasts 7 days
  *         and can be topped-up seamlessly; leftover tokens are rolled into the
- *         new stream. Rewards are forfeited on position unsubscribe.
+ *         new stream. Rewards are forfeited on position unsubscribe (no auto-claim).
  */
 contract IncentiveGauge is Ownable2Step {
     using SafeERC20 for IERC20;

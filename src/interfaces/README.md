@@ -6,15 +6,18 @@ Interface for BMX reward streaming with 24-hour UTC epochs:
 
 ### Key Functions
 - `addRewards(amount)` - Queue BMX rewards for N+2 day distribution
-- `notifySubscribe/Unsubscribe(positionInfo, extraData)` - Position lifecycle management
+- `notifySubscribeWithContext(tokenId, posKey, poolIdRaw, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidity, owner)`
+- `notifyUnsubscribeWithContext(posKey, poolIdRaw, tickLower, tickUpper, liquidity)`
+- `notifyBurnWithContext(posKey, poolIdRaw, owner, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidity)`
+- `notifyModifyLiquidityWithContext(posKey, poolIdRaw, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidityChange, liquidityAfter)`
 - `claim(positionInfo, epochs, extraData)` - Claim accumulated rewards
-- `pokePool(poolId)` - Update pool state on swaps
+- `pokePool(poolKey)` - Update pool state on swaps
 - `pendingRewards(positionInfo, epochs)` - View unclaimed amounts
 
 ### Pipeline Details
 - Day N: Fees collected and added as rewards
 - Day N+2: Rewards stream to in-range positions over 24 hours
-- Auto-claims on position transfer/removal
+- Auto-claims on burn/removal; unsubscribe forfeits rewards (no auto-claim)
 
 ## IIncentiveGauge
 
@@ -22,7 +25,10 @@ Interface for distributing additional ERC20 incentive tokens:
 
 ### Key Functions
 - `notifyAndDistribute(token, amount, maxDuration)` - Add token incentives
-- `notifySubscribe/Unsubscribe(positionInfo, extraData)` - Position tracking
+- `notifySubscribeWithContext(tokenId, posKey, poolIdRaw, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidity, owner)`
+- `notifyUnsubscribeWithContext(posKey, poolIdRaw, tickLower, tickUpper, liquidity)`
+- `notifyBurnWithContext(posKey, poolIdRaw, owner, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidity)`
+- `notifyModifyLiquidityWithContext(posKey, poolIdRaw, currentTick, sqrtPriceX96, tickLower, tickUpper, liquidityChange, liquidityAfter)`
 - `claim(positionInfo, tokens, extraData)` - Claim specific token rewards
 - `whitelistedTokens()` - View allowed reward tokens
 
@@ -44,7 +50,7 @@ Minimal interface for centralized fee collection:
 - Assumes all fees arrive as wBLT
 - Maintains per-pool pending buffers
 - Keeper-triggered buybacks when buffer ≥ 1 wBLT
-- Uses 0xDE1ABEEF flag for internal swaps
+- Uses `0xDE1ABEEF` flag to mark internal swaps (informational; fees are still charged)
 
 ## IPositionManagerAdapter
 
@@ -59,7 +65,7 @@ Bridge interface extending ISubscriber for unified position management:
 ### Routing Logic
 - Receives events from Uniswap PositionManager
 - Routes to appropriate handler based on tokenId
-- Pre-fetches context for gas optimization
+- Pre-fetches context; reads `slot0` once and forwards `currentTick` + `sqrtPriceX96` to gauges via withContext calls
 - Manages gauge subscriptions
 
 ## IPositionHandler

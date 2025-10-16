@@ -32,8 +32,8 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 
 /**
  * @title DeliHookConstantProduct
- * @notice Uniswap V4 hook implementing x*y=k AMM with fee forwarding and gauge updates
- * @dev Extends MultiPoolCustomCurve to override V4's concentrated liquidity
+ * @notice Uniswap V4 hook implementing x*y=k AMM with fee forwarding and gauge updates.
+ * @dev Extends MultiPoolCustomCurve to override V4's concentrated liquidity.
  */
 contract DeliHookConstantProduct is Ownable2Step, MultiPoolCustomCurve {
     using PoolIdLibrary for PoolKey;
