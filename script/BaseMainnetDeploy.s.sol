@@ -33,6 +33,8 @@ import {IFeeProcessor} from "src/interfaces/IFeeProcessor.sol";
 import {IDailyEpochGauge} from "src/interfaces/IDailyEpochGauge.sol";
 import {IIncentiveGauge} from "src/interfaces/IIncentiveGauge.sol";
 import {IPositionManagerAdapter} from "src/interfaces/IPositionManagerAdapter.sol";
+import {IRewardDistributor} from "src/interfaces/IRewardDistributor.sol";
+import {Voter} from "src/Voter.sol";
 
 import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
 import {Commands} from "@uniswap/universal-router/contracts/libraries/Commands.sol";
@@ -51,17 +53,22 @@ contract BaseMainnetDeploy is Script {
     //////////////////////////////////////////////////////////////*/
 
     address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
-    
+
     // UPDATE THESE WITH ACTUAL BASE MAINNET ADDRESSES
     address constant POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b; // Uniswap V4 PoolManager on Base
     address constant POSITION_MANAGER = 0x7C5f5A4bBd8fD63184577525326123B519429bDc; // Uniswap V4 PositionManager on Base
     address constant UNIVERSAL_ROUTER = 0x6fF5693b99212Da76ad316178A184AB56D299b43; // Uniswap Universal Router on Base
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3; // Permit2 on Base
-    
+
     // Token addresses on Base
     address constant WBLT = 0x4E74D4Db6c0726ccded4656d0BCE448876BB4C7A;
-    address constant BMX = 0x548f93779fBC992010C07467cBaf329DD5F059B7;  
+    address constant BMX = 0x548f93779fBC992010C07467cBaf329DD5F059B7;
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address constant SBF_BMX = 0x38E5be3501687500E6338217276069d16178077E;
+    address constant WETH = 0x4200000000000000000000000000000000000006;
+
+    // Voter epoch-zero (Tuesday 00:00 UTC) – Oct 14, 2025 00:00:00 UTC
+    uint256 constant VOTER_TIMESTAMP = 1760400000;
 
     /*//////////////////////////////////////////////////////////////
                            SCRIPT CONFIG TOGGLES
@@ -94,18 +101,19 @@ contract BaseMainnetDeploy is Script {
     PositionManagerAdapter public positionManagerAdapter;
     V4PositionHandler public v4Handler;
     V2PositionHandler public v2Handler;
-    
+    Voter public voter;
+
     // Pool keys
-    PoolKey public v4PoolKey;  // wBLT/USDC with DeliHook
-    PoolKey public v2PoolKey;  // wBLT/BMX with DeliHookConstantProduct
-    
+    PoolKey public v4PoolKey; // wBLT/USDC with DeliHook
+    PoolKey public v2PoolKey; // wBLT/BMX with DeliHookConstantProduct
+
     // Position ID for V4
     uint256 public v4PositionId;
 
     function run() public {
         console.log("=== Base Mainnet Deployment ===");
         console.log("Deployer:", msg.sender);
-        
+
         // Resolve toggles from env or defaults
         bool doPools = vm.envOr("DELI_SETUP_POOLS", DO_POOL_SETUP_DEFAULT);
         bool doOps = vm.envOr("DELI_RUN_OPS", DO_OPERATIONS_DEFAULT);
@@ -119,25 +127,25 @@ contract BaseMainnetDeploy is Script {
         positionManager = IPositionManager(POSITION_MANAGER);
         universalRouter = IUniversalRouter(UNIVERSAL_ROUTER);
         permit2 = IPermit2(PERMIT2);
-        
+
         // Mine DeliHook address before broadcast
         (address deliHookAddress, bytes32 deliHookSalt) = _mineDeliHookAddress();
-        
+
         vm.startBroadcast();
-        
+
         // Deploy all our contracts
         _deployContracts(deliHookAddress, deliHookSalt);
-        
+
         // Configure all relationships
         _configureContracts();
-        
+
         // Initialize pools (optional)
         if (doPools) {
             _initializePools();
         } else {
             console.log("Skipping pool initialization (DELI_SETUP_POOLS=false)");
         }
-        
+
         // Perform initial operations (optional)
         if (doOps && doPools) {
             _performOperations();
@@ -146,7 +154,7 @@ contract BaseMainnetDeploy is Script {
         } else {
             console.log("Skipping operations (DELI_RUN_OPS=false)");
         }
-        
+
         // Set up rewards (optional)
         if (doIncentives && doPools) {
             _setupIncentives();
@@ -155,22 +163,18 @@ contract BaseMainnetDeploy is Script {
         } else {
             console.log("Skipping incentives (DELI_SETUP_INCENTIVES=false)");
         }
-        
+
         vm.stopBroadcast();
-        
-        _printSummary();
+
+        _printSummary(doPools);
     }
-    
+
     function _mineDeliHookAddress() internal view returns (address, bytes32) {
         uint160 hookFlags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | 
-            Hooks.AFTER_INITIALIZE_FLAG |
-            Hooks.BEFORE_SWAP_FLAG | 
-            Hooks.AFTER_SWAP_FLAG | 
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG |
-            Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
-        
+
         bytes memory ctorArgs = abi.encode(
             poolManager,
             IFeeProcessor(address(0)),
@@ -180,26 +184,21 @@ contract BaseMainnetDeploy is Script {
             BMX,
             msg.sender // owner
         );
-        
-        return HookMiner.find(
-            CREATE2_DEPLOYER,
-            hookFlags,
-            type(DeliHook).creationCode,
-            ctorArgs
-        );
+
+        return HookMiner.find(CREATE2_DEPLOYER, hookFlags, type(DeliHook).creationCode, ctorArgs);
     }
-    
-    function _mineDeliHookConstantProductAddress(address feeProcessorAddress) internal view returns (address, bytes32) {
+
+    function _mineDeliHookConstantProductAddress(address feeProcessorAddress)
+        internal
+        view
+        returns (address, bytes32)
+    {
         uint160 hookFlags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | 
-            Hooks.AFTER_INITIALIZE_FLAG |
-            Hooks.BEFORE_ADD_LIQUIDITY_FLAG | 
-            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
-            Hooks.BEFORE_SWAP_FLAG | 
-            Hooks.AFTER_SWAP_FLAG | 
-            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
-        
+
         bytes memory ctorArgs = abi.encode(
             poolManager,
             IFeeProcessor(feeProcessorAddress),
@@ -209,22 +208,17 @@ contract BaseMainnetDeploy is Script {
             BMX,
             msg.sender // owner
         );
-        
-        return HookMiner.find(
-            CREATE2_DEPLOYER,
-            hookFlags,
-            type(DeliHookConstantProduct).creationCode,
-            ctorArgs
-        );
+
+        return HookMiner.find(CREATE2_DEPLOYER, hookFlags, type(DeliHookConstantProduct).creationCode, ctorArgs);
     }
-    
+
     function _deployContracts(address deliHookAddress, bytes32 deliHookSalt) internal {
         console.log("\n=== Deploying Contracts ===");
-        
+
         // 1. Deploy position handlers
         v4Handler = new V4PositionHandler(address(positionManager));
         console.log("V4PositionHandler deployed:", address(v4Handler));
-        
+
         // 2. Deploy IncentiveGauge first
         incentiveGauge = new IncentiveGauge(
             poolManager,
@@ -232,7 +226,7 @@ contract BaseMainnetDeploy is Script {
             deliHookAddress
         );
         console.log("IncentiveGauge deployed:", address(incentiveGauge));
-        
+
         // 3. Deploy DailyEpochGauge with IncentiveGauge address
         dailyEpochGauge = new DailyEpochGauge(
             address(0), // Will set FeeProcessor after deployment
@@ -243,40 +237,47 @@ contract BaseMainnetDeploy is Script {
             address(incentiveGauge) // Pass actual IncentiveGauge address
         );
         console.log("DailyEpochGauge deployed:", address(dailyEpochGauge));
-        
+
         // 4. Deploy FeeProcessor with actual DailyEpochGauge address
-        feeProcessor = new FeeProcessor(
-            poolManager,
-            deliHookAddress,
-            WBLT,
-            BMX,
-            IDailyEpochGauge(address(dailyEpochGauge))
-        );
+        feeProcessor =
+            new FeeProcessor(poolManager, deliHookAddress, WBLT, BMX, IDailyEpochGauge(address(dailyEpochGauge)));
         console.log("FeeProcessor deployed:", address(feeProcessor));
-        
+
         // 5. Deploy DeliHook with salt
         _deployDeliHook(deliHookAddress, deliHookSalt);
-        
+
         // 6. Mine DeliHookConstantProduct address now that we have FeeProcessor
         (address deliHookCPAddress, bytes32 deliHookCPSalt) = _mineDeliHookConstantProductAddress(address(feeProcessor));
-        
+
         // 7. Deploy DeliHookConstantProduct with salt
         _deployDeliHookConstantProduct(deliHookCPAddress, deliHookCPSalt);
-        
+
         // 8. Deploy V2 handler now that we have the hook address
         v2Handler = new V2PositionHandler(address(deliHookConstantProduct));
         console.log("V2PositionHandler deployed:", address(v2Handler));
-        
+
         // 9. Now deploy PositionManagerAdapter with gauge addresses
         positionManagerAdapter = new PositionManagerAdapter(
-            address(dailyEpochGauge),
-            address(incentiveGauge),
-            address(positionManager),
-            address(poolManager)
+            address(dailyEpochGauge), address(incentiveGauge), address(positionManager), address(poolManager)
         );
         console.log("PositionManagerAdapter deployed:", address(positionManagerAdapter));
+
+        // 10. Deploy Voter (reward distributor set to address(0); safetyModule = deployer)
+        voter = new Voter(
+            IERC20(WETH),
+            IERC20(SBF_BMX),
+            msg.sender,
+            IRewardDistributor(address(0)),
+            VOTER_TIMESTAMP,
+            1000, // 10%
+            2000, // 20%
+            3000 // 30%
+        );
+        // Set admin to deployer for deposits/finalization control
+        voter.setAdmin(msg.sender);
+        console.log("Voter deployed:", address(voter));
     }
-    
+
     function _deployDeliHook(address predictedHookAddress, bytes32 salt) internal {
         // Deploy hook using CREATE2
         deliHook = new DeliHook{salt: salt}(
@@ -288,11 +289,11 @@ contract BaseMainnetDeploy is Script {
             BMX,
             msg.sender // owner
         );
-        
+
         require(address(deliHook) == predictedHookAddress, "DeliHook address mismatch");
         console.log("DeliHook deployed:", address(deliHook));
     }
-    
+
     function _deployDeliHookConstantProduct(address predictedHookAddress, bytes32 salt) internal {
         // Deploy hook using CREATE2
         deliHookConstantProduct = new DeliHookConstantProduct{salt: salt}(
@@ -304,35 +305,35 @@ contract BaseMainnetDeploy is Script {
             BMX,
             msg.sender // owner
         );
-        
+
         require(address(deliHookConstantProduct) == predictedHookAddress, "DeliHookConstantProduct address mismatch");
         console.log("DeliHookConstantProduct deployed:", address(deliHookConstantProduct));
     }
-    
+
     function _configureContracts() internal {
         console.log("\n=== Configuring Contracts ===");
-        
+
         // Configure hooks
         deliHook.setFeeProcessor(address(feeProcessor));
         deliHook.setDailyEpochGauge(address(dailyEpochGauge));
         deliHook.setIncentiveGauge(address(incentiveGauge));
-        
+
         deliHookConstantProduct.setFeeProcessor(address(feeProcessor));
         deliHookConstantProduct.setDailyEpochGauge(address(dailyEpochGauge));
         deliHookConstantProduct.setIncentiveGauge(address(incentiveGauge));
-        
+
         // Configure FeeProcessor
         feeProcessor.setHook(address(deliHook), true);
         feeProcessor.setHook(address(deliHookConstantProduct), true);
-        
+
         // Configure gauges
         dailyEpochGauge.setFeeProcessor(address(feeProcessor)); // Set the FeeProcessor that was address(0) during deployment
         dailyEpochGauge.setHook(address(deliHook), true);
         dailyEpochGauge.setHook(address(deliHookConstantProduct), true);
-        
+
         incentiveGauge.setHook(address(deliHook), true);
         incentiveGauge.setHook(address(deliHookConstantProduct), true);
-        
+
         // Configure PositionManagerAdapter
         // Note: Gauges are already set in constructor, no need to call setGauges
         positionManagerAdapter.addHandler(address(v4Handler));
@@ -340,26 +341,26 @@ contract BaseMainnetDeploy is Script {
         positionManagerAdapter.setAuthorizedCaller(address(positionManager), true);
         positionManagerAdapter.setAuthorizedCaller(address(deliHookConstantProduct), true);
         positionManagerAdapter.setAuthorizedCaller(address(v2Handler), true);
-        
+
         // Update gauges with adapter (they were deployed with address(0))
         dailyEpochGauge.setPositionManagerAdapter(address(positionManagerAdapter));
         incentiveGauge.setPositionManagerAdapter(address(positionManagerAdapter));
-        
+
         // Add V2 position handler to hook
         deliHookConstantProduct.setV2PositionHandler(address(v2Handler));
-        
+
         // Configure V2 handler
         v2Handler.setPositionManagerAdapter(address(positionManagerAdapter));
-        
+
         // Whitelist BMX for incentives
         incentiveGauge.setWhitelist(IERC20(BMX), true);
-        
+
         console.log("All contracts configured");
     }
-    
+
     function _initializePools() internal {
         console.log("\n=== Initializing Pools ===");
-        
+
         // Create V4 pool key (wBLT/USDC with DeliHook)
         v4PoolKey = PoolKey({
             currency0: Currency.wrap(WBLT < USDC ? WBLT : USDC),
@@ -368,7 +369,7 @@ contract BaseMainnetDeploy is Script {
             tickSpacing: 60,
             hooks: IHooks(address(deliHook))
         });
-        
+
         // Create V2 pool key (wBLT/BMX with DeliHookConstantProduct)
         v2PoolKey = PoolKey({
             currency0: Currency.wrap(WBLT < BMX ? WBLT : BMX),
@@ -377,11 +378,11 @@ contract BaseMainnetDeploy is Script {
             tickSpacing: 1, // Must be 1 for V2 pools
             hooks: IHooks(address(deliHookConstantProduct))
         });
-        
+
         // Initialize pools at 1:1 price
         poolManager.initialize(v4PoolKey, TickMath.getSqrtPriceAtTick(0));
         console.log("V4 pool initialized (wBLT/USDC)");
-        
+
         poolManager.initialize(v2PoolKey, TickMath.getSqrtPriceAtTick(0));
         console.log("V2 pool initialized (wBLT/BMX)");
 
@@ -390,17 +391,17 @@ contract BaseMainnetDeploy is Script {
         feeProcessor.setKeeper(msg.sender, true);
         console.log("FeeProcessor buyback pool set to V2 BMX/wBLT and keeper authorized");
     }
-    
+
     function _performOperations() internal {
         console.log("\n=== Performing Test Operations ===");
-        
+
         // Approve tokens
         _approveTokens();
-        
+
         // V4 Operations
         console.log("\n--- V4 Operations (wBLT/USDC) ---");
         _performV4Operations();
-        
+
         // V2 Operations
         console.log("\n--- V2 Operations (wBLT/BMX) ---");
         _performV2Operations();
@@ -408,58 +409,51 @@ contract BaseMainnetDeploy is Script {
         // Flush FeeProcessor buyback buffers (test mode: no slippage enforcement)
         _flushBuybackBuffers();
     }
-    
+
     function _approveTokens() internal {
         // Approve tokens to Permit2 (all Uniswap V4 contracts use Permit2 for token transfers)
         IERC20(WBLT).approve(address(permit2), type(uint256).max);
         IERC20(BMX).approve(address(permit2), type(uint256).max);
         IERC20(USDC).approve(address(permit2), type(uint256).max);
-        
+
         // Approve PoolManager to spend via Permit2 (it uses Permit2 for token transfers)
         permit2.approve(WBLT, address(poolManager), type(uint160).max, type(uint48).max);
         permit2.approve(BMX, address(poolManager), type(uint160).max, type(uint48).max);
         permit2.approve(USDC, address(poolManager), type(uint160).max, type(uint48).max);
-        
+
         // Approve PositionManager to spend via Permit2 (for liquidity operations)
         permit2.approve(WBLT, address(positionManager), type(uint160).max, type(uint48).max);
         permit2.approve(BMX, address(positionManager), type(uint160).max, type(uint48).max);
         permit2.approve(USDC, address(positionManager), type(uint160).max, type(uint48).max);
-        
+
         // Approve Universal Router to spend via Permit2 (for swap operations)
         permit2.approve(WBLT, address(universalRouter), type(uint160).max, type(uint48).max);
         permit2.approve(BMX, address(universalRouter), type(uint160).max, type(uint48).max);
         permit2.approve(USDC, address(universalRouter), type(uint160).max, type(uint48).max);
-        
+
         // Approve DeliHookConstantProduct for V2 operations (it handles tokens directly)
         IERC20(WBLT).approve(address(deliHookConstantProduct), type(uint256).max);
         IERC20(BMX).approve(address(deliHookConstantProduct), type(uint256).max);
-        
+
         console.log("Token approvals complete");
     }
-    
+
     function _performV4Operations() internal {
         // 1. Mint liquidity
         console.log("1. Minting V4 position with 1 wBLT and 1 USDC...");
-        
+
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(v4PoolKey.toId());
-        
+
         // Determine amounts based on token order
         uint256 amount0 = Currency.unwrap(v4PoolKey.currency0) == WBLT ? 1 ether : 1e6; // 1 USDC = 1e6
         uint256 amount1 = Currency.unwrap(v4PoolKey.currency1) == WBLT ? 1 ether : 1e6; // 1 USDC = 1e6
-        
+
         uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            TickMath.getSqrtPriceAtTick(-600),
-            TickMath.getSqrtPriceAtTick(600),
-            amount0,
-            amount1
+            sqrtPriceX96, TickMath.getSqrtPriceAtTick(-600), TickMath.getSqrtPriceAtTick(600), amount0, amount1
         );
-        
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.MINT_POSITION),
-            uint8(Actions.SETTLE_PAIR)
-        );
-        
+
+        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+
         bytes[] memory params = new bytes[](2);
         params[0] = abi.encode(
             v4PoolKey,
@@ -472,11 +466,11 @@ contract BaseMainnetDeploy is Script {
             "" // hookData
         );
         params[1] = abi.encode(v4PoolKey.currency0, v4PoolKey.currency1);
-        
+
         positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 60);
         v4PositionId = positionManager.nextTokenId() - 1;
         console.log("   Position ID:", v4PositionId);
-        
+
         // 2. Test swap - swap USDC for wBLT to avoid fee collection issue
         bool zeroForOne = Currency.unwrap(v4PoolKey.currency0) == USDC;
         // We want to swap USDC->wBLT, so use 0.05 USDC (50000)
@@ -485,11 +479,11 @@ contract BaseMainnetDeploy is Script {
         _swap(v4PoolKey, zeroForOne, swapAmount);
         console.log("   Swap completed");
     }
-    
+
     function _performV2Operations() internal {
         // 1. Add liquidity
         console.log("1. Adding V2 liquidity with 1 wBLT and 1 BMX...");
-        
+
         MultiPoolCustomCurve.AddLiquidityParams memory addParams = MultiPoolCustomCurve.AddLiquidityParams({
             amount0Desired: 1 ether,
             amount1Desired: 1 ether,
@@ -500,11 +494,11 @@ contract BaseMainnetDeploy is Script {
             tickUpper: 0,
             userInputSalt: bytes32(0)
         });
-        
+
         deliHookConstantProduct.addLiquidity(v2PoolKey, addParams);
         uint256 shares = deliHookConstantProduct.balanceOf(v2PoolKey.toId(), msg.sender);
         console.log("   Shares received:", shares);
-        
+
         // 2. Test swap
         console.log("2. Test swap: 0.05 BMX for wBLT...");
         bool zeroForOne = Currency.unwrap(v2PoolKey.currency0) == BMX;
@@ -526,39 +520,36 @@ contract BaseMainnetDeploy is Script {
         feeProcessor.flushBuffers(pids, minOuts);
         console.log("Buyback buffers flushed");
     }
-    
+
     function _setupIncentives() internal {
         console.log("\n=== Setting up Incentives ===");
-        
+
         // Approve BMX for IncentiveGauge
         IERC20(BMX).approve(address(incentiveGauge), 0.5 ether);
-        
+
         // Create incentives for both pools
         incentiveGauge.createIncentive(v4PoolKey, IERC20(BMX), 0.25 ether);
         console.log("Created 0.25 BMX incentive for V4 pool (wBLT/USDC)");
-        
+
         incentiveGauge.createIncentive(v2PoolKey, IERC20(BMX), 0.25 ether);
         console.log("Created 0.25 BMX incentive for V2 pool (wBLT/BMX)");
     }
-    
+
     function _swap(PoolKey memory key, bool zeroForOne, int256 amountSpecified) internal {
         // For V4 swaps via Universal Router
         bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
         bytes[] memory inputs = new bytes[](1);
-        
+
         // Since amountSpecified is negative for exact input, convert to positive
         uint128 amountIn = uint128(uint256(-amountSpecified));
-        
+
         // Encode V4Router actions
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.SWAP_EXACT_IN_SINGLE),
-            uint8(Actions.SETTLE_ALL),
-            uint8(Actions.TAKE_ALL)
-        );
-        
+        bytes memory actions =
+            abi.encodePacked(uint8(Actions.SWAP_EXACT_IN_SINGLE), uint8(Actions.SETTLE_ALL), uint8(Actions.TAKE_ALL));
+
         // Prepare parameters for each action
         bytes[] memory params = new bytes[](3);
-        
+
         // First parameter: swap configuration
         params[0] = abi.encode(
             IV4Router.ExactInputSingleParams({
@@ -569,25 +560,25 @@ contract BaseMainnetDeploy is Script {
                 hookData: bytes("")
             })
         );
-        
+
         // Second parameter: specify input tokens
         Currency inputCurrency = zeroForOne ? key.currency0 : key.currency1;
         params[1] = abi.encode(inputCurrency, amountIn);
-        
+
         // Third parameter: specify output tokens
         Currency outputCurrency = zeroForOne ? key.currency1 : key.currency0;
         params[2] = abi.encode(outputCurrency, uint128(0)); // minimum 0 for test
-        
+
         // Combine actions and params
         inputs[0] = abi.encode(actions, params);
-        
+
         // Execute the swap
         universalRouter.execute(commands, inputs, block.timestamp + 60);
     }
-    
-    function _printSummary() internal view {
+
+    function _printSummary(bool doPools) internal view {
         console.log("\n=== DEPLOYMENT SUMMARY ===");
-        
+
         console.log("\nDeli Protocol Contracts:");
         console.log("  FeeProcessor:", address(feeProcessor));
         console.log("  DeliHook:", address(deliHook));
@@ -597,13 +588,15 @@ contract BaseMainnetDeploy is Script {
         console.log("  PositionManagerAdapter:", address(positionManagerAdapter));
         console.log("  V4PositionHandler:", address(v4Handler));
         console.log("  V2PositionHandler:", address(v2Handler));
-        
-        console.log("\nPools:");
-        console.log("  V4 Pool (wBLT/USDC):");
-        console.logBytes32(PoolId.unwrap(v4PoolKey.toId()));
-        console.log("  V2 Pool (wBLT/BMX):");
-        console.logBytes32(PoolId.unwrap(v2PoolKey.toId()));
-        
+        console.log("  Voter:", address(voter));
+
+        if (doPools) {
+            console.log("\nPools:");
+            console.log("  V4 Pool (wBLT/USDC):");
+            console.logBytes32(PoolId.unwrap(v4PoolKey.toId()));
+            console.log("  V2 Pool (wBLT/BMX):");
+            console.logBytes32(PoolId.unwrap(v2PoolKey.toId()));
+        }
         console.log("\nBase Mainnet deployment complete!");
     }
 }
