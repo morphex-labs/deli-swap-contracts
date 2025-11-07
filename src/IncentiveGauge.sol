@@ -687,8 +687,10 @@ contract IncentiveGauge is Ownable2Step {
                 IncentiveInfo storage info = incentives[pid][tok];
                 if (info.rewardRate > 0) {
                     uint256 endTs = nowTs < info.periodFinish ? nowTs : info.periodFinish;
-                    if (endTs > poolLast) {
-                        uint256 activeSeconds = endTs - poolLast;
+                    // Clamp start to token's lastUpdate so we never accrue before token activation/top-up
+                    uint256 startTs = poolLast < info.lastUpdate ? info.lastUpdate : poolLast;
+                    if (endTs > startTs) {
+                        uint256 activeSeconds = endTs - startTs;
                         amt = uint256(info.rewardRate) * activeSeconds;
                     }
                 }

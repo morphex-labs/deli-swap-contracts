@@ -101,6 +101,7 @@ contract DailyEpochGauge is Ownable2Step {
     event HookAuthorised(address hook, bool enabled);
     event PositionManagerAdapterUpdated(address newAdapter);
     event ForceUnsubscribed(address indexed owner, PoolId indexed pid, bytes32 posKey);
+    event IncentiveGaugeUpdated(address newIncentiveGauge);
 
     /*//////////////////////////////////////////////////////////////
                                   CONSTRUCTOR
@@ -169,6 +170,14 @@ contract DailyEpochGauge is Ownable2Step {
         if (hook == address(0)) revert DeliErrors.ZeroAddress();
         isHook[hook] = enabled;
         emit HookAuthorised(hook, enabled);
+    }
+
+    /// @notice Admin-only function to set the incentive gauge.
+    /// @param _incentiveGauge The address of the incentive gauge.
+    function setIncentiveGauge(address _incentiveGauge) external onlyOwner {
+        if (_incentiveGauge == address(0)) revert DeliErrors.ZeroAddress();
+        incentiveGauge = _incentiveGauge;
+        emit IncentiveGaugeUpdated(_incentiveGauge);
     }
 
     /// @notice Admin-only function to forcibly unsubscribe and clean up a position
