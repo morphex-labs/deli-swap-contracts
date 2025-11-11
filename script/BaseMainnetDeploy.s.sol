@@ -67,8 +67,8 @@ contract BaseMainnetDeploy is Script {
     address constant SBF_BMX = 0x38E5be3501687500E6338217276069d16178077E;
     address constant WETH = 0x4200000000000000000000000000000000000006;
 
-    // Voter epoch-zero (Tuesday 00:00 UTC) – Oct 14, 2025 00:00:00 UTC
-    uint256 constant VOTER_TIMESTAMP = 1760400000;
+    // Voter epoch-zero (Tuesday 00:00 UTC) – Nov 4, 2025 00:00:00 UTC
+    uint256 constant VOTER_TIMESTAMP = 1762214400;
 
     /*//////////////////////////////////////////////////////////////
                            SCRIPT CONFIG TOGGLES

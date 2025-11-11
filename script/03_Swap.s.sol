@@ -10,7 +10,7 @@ contract SwapScript is BaseScript {
         PoolKey memory poolKey = PoolKey({
             currency0: currency0,
             currency1: currency1,
-            fee: 3000,
+            fee: 8388608,
             tickSpacing: 60,
             hooks: hookContract // This must match the pool
         });
@@ -19,18 +19,18 @@ contract SwapScript is BaseScript {
         vm.startBroadcast();
 
         // We'll approve both, just for testing.
-        token1.approve(address(swapRouter), type(uint256).max);
-        token0.approve(address(swapRouter), type(uint256).max);
+        // token1.approve(address(swapRouter), type(uint256).max);
+        //token0.approve(address(swapRouter), type(uint256).max);
 
         // Execute swap
         swapRouter.swapExactTokensForTokens({
-            amountIn: 1e18,
+            amountIn: 1e5,
             amountOutMin: 0, // Very bad, but we want to allow for unlimited price impact
-            zeroForOne: true,
+            zeroForOne: false,
             poolKey: poolKey,
             hookData: hookData,
-            receiver: address(this),
-            deadline: block.timestamp + 1
+            receiver: deployerAddress,
+            deadline: block.timestamp + 120
         });
 
         vm.stopBroadcast();
